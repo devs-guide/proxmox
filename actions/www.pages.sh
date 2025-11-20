@@ -118,6 +118,8 @@ publish.ansible() {
   for playbook in ${PKGS[ansible]}; do
     rsync_includes+=( "--include=${playbook}" )
   done
+  
+  log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
 
   rsync -av \
     "${rsync_includes[@]}" \
