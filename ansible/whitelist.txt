@@ -1,4 +1,4 @@
 # ansible playbooks to publish via GitHub Pages
-# one playbook per line
+# one playbook per line - order of playbooks matters: sequential!
 metal.playbook.yml
 debian.sources.playbook.yml

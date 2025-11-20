@@ -21,10 +21,10 @@ GITHUB[user]='devs-guide'
 GITHUB[repo]='proxmox'
 GITHUB[url]="https://${GITHUB[user]}.github.io/${GITHUB[repo]}"
 
-# --- Playbook metadata (init: defaults to metal.playbook.yml) ---
-PLAYBOOK[name]="${PLAYBOOK_NAME:-metal.playbook.yml}"
-PLAYBOOK[url]="${GITHUB[url]}/ansible/${PLAYBOOK[name]}"
-PLAYBOOK[path]="/tmp/${PLAYBOOK[name]}"
+# --- Playbook metadata (set per playlist entry) ---
+PLAYBOOK[name]=''
+PLAYBOOK[url]=''
+PLAYBOOK[path]=''
 
 # --- Playlist (whitelist) metadata ---
 PLAYLIST[name]='whitelist.txt'
@@ -105,7 +105,12 @@ fetch.playbook() {
 
 fetch.playlist() {
   log.info "Fetching playlist from: ${PLAYLIST[url]}"
-  wget -qO "${PLAYLIST[path]}" "${PLAYLIST[url]}"
+  if ! wget -qO "${PLAYLIST[path]}" "${PLAYLIST[url]}"; then
+    error.exit "[metal] unable to download playlist: ${PLAYLIST[url]}"
+  fi
+  if [[ ! -s "${PLAYLIST[path]}" ]]; then
+    error.exit "[metal] playlist is missing or empty: ${PLAYLIST[url]}"
+  fi
 }
 
 # --- Runners ---
@@ -132,16 +137,10 @@ run.playlist() {
 
 # --- Setup runner ---
 run.setup() {
-  log.info "[metal]: Starting bootstrap..."
+  log.info "Starting bootstrap..."
   system.ensure.root
   system.ensure.apt
   install.ansible
-
-  # init: bootstrap
-  fetch.playbook
-  run.playbook
-
-  # order: follow-on playbooks from ansible/whitelist.txt
   fetch.playlist
   run.playlist
 
