@@ -56,39 +56,41 @@ log.error() {
 # entries in PKGS[ansible] as a space-separated list.
 
 
-# load.whitelist.ansible() {
-#   local file="${WHITELIST[ansible]}"
-#
-#   if [[ ! -f "${file}" ]]; then
-#     log.error "${ERROR[whitelist]}"
-#     exit 1
-#   fi
-#
-#   local items=()
-#   local line
-#
-#   while IFS= read -r line; do
-#     [[ -z "${line}" ]] && continue                    # skip blanks
-#     [[ "${line}" =~ ^[[:space:]]*# ]] && continue     # skip comments
-#     items+=("${line}")
-#   done < "${file}"
-#
-#   # store as space-separated list on the PKGS "object"
-#   PKGS[ansible]="${items[*]}"
-# }
-
-
 load.whitelist.ansible() {
-   local file="${WHITELIST[ansible]}"
-   [[ -f "${file}" ]] || { log.error "${ERROR[whitelist]}"; exit 1; }
+  local file="${WHITELIST[ansible]}"
 
-   mapfile -t PKGS_ANSIBLE < <(grep -vE '^[[:space:]]*(#|$)' "${file}")
+  if [[ ! -f "${file}" ]]; then
+    log.error "${ERROR[whitelist]}"
+    exit 1
+  fi
 
-   if ((${#PKGS_ANSIBLE[@]} == 0)); then
-     log.error "[www.pages] ERROR[whitelist]: ansible whitelist is empty"
-     exit 1
-   fi
- }
+  local items=()
+  local line
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue                # skip blanks
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue # skip comments
+    items+=( "${line}" )
+  done < "${file}"
+
+  if ((${#items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: ansible whitelist is empty"
+    exit 1
+  fi
+
+  PKGS[ansible]="${items[*]}"  # space-separated
+}
+
+# load.whitelist.ansible() {
+#    local file="${WHITELIST[ansible]}"
+#    [[ -f "${file}" ]] || { log.error "${ERROR[whitelist]}"; exit 1; }
+#
+#    mapfile -t PKGS_ANSIBLE < <(grep -vE '^[[:space:]]*(#|$)' "${file}")
+#
+#    if ((${#PKGS_ANSIBLE[@]} == 0)); then
+#      log.error "[www.pages] ERROR[whitelist]: ansible whitelist is empty"
+#      exit 1
+#    fi
+#  }
 
 
 
@@ -122,47 +124,48 @@ publish.bootstrap() {
 }
 
 publish.ansible() {
-   log.info "[www.pages] syncing ansible whitelist"
-   mkdir -p "${PATH_TO[publish]}/ansible"
+  log.info "[www.pages] syncing ansible whitelist"
+  mkdir -p "${PATH_TO[publish]}/ansible"
 
-   load.whitelist.ansible   # call, no ()
+  load.whitelist.ansible
 
-   local -a rsync_includes=()
-   local playbook
-   for playbook in "${PKGS_ANSIBLE[@]}"; do
-     rsync_includes+=( "--include=${playbook}" )
-   done
+  local rsync_includes=()
+  local playbook
+  for playbook in ${PKGS[ansible]}; do
+    rsync_includes+=( "--include=${playbook}" )
+  done
 
-   log.info "[www.pages] whitelist entries: ${PKGS_ANSIBLE[*]}"
+  log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
 
-   rsync -av \
-     --include='*/' \
-     "${rsync_includes[@]}" \
-     --exclude='*' \
-     ansible/ "${PATH_TO[publish]}/ansible/"
- }
+  rsync -av \
+    --include='*/' \        # descend into ansible/
+    "${rsync_includes[@]}" \
+    --exclude='*' \
+    ansible/ "${PATH_TO[publish]}/ansible/"
+}
 
 # publish.ansible() {
-#   log.info "[www.pages] syncing ansible whitelist"
-#   local rsync_includes=() # declare the includes container
-#   local playbook
+#    log.info "[www.pages] syncing ansible whitelist"
+#    mkdir -p "${PATH_TO[publish]}/ansible"
 #
-#   mkdir -p "${PATH_TO[publish]}/ansible"
+#    load.whitelist.ansible   # call, no ()
 #
-#   load.whitelist.ansible
+#    local -a rsync_includes=()
+#    local playbook
+#    for playbook in "${PKGS_ANSIBLE[@]}"; do
+#      rsync_includes+=( "--include=${playbook}" )
+#    done
 #
-#   # PKGS[ansible] is a space-separated list of playbooks
-#   for playbook in ${PKGS[ansible]}; do
-#     rsync_includes+=( "--include=${playbook}" )
-#   done
+#    log.info "[www.pages] whitelist entries: ${PKGS_ANSIBLE[*]}"
 #
-#   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
-#
-#   rsync -av \
-#     "${rsync_includes[@]}" \
-#     --exclude='*' \
-#     ansible/ "${PATH_TO[publish]}/ansible/"
-# }
+#    rsync -av \
+#      --include='*/' \
+#      "${rsync_includes[@]}" \
+#      --exclude='*' \
+#      ansible/ "${PATH_TO[publish]}/ansible/"
+#  }
+
+
 
 # -------------------------
 # Main runner
