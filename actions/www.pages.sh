@@ -58,26 +58,19 @@ log.error() {
 
 load.whitelist.ansible() {
   local file="${WHITELIST[ansible]}"
+  [[ -f "${file}" ]] || { log.error "${ERROR[whitelist]}"; exit 1; }
 
-  if [[ ! -f "${file}" ]]; then
-    log.error "${ERROR[whitelist]}"
-    exit 1
-  fi
+  # Read non-comment, non-blank lines into a temp array
+  mapfile -t _ansible_items < <(
+    sed 's/[[:space:]]*$//' "${file}" | grep -vE '^[[:space:]]*(#|$)'
+  )
 
-  local items=()
-  local line
-  while IFS= read -r line; do
-    [[ -z "${line}" ]] && continue                # skip blanks
-    [[ "${line}" =~ ^[[:space:]]*# ]] && continue # skip comments
-    items+=( "${line}" )
-  done < "${file}"
-
-  if ((${#items[@]} == 0)); then
+  if ((${#_ansible_items[@]} == 0)); then
     log.error "[www.pages] ERROR[whitelist]: ansible whitelist is empty"
     exit 1
   fi
 
-  PKGS[ansible]="${items[*]}"  # space-separated
+  PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, as before
 }
 
 # load.whitelist.ansible() {
