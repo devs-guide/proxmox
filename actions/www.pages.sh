@@ -109,9 +109,9 @@ publish.ansible() {
   log.info "[www.pages] syncing ansible whitelist"
   mkdir -p "${PATH_TO[publish]}/ansible"
 
-  load.whitelist.ansible
+  load.whitelist.ansible()
 
-  local rsync_includes=()
+  # maybe: local rsync_includes=( "--include=whitelist.txt" )
   local playbook
 
   # PKGS[ansible] is a space-separated list of playbooks

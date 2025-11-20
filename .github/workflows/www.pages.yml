@@ -34,9 +34,7 @@ jobs:
           fetch-depth: 0
           
       - name: Install rsync
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rsync
+        run: sudo apt-get install -y rsync
 
       - name: Build static/ tree for GitHub Pages
         env:
