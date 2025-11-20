@@ -1,0 +1,47 @@
+# .github/workflows/www.pages.yml
+
+name: Publish static assets to www (GitHub Pages)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'bootstrap/**'
+      - 'ansible/**'
+      - 'docs/**'
+      - 'www/**'
+      - 'actions/www.pages.sh'
+      - '.github/workflows/www.pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to push to www
+
+concurrency:
+  group: www-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-www:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # preserve full history, as in the original workflow
+          fetch-depth: 0
+
+      - name: Build static/ tree for GitHub Pages
+        env:
+          PUBLISH_DIR: static       # optional; defaults to "static" anyway
+        run: ./actions/www.pages.sh
+
+      - name: Deploy static/ to www branch (GitHub Pages)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./static
+          publish_branch: www
+          force_orphan: true

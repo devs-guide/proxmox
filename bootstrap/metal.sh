@@ -1,8 +1,114 @@
 #!/usr/bin/env bash
-## Main bootstrap entry for bare-metal Debian
+## Bootstrap: bare-metal Debian (devs.guide/proxmox)
+## Responsibility:
+##   - system.ensure.root
+##   - system.ensure.apt
+##   - install.ansible
+##   - fetch.playbook
+##   - run.playbook
+##
+## Everything else lives in: repo-root/ansible
 
 set -euo pipefail
 
-# Resolve repo root and helper dir
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANSIBLE_DIR="${ROOT_DIR}/ansible"
+declare -A GITHUB
+declare -A PLAYBOOK
+declare -A MSG
+
+# --- GitHub metadata ---
+GITHUB[user]='devs-guide'
+GITHUB[repo]='proxmox'
+GITHUB[url]="https://${GITHUB[user]}.github.io/${GITHUB[repo]}"
+
+# --- Playbook metadata ---
+PLAYBOOK[name]="${PLAYBOOK_NAME:-metal.playbook.yml}"
+PLAYBOOK[url]="${GITHUB[url]}/ansible/${PLAYBOOK[name]}"
+PLAYBOOK[path]="/tmp/${PLAYBOOK[name]}"
+
+# --- Messages ---
+MSG[fail]=$(cat <<EOF
+[metal]: Please log in as root, then run:
+
+  wget -qO- ${GITHUB[url]}/metal.sh | bash
+
+Example (if you have the root password):
+
+  su -
+  wget -qO- ${GITHUB[url]}/metal.sh | bash
+
+EOF
+)
+
+MSG[success]="[metal]: Bootstrap finished successfully."
+MSG[fatal]="[metal]: Fatal error encountered"
+
+# --- Logging helpers ---
+log.info()   { printf '[metal] %s\n' "$*" >&2; }
+log.error()  { printf '[metal][error] %s\n' "$*" >&2; }
+log.error.fatal() { printf '%s\n' "${MSG[fatal]}" >&2; }
+
+# --- Error handler ---
+error.exit() {
+  local msg="$1"
+  log.error.fatal
+  printf "%s\n" "$msg" >&2
+  exit 1
+}
+
+# --- System checks ---
+system.ensure.root() {
+  if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    return
+  fi
+  error.exit "${MSG[fail]}"
+}
+
+system.ensure.apt() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    error.exit "[metal] apt-get not found; this bootstrap expects a Debian/Ubuntu-style system."
+  fi
+}
+
+# --- Install ansible-core ---
+install.ansible() {
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    log.info "Ansible already installed: $(ansible-playbook --version | head -n1)"
+    return
+  fi
+
+  log.info "Installing ansible-core via apt..."
+  export DEBIAN_FRONTEND=noninteractive
+
+  apt-get update
+  apt-get install -y --no-install-recommends \
+    ansible-core \
+    python3-apt
+
+  log.info "Ansible installed: $(ansible-playbook --version | head -n1)"
+}
+
+# --- Playbook actions ---
+fetch.playbook() {
+  log.info "Fetching playbook from: ${PLAYBOOK[url]}"
+  wget -qO "${PLAYBOOK[path]}" "${PLAYBOOK[url]}"
+  log.info "Playbook saved to: ${PLAYBOOK[path]}"
+}
+
+run.playbook() {
+  log.info "Running Ansible playbook against localhost..."
+  ansible-playbook -i localhost, -c local "${PLAYBOOK[path]}"
+  log.info "Ansible playbook run completed."
+}
+
+# --- Setup runner ---
+run.setup() {
+  log.info "[metal]: Starting bootstrap..."
+  system.ensure.root
+  system.ensure.apt
+  install.ansible
+  fetch.playbook
+  run.playbook
+  log.info "${MSG[success]}"
+}
+
+run.setup "$@"
