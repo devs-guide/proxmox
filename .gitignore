@@ -1,0 +1,23 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon file for custom folder icons
+Icon
+
+# Thumbnails
+._*
+
+# Spotlight search index
+.Spotlight-V100
+
+# Time Machine backups
+.Trashes
+
+# Volume settings
+.VolumeIcon.icns
+
+# Metadata files
+.fseventsd
+
