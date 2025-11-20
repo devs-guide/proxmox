@@ -122,8 +122,10 @@ run.playbook() {
 
 run.playlist() {
   while IFS= read -r line; do
+    # normalize line endings / trim trailing whitespace
+    line="${line%%$'\r'}"
+    line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
     [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
-    # only run playbooks
     [[ "${line}" != *.yml ]] && continue
 
     PLAYBOOK[name]="${line}"
