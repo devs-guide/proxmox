@@ -1,5 +1,5 @@
 ---
-- name: Bootstrap step 01 — apt update/upgrade sanity check
+- name: "[debian]: update, upgrade, sanity check"
   hosts: localhost
   connection: local
   gather_facts: false        # keep this as light as possible
@@ -9,7 +9,7 @@
     apt_cache_valid_time: 0  # always refresh; this is the initial run
 
   tasks:
-    - name: Update apt cache
+    - name: "[debian]: update apt cache"
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: "{{ apt_cache_valid_time }}"
@@ -18,7 +18,7 @@
       ansible.builtin.apt:
         upgrade: safe
 
-    - name: Confirm apt bootstrap completed
+    - name: "[bootstrap]: sanity check"
       ansible.builtin.debug:
         msg:
           - "Apt bootstrap complete."

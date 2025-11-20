@@ -12,21 +12,22 @@ declare -A WHITELIST
 declare -A PKGS
 
 # --- Resolve repo root (script lives in ./actions/) ---
-PATH_TO[script]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATH_TO[root]="$(cd "${PATH_TO[script]}/.." && pwd)"
+PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATH_TO[root]="$(cd "${PATH_TO[scripts]}/.." && pwd)"
 cd "${PATH_TO[root]}"
+
 
 # --- Publish directory (overrideable from env: DIR_PUBLISH / PUBLISH_DIR) ---
 PATH_TO[publish]="${DIR_PUBLISH:-${PUBLISH_DIR:-static}}"
 
-# --- Whitelist config (file-based) ---
-WHITELIST[ansible]="ansible/whitelist.txt"
+# --- Whitelist config (file-based; anchored at repo root) ---
+WHITELIST[ansible]="${PATH_TO[root]}/ansible/whitelist.txt"
 
 # --- Messages ---
 MSG[start]="[www.pages] repo root: ${PATH_TO[root]}"
 MSG[build]="[www.pages] building into: ${PATH_TO[publish]}"
 MSG[done]="[www.pages] done"
-MSG[warn]="[www.pages] WARNING: www/ directory not found; skipping landing HTML"
+MSG[warn_www]="[www.pages] WARNING: www/ directory not found; skipping landing HTML"
 
 # --- Errors (style: ERROR[...]) ---
 ERROR[bootstrap]="[www.pages] ERROR[bootstrap]: bootstrap/metal.sh not found"
@@ -66,10 +67,8 @@ load.whitelist.ansible() {
   local line
 
   while IFS= read -r line; do
-    # skip blanks
-    [[ -z "${line}" ]] && continue
-    # skip comments (leading whitespace + #)
-    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line}" ]] && continue                    # skip blanks
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue     # skip comments
     items+=("${line}")
   done < "${file}"
 
@@ -86,12 +85,13 @@ publish.prepare() {
   mkdir -p "${PATH_TO[publish]}"
 }
 
+
 publish.www() {
   if [[ -d "www" ]]; then
     log.info "[www.pages] copying ./www -> ${PATH_TO[publish]}"
     rsync -av www/ "${PATH_TO[publish]}/"
   else
-    log.warn "${MSG[warn]}"
+    log.warn "${MSG[warn_www]}"
   fi
 }
 
@@ -116,7 +116,7 @@ publish.ansible() {
 
   # PKGS[ansible] is a space-separated list of playbooks
   for playbook in ${PKGS[ansible]}; do
-    rsync_includes+=(--include="${playbook}")
+    rsync_includes+=( "--include=${playbook}" )
   done
 
   rsync -av \
