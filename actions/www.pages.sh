@@ -107,12 +107,12 @@ publish.bootstrap() {
 
 publish.ansible() {
   log.info "[www.pages] syncing ansible whitelist"
+  local rsync_includes=() # declare the includes container
+  local playbook
+  
   mkdir -p "${PATH_TO[publish]}/ansible"
 
   load.whitelist.ansible
-
-  local rsync_includes=( "--include=whitelist.txt" )
-  local playbook
 
   # PKGS[ansible] is a space-separated list of playbooks
   for playbook in ${PKGS[ansible]}; do
