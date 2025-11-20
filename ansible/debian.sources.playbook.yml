@@ -1,0 +1,42 @@
+  ---
+  - name: "[debian]: secure apt sources"
+    hosts: all
+    become: true
+    vars:
+      debian_release: "{{ ansible_facts.distribution_release | default('bookworm') }}"
+      debian_components: "main contrib non-free-firmware"
+
+    tasks:
+      - name: Enforce Debian mirrors with security and backports
+        copy:
+          dest: /etc/apt/sources.list
+          mode: "0644"
+          content: |
+            deb http://deb.debian.org/debian {{ debian_release }} {{ debian_components }}
+            deb-src http://deb.debian.org/debian {{ debian_release }} {{ debian_components }}
+            deb http://security.debian.org/debian-security {{ debian_release }}-security {{ debian_components }}
+            deb-src http://security.debian.org/debian-security {{ debian_release }}-security
+  {{ debian_components }}
+            deb http://deb.debian.org/debian {{ debian_release }}-updates {{ debian_components }}
+            deb-src http://deb.debian.org/debian {{ debian_release }}-updates {{ debian_components }}
+            deb http://deb.debian.org/debian {{ debian_release }}-backports {{ debian_components }}
+            deb-src http://deb.debian.org/debian {{ debian_release }}-backports {{ debian_components }}
+
+      - name: Remove Proxmox enterprise repo if present
+        file:
+          path: /etc/apt/sources.list.d/pve-enterprise.list
+          state: absent
+
+      - name: Remove Ceph enterprise repo if present
+        file:
+          path: /etc/apt/sources.list.d/ceph.list
+          state: absent
+
+      - name: Drop Ceph enterprise key if present
+        file:
+          path: /etc/apt/trusted.gpg.d/ceph.release.gpg
+          state: absent
+
+      - name: Refresh apt cache
+        apt:
+          update_cache: true

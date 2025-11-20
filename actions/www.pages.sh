@@ -70,22 +70,8 @@ load.whitelist.ansible() {
     exit 1
   fi
 
-  PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, as before
+  PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, of playbook files
 }
-
-# load.whitelist.ansible() {
-#    local file="${WHITELIST[ansible]}"
-#    [[ -f "${file}" ]] || { log.error "${ERROR[whitelist]}"; exit 1; }
-#
-#    mapfile -t PKGS_ANSIBLE < <(grep -vE '^[[:space:]]*(#|$)' "${file}")
-#
-#    if ((${#PKGS_ANSIBLE[@]} == 0)); then
-#      log.error "[www.pages] ERROR[whitelist]: ansible whitelist is empty"
-#      exit 1
-#    fi
-#  }
-
-
 
 # -------------------------
 # Helpers
@@ -120,9 +106,9 @@ publish.ansible() {
   log.info "[www.pages] syncing ansible whitelist"
   mkdir -p "${PATH_TO[publish]}/ansible"
 
-  load.whitelist.ansible
+  load.whitelist.ansible   # populates PKGS[ansible]
 
-  local rsync_includes=()
+  local rsync_includes=("--include=whitelist.txt") # (metal.sh) list of playbooks to run after bootstrap 
   local playbook
   for playbook in ${PKGS[ansible]}; do
     rsync_includes+=( "--include=${playbook}" )
@@ -131,33 +117,11 @@ publish.ansible() {
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
 
   rsync -av \
-    --include='*/' \        # descend into ansible/
+    --include='*/' \
     "${rsync_includes[@]}" \
     --exclude='*' \
     ansible/ "${PATH_TO[publish]}/ansible/"
 }
-
-# publish.ansible() {
-#    log.info "[www.pages] syncing ansible whitelist"
-#    mkdir -p "${PATH_TO[publish]}/ansible"
-#
-#    load.whitelist.ansible   # call, no ()
-#
-#    local -a rsync_includes=()
-#    local playbook
-#    for playbook in "${PKGS_ANSIBLE[@]}"; do
-#      rsync_includes+=( "--include=${playbook}" )
-#    done
-#
-#    log.info "[www.pages] whitelist entries: ${PKGS_ANSIBLE[*]}"
-#
-#    rsync -av \
-#      --include='*/' \
-#      "${rsync_includes[@]}" \
-#      --exclude='*' \
-#      ansible/ "${PATH_TO[publish]}/ansible/"
-#  }
-
 
 
 # -------------------------

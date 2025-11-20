@@ -1,3 +1,4 @@
 # ansible playbooks to publish via GitHub Pages
 # one playbook per line
 metal.playbook.yml
+debian.sources.playbook.yml

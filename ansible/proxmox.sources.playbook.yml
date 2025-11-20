@@ -1,0 +1,28 @@
+  ---
+  - name: "[proxmox]: update sources"
+    hosts: all
+    become: true
+    vars:
+      debian_release: "{{ ansible_facts.distribution_release | default('bookworm') }}"
+      debian_components: "main contrib non-free-firmware"
+
+    tasks:
+		
+      - name: Remove Proxmox enterprise repo if present
+        file:
+          path: /etc/apt/sources.list.d/pve-enterprise.list
+          state: absent
+
+      - name: Remove Ceph enterprise repo if present
+        file:
+          path: /etc/apt/sources.list.d/ceph.list
+          state: absent
+
+      - name: Drop Ceph enterprise key if present
+        file:
+          path: /etc/apt/trusted.gpg.d/ceph.release.gpg
+          state: absent
+
+      - name: Refresh apt cache
+        apt:
+          update_cache: true
