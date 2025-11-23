@@ -24,7 +24,7 @@ cd "${PATH_TO[root]}"
 PATH_TO[publish]="${DIR_PUBLISH:-${PUBLISH_DIR:-static}}"
 
 # --- Whitelist config (file-based; anchored at repo root) ---
-WHITELIST[ansible]="${PATH_TO[root]}/ansible/${PLAYBOOKS}.txt"
+WHITELIST[ansible]="${PATH_TO[root]}/ansible/${PLAYBOOKS}"
 
 # --- Messages ---
 MSG[start]="[www.pages] repo root: ${PATH_TO[root]}"
