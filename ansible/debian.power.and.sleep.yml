@@ -37,6 +37,9 @@
       ansible.builtin.package_facts:
         manager: apt
 
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
     - name: Configure system sleep policies
       ansible.builtin.blockinfile:
         path: "{{ sleep_conf_path }}"
@@ -99,6 +102,8 @@
       when:
         - cpupower_enable
         - "'linux-cpupower' in ansible_facts.packages"
+        - ansible_facts.services is defined
+        - "'cpupower.service' in ansible_facts.services or 'cpupower' in ansible_facts.services"
 
     - name: Disable USB autosuspend (modprobe)
       ansible.builtin.copy:
