@@ -1,6 +1,6 @@
 ---
 - name: Install Debian packages (grouped, user-tunable)
-  hosts: debian_hosts
+  hosts: all
   become: true
   vars:
     # Path to canonical package catalog
