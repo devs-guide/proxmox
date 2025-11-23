@@ -3,8 +3,9 @@
   hosts: all
   become: true
   vars:
-    # Path to canonical package catalog
-    package_catalog_file: "{{ playbook_dir }}/debian.packages.yml"
+    # Path to canonical package catalog (local) and remote fallback
+    package_catalog_file: "{{ playbook_dir }}/{{ package_catalog_filename | default('debian.packages.yml') }}"
+    package_catalog_url: "{{ package_catalog_url | default('https://devs-guide.github.io/proxmox/ansible/debian.packages.yml') }}"
 
     # Enable/disable specific groups; defaults come from default_disabled_groups
     package_group_overrides: {}  # e.g., { security: false, desktop_rdp_optional: true }
@@ -19,6 +20,18 @@
     apt_cache_valid_time: 86400
 
   pre_tasks:
+    - name: Ensure package catalog exists alongside playbook
+      ansible.builtin.stat:
+        path: "{{ package_catalog_file }}"
+      register: pkg_catalog
+
+    - name: Download package catalog if missing
+      ansible.builtin.get_url:
+        url: "{{ package_catalog_url }}"
+        dest: "{{ package_catalog_file }}"
+        mode: "0644"
+      when: not pkg_catalog.stat.exists
+
     - name: Load canonical Debian package catalog
       ansible.builtin.set_fact:
         package_catalog: "{{ lookup('file', package_catalog_file) | from_yaml }}"

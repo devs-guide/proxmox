@@ -111,7 +111,12 @@ publish.ansible() {
 
   load.whitelist.ansible   # populates PKGS[ansible]
 
-  local rsync_includes=("--include=${PLAYBOOKS}") # (metal.sh) list of playbooks to run after bootstrap 
+  local rsync_includes=(
+    "--include=${PLAYBOOKS}"          # playlist file
+    "--include=config.github.yml"     # shared config consumed by bootstrap
+    "--include=group_vars/"           # shared vars directory
+    "--include=group_vars/all.yml"    # global vars for playbooks
+  )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
     rsync_includes+=( "--include=${playbook_to_run}" )
