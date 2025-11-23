@@ -1,0 +1,78 @@
+---
+- name: "[debian]: baseline SSH and firewall networking"
+  hosts: all
+  become: true
+  vars:
+    # Allow per-play overrides; fallback to group_vars defaults
+    network_overrides: {}
+    network_config: "{{ (network_defaults | default({})) | combine(network_overrides | default({}), recursive=True) }}"
+
+  pre_tasks:
+    - name: Assert Debian family
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == "Debian"
+        fail_msg: "This playbook is intended for Debian-family hosts."
+
+    - name: Validate required networking defaults are present
+      ansible.builtin.assert:
+        that:
+          - network_config.ssh_port is defined
+          - network_config.allowed_users is defined
+          - network_config.allow_subnets is defined
+          - network_config.allow_subnets | length > 0
+          - (not (network_config.allow_rdp | default(false) | bool)) or (network_config.rdp_port is defined)
+        fail_msg: "network_config is missing required keys (ssh_port, allowed_users, allow_subnets)"
+
+  tasks:
+    - name: Configure SSH port
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^Port '
+        line: "Port {{ network_config.ssh_port }}"
+        state: present
+        create: false
+        backrefs: false
+
+    - name: Configure SSH AllowUsers
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowUsers '
+        line: "AllowUsers {{ network_config.allowed_users | join(' ') }}"
+        state: present
+        create: false
+        backrefs: false
+
+    - name: Reload sshd if config changed
+      ansible.builtin.service:
+        name: sshd
+        state: reloaded
+      when: ansible_facts.services is not defined or 'sshd' in ansible_facts.services
+
+    - name: Ensure UFW is installed
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    - name: Allow SSH from permitted subnets
+      ansible.builtin.ufw:
+        rule: allow
+        port: "{{ network_config.ssh_port }}"
+        proto: tcp
+        src: "{{ item }}"
+      loop: "{{ network_config.allow_subnets }}"
+
+    - name: Allow RDP from permitted subnets (if enabled)
+      ansible.builtin.ufw:
+        rule: allow
+        port: "{{ network_config.rdp_port }}"
+        proto: tcp
+        src: "{{ item }}"
+      loop: "{{ network_config.allow_subnets }}"
+      when: network_config.allow_rdp | bool
+
+    - name: Ensure UFW is enabled with logging (low)
+      ansible.builtin.ufw:
+        state: enabled
+        logging: low

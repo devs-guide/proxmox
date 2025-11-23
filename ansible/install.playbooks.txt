@@ -4,3 +4,4 @@ bootstrap.yml
 debian.sources.yml
 debian.install.packages.yml
 debian.power.and.sleep.yml
+debian.network.yml
