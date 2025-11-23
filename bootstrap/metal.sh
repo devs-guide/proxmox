@@ -15,7 +15,6 @@ declare -A GITHUB
 declare -A PLAYBOOK
 declare -A PLAYLIST
 declare -A GROUPVARS
-declare -A CONFIG
 declare -A MSG
 
 # --- GitHub metadata ---
@@ -39,10 +38,6 @@ GROUPVARS[file]="all.yml"
 GROUPVARS[url]="${GITHUB[url]}/ansible/group_vars/${GROUPVARS[file]}"
 GROUPVARS[path]="${GROUPVARS[dir]}/${GROUPVARS[file]}"
 
-# Custom published config (mirrors group_vars/all.yml content)
-CONFIG[file]="config.github.yml"
-CONFIG[url]="${GITHUB[url]}/ansible/${CONFIG[file]}"
-CONFIG[path]="/tmp/${CONFIG[file]}"
 
 
 # --- Messages ---
@@ -119,20 +114,11 @@ fetch.groupvars() {
   log.info "Fetching global group_vars from: ${GROUPVARS[url]}"
   mkdir -p "${GROUPVARS[dir]}"
   if ! wget -qO "${GROUPVARS[path]}" "${GROUPVARS[url]}"; then
-    log.warn "[metal] group_vars not fetched from ${GROUPVARS[url]} (will rely on config.github.yml)"
+    log.warn "[metal] group_vars not fetched from ${GROUPVARS[url]}"
   fi
   if [[ -s "${GROUPVARS[path]}" ]]; then
     return
   fi
-
-  log.info "[metal] attempting to fetch config file as group_vars fallback: ${CONFIG[url]}"
-  if ! wget -qO "${CONFIG[path]}" "${CONFIG[url]}"; then
-    error.exit "[metal] unable to download group_vars or config: ${GROUPVARS[url]} / ${CONFIG[url]}"
-  fi
-  if [[ ! -s "${CONFIG[path]}" ]]; then
-    error.exit "[metal] config file is missing or empty: ${CONFIG[url]}"
-  fi
-  cp "${CONFIG[path]}" "${GROUPVARS[path]}"
 }
 
 fetch.playlist() {
