@@ -2,4 +2,4 @@
 # one playbook per line - order of playbooks matters: sequential!
 bootstrap.yml
 debian.sources.yml
-debian.install.sources.yml
+debian.install.packages.yml
