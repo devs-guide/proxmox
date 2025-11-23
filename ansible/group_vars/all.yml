@@ -15,6 +15,10 @@ package_catalog_filename: "debian.packages.yml"
 # Resolved URLs for common artifacts
 package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_catalog_filename }}"
 
+# Apt cache policy (defaults; override per-play as needed)
+apt_cache_valid_time: 86400   # 1 day
+apt_skip_cache_refresh: true  # set to false, when not debuging playlists
+
 # Networking defaults (can be overridden per host/group)
 network_defaults:
   allowed_users:

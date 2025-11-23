@@ -1,6 +1,6 @@
 ---
 - name: Disable suspend/hibernate and idle actions on Debian
-  hosts: debian_hosts
+  hosts: all
   become: true
   vars:
     sleep_conf_path: /etc/systemd/sleep.conf
@@ -38,29 +38,33 @@
         manager: apt
 
     - name: Configure system sleep policies
-      ansible.builtin.ini_file:
+      ansible.builtin.blockinfile:
         path: "{{ sleep_conf_path }}"
-        section: Sleep
-        option: "{{ item.option }}"
-        value: "{{ item.value }}"
         owner: root
         group: root
         mode: "0644"
-        no_extra_spaces: true
-      loop: "{{ sleep_settings }}"
+        create: true
+        marker: "# {mark} ANSIBLE MANAGED SLEEP"
+        block: |
+          [Sleep]
+          {% for item in sleep_settings -%}
+          {{ item.option }}={{ item.value }}
+          {% endfor %}
       notify: Reload systemd daemon
 
     - name: Configure logind idle action
-      ansible.builtin.ini_file:
+      ansible.builtin.blockinfile:
         path: "{{ logind_conf_path }}"
-        section: Login
-        option: "{{ item.option }}"
-        value: "{{ item.value }}"
         owner: root
         group: root
         mode: "0644"
-        no_extra_spaces: true
-      loop: "{{ logind_settings }}"
+        create: true
+        marker: "# {mark} ANSIBLE MANAGED LOGIN"
+        block: |
+          [Login]
+          {% for item in logind_settings -%}
+          {{ item.option }}={{ item.value }}
+          {% endfor %}
       notify:
         - Reload systemd daemon
         - Restart systemd-logind
