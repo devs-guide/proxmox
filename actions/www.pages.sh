@@ -116,6 +116,7 @@ publish.ansible() {
     "--include=config.github.yml"     # shared config consumed by bootstrap
     "--include=group_vars/"           # shared vars directory
     "--include=group_vars/all.yml"    # global vars for playbooks
+    "--include=debian.packages.yml"   # package catalog used by playbooks
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do

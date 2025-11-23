@@ -5,7 +5,7 @@
   vars:
     # Path to canonical package catalog (local) and remote fallback
     package_catalog_file: "{{ playbook_dir }}/{{ package_catalog_filename | default('debian.packages.yml') }}"
-    package_catalog_url: "{{ package_catalog_url | default('https://devs-guide.github.io/proxmox/ansible/debian.packages.yml') }}"
+    package_catalog_url_effective: "{{ package_catalog_url | default(pages_base_url ~ '/' ~ pages_ansible_dir ~ '/' ~ package_catalog_filename) }}"
 
     # Enable/disable specific groups; defaults come from default_disabled_groups
     package_group_overrides: {}  # e.g., { security: false, desktop_rdp_optional: true }
@@ -27,7 +27,7 @@
 
     - name: Download package catalog if missing
       ansible.builtin.get_url:
-        url: "{{ package_catalog_url }}"
+        url: "{{ package_catalog_url_effective }}"
         dest: "{{ package_catalog_file }}"
         mode: "0644"
       when: not pkg_catalog.stat.exists
