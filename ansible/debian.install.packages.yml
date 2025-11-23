@@ -1,0 +1,41 @@
+---
+- name: Install Debian packages (grouped, user-tunable)
+  hosts: debian_hosts
+  become: true
+  vars:
+    # Path to canonical package catalog
+    package_catalog_file: "{{ playbook_dir }}/debian.packages.yml"
+
+    # Enable/disable specific groups; defaults come from default_disabled_groups
+    package_group_overrides: {}  # e.g., { security: false, desktop_rdp_optional: true }
+
+    # Groups that are disabled by default but can be opted into via overrides
+    default_disabled_groups:
+      - desktop_rdp_optional
+
+    # Optional: drop specific packages globally without editing the catalog
+    exclude_packages: []   # e.g., [ "mailutils", "task-lxde-desktop" ]
+
+    apt_cache_valid_time: 86400
+
+  pre_tasks:
+    - name: Load canonical Debian package catalog
+      ansible.builtin.set_fact:
+        package_catalog: "{{ lookup('file', package_catalog_file) | from_yaml }}"
+
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: "{{ apt_cache_valid_time }}"
+
+  tasks:
+    - name: Install package groups (honor enabled/override flags and exclude list)
+      ansible.builtin.apt:
+        name: "{{ item.value.packages | difference(exclude_packages) }}"
+        state: present
+      loop: "{{ package_catalog.groups | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when:
+        - item.value.packages | default([]) | difference(exclude_packages) | length > 0
+        - package_group_overrides.get(item.key, item.key not in default_disabled_groups)

@@ -27,7 +27,7 @@ PLAYBOOK[url]=''
 PLAYBOOK[path]=''
 
 # --- Playlist (whitelist) metadata ---
-PLAYLIST[name]='whitelist.txt'
+PLAYLIST[name]='install.playbooks.txt'
 PLAYLIST[url]="${GITHUB[url]}/ansible/${PLAYLIST[name]}"
 PLAYLIST[path]="/tmp/${PLAYLIST[name]}"
 
@@ -47,8 +47,8 @@ Example (if you have the root password):
 EOF
 )
 
-MSG[success]="[metal]: Bootstrap finished successfully."
-MSG[fatal]="[metal]: Fatal error encountered"
+MSG[success]="Bootstrap finished successfully."
+MSG[fatal]="Fatal error encountered"
 
 # --- Logging helpers ---
 log.info()   { printf '[metal] %s\n' "$*" >&2; }
@@ -73,7 +73,7 @@ system.ensure.root() {
 
 system.ensure.apt() {
   if ! command -v apt-get >/dev/null 2>&1; then
-    error.exit "[metal] apt-get not found; this bootstrap expects a Debian/Ubuntu-style system."
+    error.exit "apt-get not found; this bootstrap expects a Debian/Ubuntu-style system."
   fi
 }
 

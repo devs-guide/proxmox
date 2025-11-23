@@ -11,6 +11,9 @@ declare -A ERROR
 declare -A WHITELIST
 declare -A PKGS
 
+# --- Playlist (Of Playbooks) File Name:
+PLAYBOOKS="install.playbooks.txt" 
+
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATH_TO[root]="$(cd "${PATH_TO[scripts]}/.." && pwd)"
@@ -21,7 +24,7 @@ cd "${PATH_TO[root]}"
 PATH_TO[publish]="${DIR_PUBLISH:-${PUBLISH_DIR:-static}}"
 
 # --- Whitelist config (file-based; anchored at repo root) ---
-WHITELIST[ansible]="${PATH_TO[root]}/ansible/whitelist.txt"
+WHITELIST[ansible]="${PATH_TO[root]}/ansible/${PLAYBOOKS}.txt"
 
 # --- Messages ---
 MSG[start]="[www.pages] repo root: ${PATH_TO[root]}"
@@ -52,7 +55,7 @@ log.error() {
 # -------------------------
 # Whitelist loader
 # -------------------------
-# Reads ansible/whitelist.txt and stores non-empty, non-comment
+# Reads ansible/${PLAYBOOKS} and stores non-empty, non-comment
 # entries in PKGS[ansible] as a space-separated list.
 
 
@@ -108,10 +111,10 @@ publish.ansible() {
 
   load.whitelist.ansible   # populates PKGS[ansible]
 
-  local rsync_includes=("--include=whitelist.txt") # (metal.sh) list of playbooks to run after bootstrap 
-  local playbook
-  for playbook in ${PKGS[ansible]}; do
-    rsync_includes+=( "--include=${playbook}" )
+  local rsync_includes=("--include=${PLAYBOOKS}") # (metal.sh) list of playbooks to run after bootstrap 
+  local playbook_to_run
+  for playbook_to_run in ${PKGS[ansible]}; do
+    rsync_includes+=( "--include=${playbook_to_run}" )
   done
 
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
