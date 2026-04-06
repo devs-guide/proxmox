@@ -1,13 +1,13 @@
 # Proxmox VE 6.4 (Buster) archived playlist
 # Order matters
-sources.yml
+debian/sources.buster.yml
 bootstrap.yml
 packages.yml
 node.yml
-../debian/users.yml
-../debian/network.yml
-../debian/security.yml
-../debian/sysctl.yml
-../debian/power.yml
-../debian/logging.yml
-../debian/performance.yml
+debian/users.yml
+debian/network.yml
+debian/security.yml
+debian/sysctl.yml
+debian/power.yml
+debian/logging.yml
+debian/performance.yml
