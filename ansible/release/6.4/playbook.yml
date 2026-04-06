@@ -30,6 +30,11 @@
       args:
         creates: "{{ ansible_venv }}/bin/activate"
 
+    - name: Upgrade pip tooling in venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade pip setuptools wheel"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
     - name: Install Ansible 2.9 into venv
       command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
       environment:
