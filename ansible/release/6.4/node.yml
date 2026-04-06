@@ -41,6 +41,7 @@
           nvm install "{{ node_version }}"
         fi
         nvm alias default "{{ node_version }}"
+        nvm use default
       changed_when: true
 
     - name: Ensure nvm profile hook is available
@@ -51,3 +52,26 @@
           export NVM_DIR="{{ nvm_dir }}"
           [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
           [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+    - name: Ensure root bashrc sources nvm
+      lineinfile:
+        path: /root/.bashrc
+        create: yes
+        line: '[ -s /etc/profile.d/nvm.sh ] && . /etc/profile.d/nvm.sh'
+        state: present
+
+    - name: Symlink node and npm for non-login shells
+      shell: |
+        set -e
+        export NVM_DIR="{{ nvm_dir }}"
+        . "{{ nvm_dir }}/nvm.sh"
+        node_path="$(nvm which default || true)"
+        npm_path="$(dirname "$node_path")/npm"
+        if [ -x "$node_path" ]; then
+          ln -sf "$node_path" /usr/local/bin/node
+        fi
+        if [ -x "$npm_path" ]; then
+          ln -sf "$npm_path" /usr/local/bin/npm
+        fi
+      args:
+        warn: false
