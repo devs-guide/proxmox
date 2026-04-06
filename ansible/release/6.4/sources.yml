@@ -1,0 +1,46 @@
+---
+- name: "[pve-6.4]: archive sources"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    debian_components: "main contrib non-free"
+
+  tasks:
+    - name: Set Debian Buster archive sources
+      copy:
+        dest: /etc/apt/sources.list
+        mode: "0644"
+        content: |
+          deb http://archive.debian.org/debian buster {{ debian_components }}
+          deb-src http://archive.debian.org/debian buster {{ debian_components }}
+          deb http://archive.debian.org/debian-security buster/updates {{ debian_components }}
+          deb-src http://archive.debian.org/debian-security buster/updates {{ debian_components }}
+
+    - name: Allow expired metadata for archived suites
+      copy:
+        dest: /etc/apt/apt.conf.d/99-archive-buster
+        mode: "0644"
+        content: |
+          Acquire::Check-Valid-Until "false";
+          Acquire::AllowInsecureRepositories "true";
+
+    - name: Remove Proxmox enterprise repo if present
+      file:
+        path: /etc/apt/sources.list.d/pve-enterprise.list
+        state: absent
+
+    - name: Configure Proxmox archive no-subscription repo
+      copy:
+        dest: /etc/apt/sources.list.d/pve-no-subscription.list
+        mode: "0644"
+        content: |
+          deb http://archive.proxmox.com/debian/pve buster pve-no-subscription
+
+    - name: Refresh apt cache (allow unauth for archives)
+      apt:
+        update_cache: true
+        allow_unauthenticated: true
+        cache_valid_time: 0

@@ -1,0 +1,7 @@
+# Release-specific GitHub Pages config for 6.4 assets
+# Inherits repo_owner/repo_name from top-level group_vars/all.yml
+pages_base_url: "https://{{ repo_owner }}.github.io/{{ repo_name }}"
+pages_ansible_dir: "ansible/release/6.4"
+playlist_filename: "install.playbooks.txt"
+package_catalog_filename: "debian.packages.yml"
+package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_catalog_filename }}"

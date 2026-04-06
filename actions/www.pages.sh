@@ -12,7 +12,7 @@ declare -A WHITELIST
 declare -A PKGS
 
 # --- Playlist (Of Playbooks) File Name:
-PLAYBOOKS="install.playbooks.txt" 
+PLAYBOOKS="debian/install.playbooks.txt"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -129,7 +129,7 @@ publish.ansible() {
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
-    rsync_includes+=( "--include=${playbook_to_run}" )
+    rsync_includes+=( "--include=debian/${playbook_to_run}" )
   done
 
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
@@ -139,6 +139,15 @@ publish.ansible() {
     "${rsync_includes[@]}" \
     --exclude='*' \
     ansible/ "${PATH_TO[publish]}/ansible/"
+}
+
+publish.ansible.release64() {
+  if [[ -d "ansible/release/6.4" ]]; then
+    log.info "[www.pages] syncing ansible release/6.4"
+    rsync -av ansible/release/6.4/ "${PATH_TO[publish]}/ansible/release/6.4/"
+  else
+    log.warn "[www.pages] ansible/release/6.4 not found; skipping"
+  fi
 }
 
 
@@ -155,6 +164,7 @@ run.pages() {
   publish.bootstrap
   publish.proxmox64
   publish.ansible
+  publish.ansible.release64
 
   log.info "${MSG[done]}"
 }

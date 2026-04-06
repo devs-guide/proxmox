@@ -1,0 +1,6 @@
+# Release-specific settings for Proxmox 6.4
+# Inherits repo_owner/repo_name/pages_base_url/etc from top-level group_vars/all.yml
+pages_ansible_dir: "ansible/release/6.4"
+# Derived catalog URL for this release (optional override)
+package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_catalog_filename }}"
+apt_cache_valid_time: 0

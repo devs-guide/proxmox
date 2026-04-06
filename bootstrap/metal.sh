@@ -28,9 +28,9 @@ PLAYBOOK[url]=''
 PLAYBOOK[path]=''
 
 # --- Playlist (whitelist) metadata ---
-PLAYLIST[name]='install.playbooks.txt'
+PLAYLIST[name]='debian/install.playbooks.txt'
 PLAYLIST[url]="${GITHUB[url]}/ansible/${PLAYLIST[name]}"
-PLAYLIST[path]="/tmp/${PLAYLIST[name]}"
+PLAYLIST[path]="/tmp/debian.install.playbooks.txt"
 
 # --- Global group_vars (shared across playbooks) ---
 GROUPVARS[dir]="/tmp/group_vars"
@@ -147,7 +147,7 @@ run.playlist() {
     [[ "${line}" != *.yml ]] && continue
 
     PLAYBOOK[name]="${line}"
-    PLAYBOOK[url]="${GITHUB[url]}/ansible/${PLAYBOOK[name]}"
+    PLAYBOOK[url]="${GITHUB[url]}/ansible/debian/${PLAYBOOK[name]}"
     PLAYBOOK[path]="/tmp/${PLAYBOOK[name]}"
     fetch.playbook
     run.playbook

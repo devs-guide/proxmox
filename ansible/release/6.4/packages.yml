@@ -1,0 +1,50 @@
+---
+- name: "[pve-6.4]: base packages"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    base_packages:
+      - ca-certificates
+      - curl
+      - wget
+      - vim-tiny
+      - htop
+      - tmux
+      - net-tools
+      - rsync
+    nvm_version: "v0.39.7"
+    nvm_dir: "/root/.nvm"
+
+  tasks:
+    - name: Install baseline tools (allow unauth for archive repos)
+      apt:
+        name: "{{ base_packages }}"
+        state: present
+        update_cache: false
+        allow_unauthenticated: true
+
+    - name: Fetch nvm installer
+      get_url:
+        url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh"
+        dest: /tmp/nvm-install.sh
+        mode: "0755"
+      args:
+        creates: /tmp/nvm-install.sh
+
+    - name: Install nvm
+      shell: NVM_DIR="{{ nvm_dir }}" /tmp/nvm-install.sh
+      args:
+        creates: "{{ nvm_dir }}/nvm.sh"
+
+    - name: Install Node.js LTS via nvm
+      shell: |
+        set -e
+        export NVM_DIR="{{ nvm_dir }}"
+        . "{{ nvm_dir }}/nvm.sh"
+        nvm install --lts
+        nvm alias default 'lts/*'
+      args:
+        creates: "{{ nvm_dir }}/versions/node"

@@ -1,0 +1,5 @@
+# Proxmox VE 6.4 (Buster) archived playlist
+# Order matters
+sources.yml
+bootstrap.yml
+packages.yml

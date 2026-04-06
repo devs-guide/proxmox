@@ -8,6 +8,16 @@ set -euo pipefail
 log()      { printf '[pve-6.4] %s\n' "$*" >&2; }
 log.error(){ printf '[pve-6.4][error] %s\n' "$*" >&2; }
 
+TMP_DIR="/tmp/pve-6.4"
+BASE_URL="https://devs-guide.github.io/proxmox/ansible/release/6.4"
+PLAYLIST="install.playbooks.txt"
+PLAYLIST_URL="${BASE_URL}/${PLAYLIST}"
+PLAYLIST_PATH="${TMP_DIR}/${PLAYLIST}"
+GROUP_VARS_DIR="${TMP_DIR}/group_vars"
+GROUP_VARS_FILE="all.yml"
+GROUP_VARS_URL="${BASE_URL}/group_vars/${GROUP_VARS_FILE}"
+GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
+
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     log.error "Run as root."
@@ -84,6 +94,78 @@ run.update() {
   log "Apt sources repaired. You can now run 'apt-get dist-upgrade'."
 }
 
+maybe.install.ansible() {
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    log "Ansible already installed: $(ansible-playbook --version | head -n1)"
+    return
+  fi
+
+  log "Installing ansible (Buster archive)..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y --no-install-recommends \
+    ansible \
+    python3-apt
+
+  log "Ansible installed: $(ansible-playbook --version | head -n1)"
+}
+
+fetch.playlist() {
+  mkdir -p "${TMP_DIR}"
+  log "Fetching 6.4 playlist: ${PLAYLIST_URL}"
+  if ! wget -qO "${PLAYLIST_PATH}" "${PLAYLIST_URL}"; then
+    log.error "Failed to fetch playlist: ${PLAYLIST_URL}"
+    exit 1
+  fi
+  if [[ ! -s "${PLAYLIST_PATH}" ]]; then
+    log.error "Playlist is empty: ${PLAYLIST_URL}"
+    exit 1
+  fi
+}
+
+fetch.groupvars() {
+  mkdir -p "${GROUP_VARS_DIR}"
+  log "Fetching 6.4 group_vars: ${GROUP_VARS_URL}"
+  if ! wget -qO "${GROUP_VARS_PATH}" "${GROUP_VARS_URL}"; then
+    log.error "Failed to fetch group_vars: ${GROUP_VARS_URL}"
+    exit 1
+  fi
+}
+
+fetch.playbook() {
+  local name="$1"
+  local url="${BASE_URL}/${name}"
+  local dest="${TMP_DIR}/${name}"
+  log "Fetching playbook: ${url}"
+  if ! wget -qO "${dest}" "${url}"; then
+    log.error "Failed to fetch playbook: ${url}"
+    exit 1
+  fi
+}
+
+run.playlist() {
+  log "Running 6.4 playlist via ansible..."
+  while IFS= read -r line; do
+    line="${line%%$'\r'}"
+    line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" != *.yml ]] && continue
+    fetch.playbook "${line}"
+    ansible-playbook -i localhost, -c local "${TMP_DIR}/${line}"
+  done < "${PLAYLIST_PATH}"
+  log "Ansible playlist complete."
+}
+
+maybe.run.ansible() {
+  if [[ "${SKIP_ANSIBLE:-0}" == "1" ]]; then
+    log "SKIP_ANSIBLE=1 set; skipping ansible playlist."
+    return
+  fi
+  maybe.install.ansible
+  fetch.playlist
+  fetch.groupvars
+  run.playlist
+}
+
 main() {
   require.root
   require.apt
@@ -93,6 +175,7 @@ main() {
   disable.enterprise.repo
   write.no.subscription
   run.update
+  maybe.run.ansible
 }
 
 main "$@"
