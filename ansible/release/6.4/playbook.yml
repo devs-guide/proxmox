@@ -1,0 +1,36 @@
+---
+- name: "[pve-6.4]: ansible venv (2.9)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_venv: /opt/ansible-venv
+    ansible_version: "ansible>=2.9,<2.10"
+
+  tasks:
+    - name: Ensure python tooling present
+      apt:
+        name:
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: false
+        allow_unauthenticated: true
+
+    - name: Create ansible venv directory
+      file:
+        path: "{{ ansible_venv }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create ansible venv if missing
+      command: python3 -m venv "{{ ansible_venv }}"
+      args:
+        creates: "{{ ansible_venv }}/bin/activate"
+
+    - name: Install Ansible 2.9 into venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_version }}"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"

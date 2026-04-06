@@ -160,7 +160,11 @@ run.playlist() {
     [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
-    ansible-playbook -i localhost, -c local "${TMP_DIR}/${line}"
+    local ansible_bin="ansible-playbook"
+    if [[ -x "/opt/ansible-venv/bin/ansible-playbook" ]]; then
+      ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
+    fi
+    "${ansible_bin}" -i localhost, -c local "${TMP_DIR}/${line}"
   done < "${PLAYLIST_PATH}"
   log "Ansible playlist complete."
 }

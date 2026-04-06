@@ -3,6 +3,7 @@
 debian/sources.buster.yml
 bootstrap.yml
 packages.yml
+playbook.yml
 node.yml
 debian/users.yml
 debian/network.yml

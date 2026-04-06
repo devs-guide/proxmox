@@ -15,6 +15,8 @@
       - tmux
       - net-tools
       - rsync
+      - python3-pip
+      - python3-venv
 
   tasks:
     - name: Install baseline tools (allow unauth for archive repos)
