@@ -21,3 +21,5 @@ Icon
 # Metadata files
 .fseventsd
 
+# Project docs
+refactor.docs/

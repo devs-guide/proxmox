@@ -105,6 +105,15 @@ publish.bootstrap() {
   fi
 }
 
+publish.proxmox64() {
+  if [[ -f "bootstrap/release.6.4.sh" ]]; then
+    log.info "[www.pages] installing 6.4.sh"
+    install -m 0755 "bootstrap/release.6.4.sh" "${PATH_TO[publish]}/6.4.sh"
+  else
+    log.warn "[www.pages] release.6.4.sh not found; skipping 6.4.sh publish"
+  fi
+}
+
 publish.ansible() {
   log.info "[www.pages] syncing ansible whitelist"
   mkdir -p "${PATH_TO[publish]}/ansible"
@@ -144,6 +153,7 @@ run.pages() {
   publish.prepare
   publish.www
   publish.bootstrap
+  publish.proxmox64
   publish.ansible
 
   log.info "${MSG[done]}"
