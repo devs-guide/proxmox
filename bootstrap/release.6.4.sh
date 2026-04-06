@@ -65,7 +65,7 @@ write.no.subscription() {
   local file="/etc/apt/sources.list.d/pve-no-subscription.list"
   log "Ensuring no-subscription repo (${file})..."
   cat > "${file}" <<'EOF'
-deb http://download.proxmox.com/debian/pve buster pve-no-subscription
+deb http://archive.proxmox.com/debian/pve buster pve-no-subscription
 EOF
 }
 
