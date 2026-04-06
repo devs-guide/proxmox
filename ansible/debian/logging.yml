@@ -1,0 +1,19 @@
+---
+- name: "[debian]: logging hardening"
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Ensure rsyslog and logrotate are present
+      apt:
+        name:
+          - rsyslog
+          - logrotate
+        state: present
+        update_cache: false
+
+    - name: Ensure rsyslog is running and enabled
+      service:
+        name: rsyslog
+        state: started
+        enabled: true

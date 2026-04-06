@@ -3,5 +3,9 @@
 bootstrap.yml
 sources.yml
 install.packages.yml
-power.and.sleep.yml
+power.yml
 network.yml
+security.yml
+sysctl.yml
+logging.yml
+performance.yml

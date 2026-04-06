@@ -1,0 +1,33 @@
+---
+- name: "[debian]: security packages"
+  hosts: all
+  become: true
+
+  vars:
+    security_packages:
+      - fail2ban
+      - auditd
+      - logrotate
+      - unattended-upgrades
+      - chrony
+
+  tasks:
+    - name: Install security and time packages
+      apt:
+        name: "{{ security_packages }}"
+        state: present
+        update_cache: false
+
+    - name: Ensure unattended-upgrades runs daily
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    - name: Enable chrony service
+      service:
+        name: chrony
+        state: started
+        enabled: true

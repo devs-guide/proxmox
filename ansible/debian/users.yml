@@ -1,0 +1,25 @@
+---
+- name: "[debian]: baseline users (customize for production)"
+  hosts: all
+  become: true
+
+  vars:
+    user_defs:
+      # password defaults to the username if not provided; override for real deployments
+      - name: agent
+      - name: proxmox
+      - name: root
+
+  tasks:
+    - name: Ensure users exist with initial passwords
+      user:
+        name: "{{ item.name }}"
+        password: "{{ (item.password | default(item.name, true)) | password_hash('sha512') }}"
+        shell: /bin/bash
+        state: present
+      loop: "{{ user_defs }}"
+
+    - name: Force password change on first login (non-root)
+      command: chage -d 0 "{{ item.name }}"
+      when: item.name != 'root'
+      loop: "{{ user_defs }}"
