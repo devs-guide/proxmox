@@ -1,23 +1,86 @@
 ---
-- name: "[pve-6.4]: ansible venv (2.9)"
+- name: "[pve-6.4]: ansible venv (py3.11 / ansible-core 2.15)"
   hosts: localhost
   connection: local
   gather_facts: false
   become: true
 
   vars:
+    python_version: "3.11.9"
+    python_major_minor: "3.11"
+    python_prefix: "/usr/local"
+    python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
+    python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
+    python_src_archive: "{{ python_src_dir }}.tgz"
+    ansible_venv_python: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
     ansible_venv: /opt/ansible-venv
-    ansible_pkg_spec: "ansible>=2.9,<2.10"
+    ansible_pkg_spec: "ansible-core>=2.15,<2.16"
+    python_build_deps:
+      - build-essential
+      - libssl-dev
+      - zlib1g-dev
+      - libbz2-dev
+      - libreadline-dev
+      - libsqlite3-dev
+      - libncursesw5-dev
+      - tk-dev
+      - libgdbm-dev
+      - libgdbm-compat-dev
+      - liblzma-dev
+      - libffi-dev
+      - uuid-dev
+      - wget
+      - curl
+      - ca-certificates
+      - xz-utils
 
   tasks:
     - name: Ensure python tooling present
       apt:
-        name:
-          - python3-pip
-          - python3-venv
+        name: "{{ ['python3-pip', 'python3-venv'] + python_build_deps }}"
         state: present
-        update_cache: false
+        update_cache: true
         allow_unauthenticated: true
+
+    - name: Ensure python source directory exists
+      file:
+        path: "{{ python_prefix }}/src"
+        state: directory
+        mode: "0755"
+
+    - name: Download Python {{ python_version }} source
+      get_url:
+        url: "{{ python_src_url }}"
+        dest: "{{ python_src_archive }}"
+        mode: "0644"
+
+    - name: Unpack Python {{ python_version }} source
+      unarchive:
+        src: "{{ python_src_archive }}"
+        dest: "{{ python_prefix }}/src"
+        remote_src: true
+        creates: "{{ python_src_dir }}"
+
+    - name: Build and install Python {{ python_version }}
+      shell: |
+        ./configure --enable-optimizations --with-ensurepip=install
+        make -j"$(nproc)"
+        make altinstall
+      args:
+        chdir: "{{ python_src_dir }}"
+        creates: "{{ ansible_venv_python }}"
+
+    - name: Check current venv python version (if present)
+      command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
+      register: ansible_venv_python_version
+      failed_when: false
+      changed_when: false
+
+    - name: Remove existing Ansible venv if python is outdated
+      file:
+        path: "{{ ansible_venv }}"
+        state: absent
+      when: ansible_venv_python_version.rc != 0 or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
 
     - name: Create ansible venv directory
       file:
@@ -26,7 +89,7 @@
         mode: "0755"
 
     - name: Create ansible venv if missing
-      command: python3 -m venv "{{ ansible_venv }}"
+      command: "{{ ansible_venv_python }} -m venv \"{{ ansible_venv }}\""
       args:
         creates: "{{ ansible_venv }}/bin/activate"
 
@@ -35,7 +98,7 @@
       environment:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
-    - name: Install Ansible 2.9 into venv
+    - name: Install Ansible core into venv
       command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
       environment:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"

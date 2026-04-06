@@ -17,6 +17,7 @@ PLAYLIST_PATH="${TMP_DIR}/${PLAYLIST}"
 GROUP_VARS_DIR="${TMP_DIR}/group_vars"
 GROUP_VARS_FILE="all.yml"
 GROUP_VARS_URL="${BASE_URL}/group_vars/${GROUP_VARS_FILE}"
+ROOT_GROUP_VARS_URL="https://devs-guide.github.io/proxmox/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 
 require.root() {
@@ -124,12 +125,22 @@ fetch.playlist() {
 }
 
 fetch.groupvars() {
+  local root_path="${GROUP_VARS_DIR}/_root.all.yml"
+  local release_path="${GROUP_VARS_DIR}/_release.all.yml"
   mkdir -p "${GROUP_VARS_DIR}"
-  log "Fetching 6.4 group_vars: ${GROUP_VARS_URL}"
-  if ! wget -qO "${GROUP_VARS_PATH}" "${GROUP_VARS_URL}"; then
-    log.error "Failed to fetch group_vars: ${GROUP_VARS_URL}"
+  log "Fetching shared group_vars: ${ROOT_GROUP_VARS_URL}"
+  if ! wget -qO "${root_path}" "${ROOT_GROUP_VARS_URL}"; then
+    log.error "Failed to fetch shared group_vars: ${ROOT_GROUP_VARS_URL}"
     exit 1
   fi
+  log "Fetching 6.4 group_vars: ${GROUP_VARS_URL}"
+  if ! wget -qO "${release_path}" "${GROUP_VARS_URL}"; then
+    log.error "Failed to fetch release group_vars: ${GROUP_VARS_URL}"
+    exit 1
+  fi
+  cat "${root_path}" > "${GROUP_VARS_PATH}"
+  printf "\n---\n" >> "${GROUP_VARS_PATH}"
+  cat "${release_path}" >> "${GROUP_VARS_PATH}"
 }
 
 fetch.playbook() {
@@ -164,7 +175,7 @@ run.playlist() {
     if [[ -x "/opt/ansible-venv/bin/ansible-playbook" ]]; then
       ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
     fi
-    "${ansible_bin}" -i localhost, -c local "${TMP_DIR}/${line}"
+    "${ansible_bin}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "${TMP_DIR}/${line}"
   done < "${PLAYLIST_PATH}"
   log "Ansible playlist complete."
 }
