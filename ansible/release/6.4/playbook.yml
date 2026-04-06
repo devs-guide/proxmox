@@ -7,7 +7,7 @@
 
   vars:
     ansible_venv: /opt/ansible-venv
-    ansible_version: "ansible>=2.9,<2.10"
+    ansible_pkg_spec: "ansible>=2.9,<2.10"
 
   tasks:
     - name: Ensure python tooling present
@@ -31,6 +31,6 @@
         creates: "{{ ansible_venv }}/bin/activate"
 
     - name: Install Ansible 2.9 into venv
-      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_version }}"
+      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
       environment:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
