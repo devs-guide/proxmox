@@ -1,0 +1,53 @@
+---
+- name: "[pve-6.4]: node via nvm"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    nvm_version: "v0.39.7"
+    nvm_dir: "/root/.nvm"
+    node_version: "lts/*"
+
+  tasks:
+    - name: Check if nvm is already installed
+      stat:
+        path: "{{ nvm_dir }}/nvm.sh"
+      register: nvm_sh
+
+    - name: Download nvm installer (if missing)
+      get_url:
+        url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh"
+        dest: /tmp/nvm-install.sh
+        mode: "0755"
+      when: not nvm_sh.stat.exists
+
+    - name: Install nvm (if missing)
+      shell: |
+        set -e
+        export NVM_DIR="{{ nvm_dir }}"
+        /bin/bash /tmp/nvm-install.sh
+      args:
+        creates: "{{ nvm_dir }}/nvm.sh"
+      when: not nvm_sh.stat.exists
+
+    - name: Install Node.js via nvm
+      shell: |
+        set -e
+        export NVM_DIR="{{ nvm_dir }}"
+        . "{{ nvm_dir }}/nvm.sh"
+        if ! nvm ls "{{ node_version }}" >/dev/null 2>&1; then
+          nvm install "{{ node_version }}"
+        fi
+        nvm alias default "{{ node_version }}"
+      changed_when: true
+
+    - name: Ensure nvm profile hook is available
+      copy:
+        dest: /etc/profile.d/nvm.sh
+        mode: "0644"
+        content: |
+          export NVM_DIR="{{ nvm_dir }}"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"

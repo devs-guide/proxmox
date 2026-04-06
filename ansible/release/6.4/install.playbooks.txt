@@ -3,3 +3,4 @@
 sources.yml
 bootstrap.yml
 packages.yml
+node.yml
