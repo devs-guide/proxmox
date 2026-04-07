@@ -7,7 +7,8 @@
 
   vars:
     pve_release: "buster"
-    proxmox_enterprise: "{{ proxmox_enterprise | default(false) }}"
+    # Toggle enterprise repo; override via extra vars (-e proxmox_enterprise=true)
+    proxmox_enterprise: false
     enterprise_repo: "deb https://enterprise.proxmox.com/debian/pve {{ pve_release }} pve-enterprise"
     no_sub_repo: "deb http://archive.proxmox.com/debian/pve {{ pve_release }} pve-no-subscription"
     enterprise_list: "/etc/apt/sources.list.d/pve-enterprise.list"
