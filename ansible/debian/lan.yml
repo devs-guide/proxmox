@@ -1,0 +1,22 @@
+---
+- name: "[debian]: lan defaults"
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    lan_defaults:
+      allow_subnets:
+        - 10.0.0.0/24
+      allow_rdp: true
+      ssh_port: 22
+      rdp_port: 3389
+
+  tasks:
+    - name: Capture allowed users from user_defs (if provided)
+      set_fact:
+        lan_users: "{{ (user_defs | default([])) | map(attribute='name') | list }}"
+
+    - name: Set LAN defaults for subsequent plays
+      set_fact:
+        network_defaults: "{{ lan_defaults | combine({'allowed_users': lan_users | default([])}) }}"

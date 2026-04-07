@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-## Fix apt on Proxmox VE 6.4 (EOL Buster) so updates work again.
+## Bootstrap Proxmox VE 6.4 (Buster) repair + ansible playlist runner.
 ## Usage:
 ##   wget -qO- https://devs-guide.github.io/proxmox/6.4.sh | bash
 
@@ -17,7 +17,6 @@ PLAYLIST_PATH="${TMP_DIR}/${PLAYLIST}"
 GROUP_VARS_DIR="${TMP_DIR}/group_vars"
 GROUP_VARS_FILE="all.yml"
 GROUP_VARS_URL="${BASE_URL}/group_vars/${GROUP_VARS_FILE}"
-ROOT_GROUP_VARS_URL="https://devs-guide.github.io/proxmox/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 
 require.root() {
@@ -47,73 +46,26 @@ require.pve6() {
   exit 1
 }
 
-write.sources.list() {
-  log "Updating /etc/apt/sources.list to use Debian archive mirrors..."
-  cat > /etc/apt/sources.list <<'EOF'
-deb http://archive.debian.org/debian buster main contrib non-free
-deb-src http://archive.debian.org/debian buster main contrib non-free
-deb http://archive.debian.org/debian-security buster/updates main contrib non-free
-deb-src http://archive.debian.org/debian-security buster/updates main contrib non-free
-EOF
-}
-
-write.apt.conf.archive() {
-  log "Allowing archived (expired) metadata for Buster..."
-  cat > /etc/apt/apt.conf.d/99-archive-buster <<'EOF'
-Acquire::Check-Valid-Until "false";
-Acquire::AllowInsecureRepositories "true";
-EOF
-}
-
-disable.enterprise.repo() {
-  local file="/etc/apt/sources.list.d/pve-enterprise.list"
-  if [[ -f "${file}" ]]; then
-    log "Disabling enterprise repo (${file})..."
-    sed -i 's/^deb/# deb/' "${file}"
-  fi
-}
-
-write.no.subscription() {
-  local file="/etc/apt/sources.list.d/pve-no-subscription.list"
-  log "Ensuring no-subscription repo (${file})..."
-  cat > "${file}" <<'EOF'
-deb http://archive.proxmox.com/debian/pve buster pve-no-subscription
-EOF
-}
-
-run.update() {
-  log "Running apt-get update..."
-  if ! apt-get update; then
-    log.error "apt-get update failed."
-    exit 1
-  fi
-
-  log "Dry-run dist-upgrade (apt-get -s dist-upgrade)..."
-  if ! apt-get -s dist-upgrade; then
-    log.error "apt-get -s dist-upgrade failed."
-    exit 1
-  fi
-  log "Apt sources repaired. You can now run 'apt-get dist-upgrade'."
-}
-
-maybe.install.ansible() {
-  if command -v ansible-playbook >/dev/null 2>&1; then
-    log "Ansible already installed: $(ansible-playbook --version | head -n1)"
+ensure.ansible.venv() {
+  local ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
+  if [[ -x "${ansible_bin}" ]]; then
+    log "Using existing Ansible venv: $(${ansible_bin} --version | head -n1)"
     return
   fi
 
-  log "Installing ansible (Buster archive)..."
+  log "Bootstrapping Ansible venv at /opt/ansible-venv..."
   export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y --no-install-recommends \
-    ansible \
-    python3-apt
-
-  log "Ansible installed: $(ansible-playbook --version | head -n1)"
+  apt-get update -y
+  apt-get install -y --no-install-recommends python3-venv python3-pip
+  python3 -m venv /opt/ansible-venv
+  /opt/ansible-venv/bin/pip install --upgrade pip setuptools wheel
+  /opt/ansible-venv/bin/pip install 'ansible-core>=2.15,<2.16'
+  log "Ansible venv ready: $(${ansible_bin} --version | head -n1)"
 }
 
 fetch.playlist() {
   mkdir -p "${TMP_DIR}"
-  log "Fetching 6.4 playlist: ${PLAYLIST_URL}"
+  log "Fetching playlist: ${PLAYLIST_URL}"
   if ! wget -qO "${PLAYLIST_PATH}" "${PLAYLIST_URL}"; then
     log.error "Failed to fetch playlist: ${PLAYLIST_URL}"
     exit 1
@@ -125,22 +77,16 @@ fetch.playlist() {
 }
 
 fetch.groupvars() {
-  local root_path="${GROUP_VARS_DIR}/_root.all.yml"
-  local release_path="${GROUP_VARS_DIR}/_release.all.yml"
   mkdir -p "${GROUP_VARS_DIR}"
-  log "Fetching shared group_vars: ${ROOT_GROUP_VARS_URL}"
-  if ! wget -qO "${root_path}" "${ROOT_GROUP_VARS_URL}"; then
-    log.error "Failed to fetch shared group_vars: ${ROOT_GROUP_VARS_URL}"
+  log "Fetching group_vars: ${GROUP_VARS_URL}"
+  if ! wget -qO "${GROUP_VARS_PATH}" "${GROUP_VARS_URL}"; then
+    log.error "Failed to fetch group_vars: ${GROUP_VARS_URL}"
     exit 1
   fi
-  log "Fetching 6.4 group_vars: ${GROUP_VARS_URL}"
-  if ! wget -qO "${release_path}" "${GROUP_VARS_URL}"; then
-    log.error "Failed to fetch release group_vars: ${GROUP_VARS_URL}"
+  if [[ ! -s "${GROUP_VARS_PATH}" ]]; then
+    log.error "group_vars is empty: ${GROUP_VARS_URL}"
     exit 1
   fi
-  cat "${root_path}" > "${GROUP_VARS_PATH}"
-  printf "\n---\n" >> "${GROUP_VARS_PATH}"
-  cat "${release_path}" >> "${GROUP_VARS_PATH}"
 }
 
 fetch.playbook() {
@@ -161,21 +107,25 @@ fetch.playbook() {
     log.error "Failed to fetch playbook: ${url}"
     exit 1
   fi
+  if [[ ! -s "${dest}" ]]; then
+    log.error "Playbook is empty: ${url}"
+    exit 1
+  fi
 }
 
 run.playlist() {
   log "Running 6.4 playlist via ansible..."
+  local ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
   while IFS= read -r line; do
     line="${line%%$'\r'}"
     line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
     [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
-    local ansible_bin="ansible-playbook"
-    if [[ -x "/opt/ansible-venv/bin/ansible-playbook" ]]; then
-      ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
+    if ! "${ansible_bin}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "${TMP_DIR}/${line}"; then
+      log.error "Ansible failed on playbook: ${line}"
+      exit 1
     fi
-    "${ansible_bin}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "${TMP_DIR}/${line}"
   done < "${PLAYLIST_PATH}"
   log "Ansible playlist complete."
 }
@@ -185,7 +135,7 @@ maybe.run.ansible() {
     log "SKIP_ANSIBLE=1 set; skipping ansible playlist."
     return
   fi
-  maybe.install.ansible
+  ensure.ansible.venv
   fetch.playlist
   fetch.groupvars
   run.playlist
@@ -195,11 +145,6 @@ main() {
   require.root
   require.apt
   require.pve6
-  write.sources.list
-  write.apt.conf.archive
-  disable.enterprise.repo
-  write.no.subscription
-  run.update
   maybe.run.ansible
 }
 

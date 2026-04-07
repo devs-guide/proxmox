@@ -10,3 +10,4 @@ sysctl.yml
 logging.yml
 performance.yml
 users.yml
+lan.yml

@@ -1,0 +1,43 @@
+---
+- name: "[pve-6.4]: proxmox repo policy"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    pve_release: "buster"
+    proxmox_enterprise: "{{ proxmox_enterprise | default(false) }}"
+    enterprise_repo: "deb https://enterprise.proxmox.com/debian/pve {{ pve_release }} pve-enterprise"
+    no_sub_repo: "deb http://archive.proxmox.com/debian/pve {{ pve_release }} pve-no-subscription"
+    enterprise_list: "/etc/apt/sources.list.d/pve-enterprise.list"
+    no_sub_list: "/etc/apt/sources.list.d/pve-no-subscription.list"
+
+  tasks:
+    - name: Configure enterprise repo (when enabled)
+      copy:
+        dest: "{{ enterprise_list }}"
+        mode: "0644"
+        content: |
+          {{ enterprise_repo }}
+      when: proxmox_enterprise | bool
+
+    - name: Remove enterprise repo when disabled
+      file:
+        path: "{{ enterprise_list }}"
+        state: absent
+      when: not proxmox_enterprise | bool
+
+    - name: Configure no-subscription repo when enterprise disabled
+      copy:
+        dest: "{{ no_sub_list }}"
+        mode: "0644"
+        content: |
+          {{ no_sub_repo }}
+      when: not proxmox_enterprise | bool
+
+    - name: Remove no-subscription repo when enterprise enabled
+      file:
+        path: "{{ no_sub_list }}"
+        state: absent
+      when: proxmox_enterprise | bool

@@ -144,7 +144,22 @@ publish.ansible() {
 publish.ansible.release64() {
   if [[ -d "ansible/release/6.4" ]]; then
     log.info "[www.pages] syncing ansible release/6.4"
-    rsync -av ansible/release/6.4/ "${PATH_TO[publish]}/ansible/release/6.4/"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    rsync -av ansible/release/6.4/ "${tmpdir}/"
+
+    # Merge shared + release group_vars into a single doc with leading ---
+    mkdir -p "${tmpdir}/group_vars"
+    {
+      echo "---"
+      cat ansible/group_vars/all.yml
+      echo
+      cat ansible/release/6.4/group_vars/all.yml
+    } > "${tmpdir}/group_vars/all.yml"
+
+    rsync -av "${tmpdir}/" "${PATH_TO[publish]}/ansible/release/6.4/"
+    rm -rf "${tmpdir}"
   else
     log.warn "[www.pages] ansible/release/6.4 not found; skipping"
   fi
