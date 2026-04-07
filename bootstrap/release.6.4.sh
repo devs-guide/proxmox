@@ -15,8 +15,11 @@ PLAYLIST="install.playbooks.txt"
 PLAYLIST_URL="${BASE_URL}/${PLAYLIST}"
 PLAYLIST_PATH="${TMP_DIR}/${PLAYLIST}"
 GROUP_VARS_DIR="${TMP_DIR}/group_vars"
+BASE_GROUP_VARS_FILE="base.yml"
 GROUP_VARS_FILE="all.yml"
+BASE_GROUP_VARS_URL="https://devs-guide.github.io/proxmox/ansible/group_vars/all.yml"
 GROUP_VARS_URL="${BASE_URL}/group_vars/${GROUP_VARS_FILE}"
+BASE_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${BASE_GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 
 require.root() {
@@ -74,13 +77,23 @@ fetch.playlist() {
 
 fetch.groupvars() {
   mkdir -p "${GROUP_VARS_DIR}"
-  log "Fetching group_vars: ${GROUP_VARS_URL}"
+  log "Fetching base group_vars: ${BASE_GROUP_VARS_URL}"
+  if ! wget -qO "${BASE_GROUP_VARS_PATH}" "${BASE_GROUP_VARS_URL}"; then
+    log.error "Failed to fetch base group_vars: ${BASE_GROUP_VARS_URL}"
+    exit 1
+  fi
+  if [[ ! -s "${BASE_GROUP_VARS_PATH}" ]]; then
+    log.error "Base group_vars is empty: ${BASE_GROUP_VARS_URL}"
+    exit 1
+  fi
+
+  log "Fetching release group_vars: ${GROUP_VARS_URL}"
   if ! wget -qO "${GROUP_VARS_PATH}" "${GROUP_VARS_URL}"; then
-    log.error "Failed to fetch group_vars: ${GROUP_VARS_URL}"
+    log.error "Failed to fetch release group_vars: ${GROUP_VARS_URL}"
     exit 1
   fi
   if [[ ! -s "${GROUP_VARS_PATH}" ]]; then
-    log.error "group_vars is empty: ${GROUP_VARS_URL}"
+    log.error "Release group_vars is empty: ${GROUP_VARS_URL}"
     exit 1
   fi
 }
@@ -112,13 +125,14 @@ fetch.playbook() {
 run.playlist() {
   log "Running 6.4 playlist via ansible..."
   local ansible_bin="ansible-playbook"
+  local extra_vars_args=(-e "@${BASE_GROUP_VARS_PATH}" -e "@${GROUP_VARS_PATH}")
   while IFS= read -r line; do
     line="${line%%$'\r'}"
     line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
     [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
-    if ! "${ansible_bin}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "${TMP_DIR}/${line}"; then
+    if ! "${ansible_bin}" -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
       log.error "Ansible failed on playbook: ${line}"
       exit 1
     fi
