@@ -151,12 +151,17 @@ publish.ansible.release64() {
 
     # Merge shared + release group_vars into a single doc with leading ---
     mkdir -p "${tmpdir}/group_vars"
+    local release_tmp
+    release_tmp="$(mktemp)"
+    # Drop any leading document marker from release overrides to avoid multi-doc output
+    sed '1{/^---[[:space:]]*$/d}' ansible/release/6.4/group_vars/all.yml > "${release_tmp}"
     {
       echo "---"
       cat ansible/group_vars/all.yml
       echo
-      cat ansible/release/6.4/group_vars/all.yml
+      cat "${release_tmp}"
     } > "${tmpdir}/group_vars/all.yml"
+    rm -f "${release_tmp}"
 
     rsync -av "${tmpdir}/" "${PATH_TO[publish]}/ansible/release/6.4/"
     rm -rf "${tmpdir}"

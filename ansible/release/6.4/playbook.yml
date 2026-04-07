@@ -35,6 +35,27 @@
       - xz-utils
 
   tasks:
+    - name: Check current venv python version (if present)
+      command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
+      register: ansible_venv_python_version
+      failed_when: false
+      changed_when: false
+
+    - name: Check current venv ansible version (if present)
+      command: "{{ ansible_venv }}/bin/ansible-playbook --version"
+      register: ansible_venv_ansible_version
+      failed_when: false
+      changed_when: false
+
+    - name: Remove existing Ansible venv if outdated (python or ansible)
+      file:
+        path: "{{ ansible_venv }}"
+        state: absent
+      when:
+        - ansible_venv_python_version.rc != 0
+          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
+          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version('2.15', '<'))
+
     - name: Ensure python tooling present
       apt:
         name: "{{ ['python3-pip', 'python3-venv'] + python_build_deps }}"
@@ -70,18 +91,6 @@
         chdir: "{{ python_src_dir }}"
         creates: "{{ ansible_venv_python }}"
 
-    - name: Check current venv python version (if present)
-      command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
-      register: ansible_venv_python_version
-      failed_when: false
-      changed_when: false
-
-    - name: Remove existing Ansible venv if python is outdated
-      file:
-        path: "{{ ansible_venv }}"
-        state: absent
-      when: ansible_venv_python_version.rc != 0 or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
-
     - name: Create ansible venv directory
       file:
         path: "{{ ansible_venv }}"
@@ -102,3 +111,7 @@
       command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
       environment:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    - name: Expose preferred ansible-playbook path
+      set_fact:
+        ansible_playbook_bin: "{{ ansible_venv }}/bin/ansible-playbook"

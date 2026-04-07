@@ -47,20 +47,16 @@ require.pve6() {
 }
 
 ensure.ansible.venv() {
-  local ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
-  if [[ -x "${ansible_bin}" ]]; then
-    log "Using existing Ansible venv: $(${ansible_bin} --version | head -n1)"
+  # Minimal bootstrap: ensure ansible-playbook exists (can be old); playbook.yml will enforce modern venv
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    log "Using existing system Ansible: $(ansible-playbook --version | head -n1)"
     return
   fi
 
-  log "Bootstrapping Ansible venv at /opt/ansible-venv..."
+  log "Installing ansible from distro (temporary control)..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y --no-install-recommends python3-venv python3-pip
-  python3 -m venv /opt/ansible-venv
-  /opt/ansible-venv/bin/pip install --upgrade pip setuptools wheel
-  /opt/ansible-venv/bin/pip install 'ansible-core>=2.15,<2.16'
-  log "Ansible venv ready: $(${ansible_bin} --version | head -n1)"
+  apt-get install -y --no-install-recommends ansible python3-apt
 }
 
 fetch.playlist() {
@@ -115,7 +111,7 @@ fetch.playbook() {
 
 run.playlist() {
   log "Running 6.4 playlist via ansible..."
-  local ansible_bin="/opt/ansible-venv/bin/ansible-playbook"
+  local ansible_bin="ansible-playbook"
   while IFS= read -r line; do
     line="${line%%$'\r'}"
     line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
