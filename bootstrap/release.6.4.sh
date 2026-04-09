@@ -154,8 +154,6 @@ for path in paths:
 with open(dest, 'w') as fh:
     yaml.safe_dump(merged, fh, default_flow_style=False)
 PY
-  # Replace the release all.yml with the merged view to avoid Ansible auto-loading a duplicate-key file.
-  cp "${MERGED_GROUP_VARS_PATH}" "${GROUP_VARS_PATH}"
   log "Merged group_vars written to ${MERGED_GROUP_VARS_PATH}"
 }
 

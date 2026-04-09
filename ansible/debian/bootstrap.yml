@@ -10,16 +10,16 @@
 
   tasks:
     - name: "[debian]: update apt cache"
-      apt:
+      ansible.builtin.apt:
         update_cache: true
         cache_valid_time: "{{ apt_cache_valid_time }}"
 
     - name: Perform safe upgrade of packages
-      apt:
+      ansible.builtin.apt:
         upgrade: safe
 
     - name: "[bootstrap]: sanity check"
-      debug:
+      ansible.builtin.debug:
         msg:
           - "Apt bootstrap complete."
           - "System packages have been updated (safe upgrade)."

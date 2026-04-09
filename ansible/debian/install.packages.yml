@@ -19,30 +19,30 @@
 
   pre_tasks:
     - name: Ensure package catalog exists alongside playbook
-      stat:
+      ansible.builtin.stat:
         path: "{{ package_catalog_file }}"
       register: pkg_catalog
 
     - name: Download package catalog if missing
-      get_url:
+      ansible.builtin.get_url:
         url: "{{ package_catalog_url_effective }}"
         dest: "{{ package_catalog_file }}"
         mode: "0644"
       when: not pkg_catalog.stat.exists
 
     - name: Load canonical Debian package catalog
-      set_fact:
+      ansible.builtin.set_fact:
         package_catalog: "{{ lookup('file', package_catalog_file) | from_yaml }}"
 
     - name: Refresh apt cache (honors apt_cache_valid_time/apt_skip_cache_refresh)
-      apt:
+      ansible.builtin.apt:
         update_cache: true
         cache_valid_time: "{{ apt_cache_valid_time | default(86400) }}"
       when: not apt_skip_cache_refresh | default(false)
 
   tasks:
     - name: Install package groups (honor enabled/override flags and exclude list)
-      apt:
+      ansible.builtin.apt:
         name: "{{ item.value.packages | difference(exclude_packages) }}"
         state: present
       loop: "{{ package_catalog.groups | dict2items }}"
