@@ -1,0 +1,23 @@
+
+## proxmox bootstrap RC 0.0.1 (for Proxmox VE 6.4)
+
+Target: Proxmox VE 6.4 on Debian Buster. The installer script (`https://devs-guide.github.io/proxmox/6.4.sh`) fetches merged vars, builds an ansible-core 2.15 venv on Python 3.11, and runs the 6.4 playlist with hardening and cert fixes.
+
+Highlights:
+- Venv Ansible (2.15) with pinned `community.general:8.6.0` and passlib; Python 3.11 build fallback if no newer system python3.
+- UFW scoped to IPv4 LAN subnets; allows SSH (22) and PVE web (8006); UFW IPv6 disabled by default.
+- pveproxy cert regeneration play (adds IP/hostname SANs) and restarts proxy for cleaner browser access.
+- Safer SSH/network defaults to avoid lockouts; passlib-backed password hashing.
+- Build Python 3.11 and ansible-core 2.15 venv; pin `community.general:8.6.0` and install passlib.
+- Merge base/buster/release vars into a single merged vars file to avoid duplicate-key warnings.
+- Harden networking: UFW IPv4-only with LAN allows for SSH (22) and web UI (8006); safer SSH defaults and passlib password hashing.
+- Add pveproxy cert regeneration play with IP/hostname SANs and proxy restart for cleaner browser access.
+- Prefer venv ansible for post-venv playbooks; keep 6.4 playlist order.
+
+
+Usage:
+1) On the PVE 6.x host as root: `wget -qO- https://devs-guide.github.io/proxmox/6.4.sh | bash`
+2) For browser trust, add a hosts entry for the node (e.g., `10.0.0.100 proxintosh.local`) or rerun the certs play to include your IP/FQDN in SANs, then accept/ trust the cert in your browser.
+
+Note: This RC is validated for Proxmox VE 6.4 (Debian Buster). Other Debian targets may work but are not the focus of this cut.
+
