@@ -11,14 +11,14 @@
 
   tasks:
     - name: Collect installed package facts (apt)
-      ansible.builtin.package_facts:
+      package_facts:
         manager: apt
 
     - name: Collect service facts
-      ansible.builtin.service_facts:
+      service_facts:
 
     - name: Set CPU governor to performance (if cpupower installed)
-      ansible.builtin.copy:
+      copy:
         dest: "{{ cpupower_default_path }}"
         owner: root
         group: root
@@ -32,7 +32,7 @@
       notify: Restart cpupower service
 
     - name: Ensure cpupower service enabled (if present)
-      ansible.builtin.systemd:
+      systemd:
         name: cpupower.service
         enabled: true
         state: started
@@ -43,7 +43,7 @@
         - "'cpupower.service' in ansible_facts.services or 'cpupower' in ansible_facts.services"
 
     - name: Disable USB autosuspend (modprobe)
-      ansible.builtin.copy:
+      copy:
         dest: /etc/modprobe.d/99-usb-autosuspend.conf
         owner: root
         group: root
@@ -54,14 +54,14 @@
       when: usb_autosuspend_disable
 
     - name: Disable console blanking on tty1 (optional)
-      ansible.builtin.file:
+      file:
         path: /etc/systemd/system/getty@tty1.service.d
         state: directory
         mode: "0755"
       when: disable_console_blanking
 
     - name: Apply console no-blank drop-in
-      ansible.builtin.copy:
+      copy:
         dest: /etc/systemd/system/getty@tty1.service.d/override.conf
         owner: root
         group: root
@@ -76,10 +76,10 @@
 
   handlers:
     - name: Reload systemd daemon
-      ansible.builtin.command: systemctl daemon-reload
+      command: systemctl daemon-reload
       become: true
 
     - name: Restart cpupower service
-      ansible.builtin.service:
+      service:
         name: cpupower
         state: restarted

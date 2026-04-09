@@ -24,7 +24,7 @@
 
   tasks:
     - name: Configure system sleep policies
-      ansible.builtin.blockinfile:
+      blockinfile:
         path: "{{ sleep_conf_path }}"
         owner: root
         group: root
@@ -39,7 +39,7 @@
       notify: Reload systemd daemon
 
     - name: Configure logind idle action
-      ansible.builtin.blockinfile:
+      blockinfile:
         path: "{{ logind_conf_path }}"
         owner: root
         group: root
@@ -56,7 +56,7 @@
         - Restart systemd-logind
 
     - name: Mask sleep and hibernate targets
-      ansible.builtin.systemd:
+      systemd:
         name: "{{ item }}"
         masked: true
         state: stopped
@@ -65,10 +65,10 @@
 
   handlers:
     - name: Reload systemd daemon
-      ansible.builtin.command: systemctl daemon-reload
+      command: systemctl daemon-reload
       become: true
 
     - name: Restart systemd-logind
-      ansible.builtin.service:
+      service:
         name: systemd-logind
         state: restarted
