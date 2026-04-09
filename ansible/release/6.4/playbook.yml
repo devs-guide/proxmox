@@ -13,6 +13,11 @@
     python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
     python_src_archive: "{{ python_src_dir }}.tgz"
     ansible_venv_python: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
+    system_python_candidates:
+      - python3.11
+      - python3.10
+      - python3.9
+      - python3.8
     ansible_venv: /opt/ansible-venv
     ansible_pkg_spec: "ansible-core>=2.15,<2.16"
     python_build_deps:
@@ -82,6 +87,20 @@
         remote_src: true
         creates: "{{ python_src_dir }}"
 
+    - name: Try to locate a newer system python3
+      shell: |
+        set -e
+        for cand in {{ system_python_candidates | join(' ') }}; do
+          if command -v "$cand" >/dev/null 2>&1; then
+            echo "$cand"
+            exit 0
+          fi
+        done
+        exit 1
+      register: system_python
+      changed_when: false
+      failed_when: false
+
     - name: Build and install Python {{ python_version }}
       shell: |
         ./configure --enable-optimizations --with-ensurepip=install
@@ -90,6 +109,11 @@
       args:
         chdir: "{{ python_src_dir }}"
         creates: "{{ ansible_venv_python }}"
+      when: system_python.rc != 0
+
+    - name: Select python for venv (prefer system if newer)
+      set_fact:
+        ansible_venv_python: "{{ (system_python.stdout | default('')) | trim if system_python.rc == 0 else ansible_venv_python }}"
 
     - name: Create ansible venv directory
       file:
@@ -109,6 +133,18 @@
 
     - name: Install Ansible core into venv
       command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    - name: Install required Ansible collections in venv
+      command: "{{ ansible_venv }}/bin/ansible-galaxy collection install community.general"
+      environment:
+        ANSIBLE_FORCE_COLOR: "false"
+      changed_when: "'Nothing to do' not in install_collections.stdout"
+      register: install_collections
+
+    - name: Ensure passlib available in venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade passlib"
       environment:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
