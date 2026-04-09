@@ -73,5 +73,3 @@
         if [ -x "$npm_path" ]; then
           ln -sf "$npm_path" /usr/local/bin/npm
         fi
-      args:
-        warn: false
