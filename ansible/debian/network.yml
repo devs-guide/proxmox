@@ -33,6 +33,13 @@
         fail_msg: "network_config is missing required keys (ssh_port, allowed_users, allow_subnets)"
 
   tasks:
+    - name: Disable IPv6 in UFW
+      lineinfile:
+        path: /etc/default/ufw
+        regexp: '^IPV6='
+        line: 'IPV6=no'
+      notify: Reload ufw
+
     - name: Configure SSH port
       lineinfile:
         path: /etc/ssh/sshd_config
@@ -92,3 +99,9 @@
       ufw:
         state: enabled
         logging: low
+      notify: Reload ufw
+
+  handlers:
+    - name: Reload ufw
+      ufw:
+        state: reloaded
