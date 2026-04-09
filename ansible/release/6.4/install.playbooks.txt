@@ -14,3 +14,4 @@ debian/sysctl.yml
 debian/power.yml
 debian/logging.yml
 debian/performance.yml
+certs.yml
