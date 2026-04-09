@@ -53,6 +53,22 @@ log.error() {
 }
 
 # -------------------------
+# Python deps
+# -------------------------
+
+ensure.pyyaml() {
+  if python3 - <<'PY' >/dev/null 2>&1
+import yaml
+PY
+  then
+    return
+  fi
+
+  log.warn "[www.pages] PyYAML not found; installing via pip --user"
+  python3 -m pip install --user --quiet PyYAML
+}
+
+# -------------------------
 # Whitelist loader
 # -------------------------
 # Reads ansible/${PLAYBOOKS} and stores non-empty, non-comment
@@ -152,6 +168,7 @@ publish.ansible.release64() {
 
     # Merge shared + platform + release group_vars into a single doc with leading ---
     mkdir -p "${tmpdir}/group_vars"
+    ensure.pyyaml
     python3 - "$tmpdir/group_vars/all.yml" <<'PY'
 import sys, yaml, pathlib
 base = pathlib.Path("ansible/group_vars/all.yml")
