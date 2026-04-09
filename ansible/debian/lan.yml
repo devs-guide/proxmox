@@ -17,6 +17,10 @@
       set_fact:
         lan_users: "{{ (user_defs | default([])) | map(attribute='name') | list }}"
 
+    - name: Build allowed_users with root fallback
+      set_fact:
+        lan_allowed_users: "{{ (lan_users | default([])) | union(['root']) }}"
+
     - name: Set LAN defaults for subsequent plays
       set_fact:
-        network_defaults: "{{ lan_defaults | combine({'allowed_users': lan_users | default([])}) }}"
+        network_defaults: "{{ lan_defaults | combine({'allowed_users': lan_allowed_users}) }}"

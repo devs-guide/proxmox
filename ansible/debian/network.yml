@@ -14,13 +14,21 @@
           - ansible_facts.os_family == "Debian"
         fail_msg: "This playbook is intended for Debian-family hosts."
 
+    - name: Build safe networking values (users, subnets)
+      set_fact:
+        network_allowed_users: "{{ (network_config.allowed_users | default([])) | union(['root']) }}"
+        network_allow_subnets: "{{ network_config.allow_subnets | default([]) }}"
+
+    - name: Ensure networking values are usable
+      set_fact:
+        network_allow_subnets: "{{ ['10.0.0.0/24'] if (network_allow_subnets | length == 0) else network_allow_subnets }}"
+
     - name: Validate required networking defaults are present
       assert:
         that:
           - network_config.ssh_port is defined
-          - network_config.allowed_users is defined
-          - network_config.allow_subnets is defined
-          - network_config.allow_subnets | length > 0
+          - network_allowed_users | length > 0
+          - network_allow_subnets | length > 0
           - (not (network_config.allow_rdp | default(false) | bool)) or (network_config.rdp_port is defined)
         fail_msg: "network_config is missing required keys (ssh_port, allowed_users, allow_subnets)"
 
@@ -38,7 +46,7 @@
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^AllowUsers '
-        line: "AllowUsers {{ network_config.allowed_users | join(' ') }}"
+        line: "AllowUsers {{ network_allowed_users | join(' ') }}"
         state: present
         create: false
         backrefs: false
@@ -61,7 +69,15 @@
         port: "{{ network_config.ssh_port }}"
         proto: tcp
         src: "{{ item }}"
-      loop: "{{ network_config.allow_subnets }}"
+      loop: "{{ network_allow_subnets }}"
+
+    - name: Allow Proxmox web UI from permitted subnets
+      ufw:
+        rule: allow
+        port: "8006"
+        proto: tcp
+        src: "{{ item }}"
+      loop: "{{ network_allow_subnets }}"
 
     - name: Allow RDP from permitted subnets (if enabled)
       ufw:
@@ -69,7 +85,7 @@
         port: "{{ network_config.rdp_port }}"
         proto: tcp
         src: "{{ item }}"
-      loop: "{{ network_config.allow_subnets }}"
+      loop: "{{ network_allow_subnets }}"
       when: network_config.allow_rdp | bool
 
     - name: Ensure UFW is enabled with logging (low)

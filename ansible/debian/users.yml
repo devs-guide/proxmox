@@ -19,7 +19,7 @@
         state: present
       loop: "{{ user_defs }}"
 
-    - name: Force password change on first login (non-root)
-      command: chage -d 0 "{{ item.name }}"
-      when: item.name != 'root'
+    - name: Clear password expiry and inactivity requirements
+      command: >
+        chage -I -1 -m 0 -M 99999 -E -1 -d {{ ansible_date_time.date }} {{ item.name }}
       loop: "{{ user_defs }}"

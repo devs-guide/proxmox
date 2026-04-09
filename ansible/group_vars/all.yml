@@ -19,13 +19,13 @@ package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_ca
 apt_cache_valid_time: 86400   # 1 day
 apt_skip_cache_refresh: true  # set to false, when not debuging playlists
 
-# Networking defaults (can be overridden per host/group)
+# Networking defaults (can be overridden per host/group). allowed_users is
+# populated from user_defs in ansible/debian/users.yml; root is always added
+# at play time to avoid lockouts.
 network_defaults:
-  allowed_users:
-    - proxmox
-    - mini            # password login allowed for this user until key is uploaded
+  allowed_users: []
   allow_subnets:
-    - 10.0.0.0/24	# Local LAN
+    - 10.0.0.0/24       # Local LAN default
   allow_rdp: true
   ssh_port: 22
   rdp_port: 3389
