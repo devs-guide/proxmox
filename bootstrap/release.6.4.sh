@@ -16,11 +16,15 @@ PLAYLIST_URL="${BASE_URL}/${PLAYLIST}"
 PLAYLIST_PATH="${TMP_DIR}/${PLAYLIST}"
 GROUP_VARS_DIR="${TMP_DIR}/group_vars"
 BASE_GROUP_VARS_FILE="base.yml"
+BUSTER_GROUP_VARS_FILE="buster.yml"
 GROUP_VARS_FILE="all.yml"
 BASE_GROUP_VARS_URL="https://devs-guide.github.io/proxmox/ansible/group_vars/all.yml"
+BUSTER_GROUP_VARS_URL="https://devs-guide.github.io/proxmox/ansible/group_vars/${BUSTER_GROUP_VARS_FILE}"
 GROUP_VARS_URL="${BASE_URL}/group_vars/${GROUP_VARS_FILE}"
 BASE_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${BASE_GROUP_VARS_FILE}"
+BUSTER_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${BUSTER_GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
+MERGED_GROUP_VARS_PATH="${GROUP_VARS_DIR}/combined.yml"
 
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -87,6 +91,16 @@ fetch.groupvars() {
     exit 1
   fi
 
+  log "Fetching buster group_vars: ${BUSTER_GROUP_VARS_URL}"
+  if ! wget -qO "${BUSTER_GROUP_VARS_PATH}" "${BUSTER_GROUP_VARS_URL}"; then
+    log.error "Failed to fetch buster group_vars: ${BUSTER_GROUP_VARS_URL}"
+    exit 1
+  fi
+  if [[ ! -s "${BUSTER_GROUP_VARS_PATH}" ]]; then
+    log.error "Buster group_vars is empty: ${BUSTER_GROUP_VARS_URL}"
+    exit 1
+  fi
+
   log "Fetching release group_vars: ${GROUP_VARS_URL}"
   if ! wget -qO "${GROUP_VARS_PATH}" "${GROUP_VARS_URL}"; then
     log.error "Failed to fetch release group_vars: ${GROUP_VARS_URL}"
@@ -96,6 +110,41 @@ fetch.groupvars() {
     log.error "Release group_vars is empty: ${GROUP_VARS_URL}"
     exit 1
   fi
+}
+
+merge.groupvars() {
+  # Merge base + platform + release into one temp vars file to avoid duplicate-key warnings.
+  log "Merging group_vars (base + buster + release)..."
+  python3 - "$BASE_GROUP_VARS_PATH" "$BUSTER_GROUP_VARS_PATH" "$GROUP_VARS_PATH" "$MERGED_GROUP_VARS_PATH" <<'PY'
+import sys, yaml, os
+
+def merge(a, b):
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return b
+    out = dict(a)
+    for k, v in b.items():
+        if k in out:
+            out[k] = merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+paths = sys.argv[1:-1]
+dest = sys.argv[-1]
+merged = {}
+for path in paths:
+    with open(path, 'r') as fh:
+        data = yaml.safe_load(fh) or {}
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path} did not parse to a mapping")
+    merged = merge(merged, data)
+
+with open(dest, 'w') as fh:
+    yaml.safe_dump(merged, fh, default_flow_style=False, sort_keys=False)
+PY
+  log "Merged group_vars written to ${MERGED_GROUP_VARS_PATH}"
 }
 
 fetch.playbook() {
@@ -125,13 +174,19 @@ fetch.playbook() {
 run.playlist() {
   log "Running 6.4 playlist via ansible..."
   local ansible_bin="ansible-playbook"
-  local extra_vars_args=(-e "@${BASE_GROUP_VARS_PATH}" -e "@${GROUP_VARS_PATH}")
+  local extra_vars_args=("-e" "@${MERGED_GROUP_VARS_PATH}")
+  local venv_ansible="/opt/ansible-venv/bin/ansible-playbook"
   while IFS= read -r line; do
     line="${line%%$'\r'}"
     line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
     [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
+    # After playbook.yml runs, prefer the venv ansible (ansible-core 2.15).
+    if [[ -x "${venv_ansible}" ]]; then
+      ansible_bin="${venv_ansible}"
+    fi
+
     if ! "${ansible_bin}" -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
       log.error "Ansible failed on playbook: ${line}"
       exit 1
@@ -148,6 +203,7 @@ maybe.run.ansible() {
   ensure.ansible.venv
   fetch.playlist
   fetch.groupvars
+  merge.groupvars
   run.playlist
 }
 

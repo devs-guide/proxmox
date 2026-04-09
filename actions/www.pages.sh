@@ -125,6 +125,7 @@ publish.ansible() {
     "--include=config.github.yml"     # shared config consumed by bootstrap
     "--include=group_vars/"           # shared vars directory
     "--include=group_vars/all.yml"    # global vars for playbooks
+    "--include=group_vars/buster.yml" # platform-specific vars for Proxmox 6/Buster
     "--include=debian.packages.yml"   # package catalog used by playbooks
   )
   local playbook_to_run
@@ -149,19 +150,37 @@ publish.ansible.release64() {
 
     rsync -av ansible/release/6.4/ "${tmpdir}/"
 
-    # Merge shared + release group_vars into a single doc with leading ---
+    # Merge shared + platform + release group_vars into a single doc with leading ---
     mkdir -p "${tmpdir}/group_vars"
-    local release_tmp
-    release_tmp="$(mktemp)"
-    # Drop any leading document marker from release overrides to avoid multi-doc output
-    sed '1{/^---[[:space:]]*$/d}' ansible/release/6.4/group_vars/all.yml > "${release_tmp}"
-    {
-      echo "---"
-      cat ansible/group_vars/all.yml
-      echo
-      cat "${release_tmp}"
-    } > "${tmpdir}/group_vars/all.yml"
-    rm -f "${release_tmp}"
+    python3 - "$tmpdir/group_vars/all.yml" <<'PY'
+import sys, yaml, pathlib
+base = pathlib.Path("ansible/group_vars/all.yml")
+platform = pathlib.Path("ansible/group_vars/buster.yml")
+release = pathlib.Path("ansible/release/6.4/group_vars/all.yml")
+dest = pathlib.Path(sys.argv[1])
+
+def merge(a, b):
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return b
+    out = dict(a)
+    for k, v in b.items():
+        if k in out:
+            out[k] = merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+merged = {}
+for path in (base, platform, release):
+    with path.open() as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path} did not parse to a mapping")
+    merged = merge(merged, data)
+
+with dest.open("w") as fh:
+    yaml.safe_dump(merged, fh, default_flow_style=False, sort_keys=False)
+PY
 
     rsync -av "${tmpdir}/" "${PATH_TO[publish]}/ansible/release/6.4/"
     rm -rf "${tmpdir}"
