@@ -115,6 +115,16 @@ fetch.groupvars() {
 merge.groupvars() {
   # Merge base + platform + release into one temp vars file to avoid duplicate-key warnings.
   log "Merging group_vars (base + buster + release)..."
+  # Ensure PyYAML is available on older Buster hosts
+  if ! python3 - <<'PY' >/dev/null 2>&1
+import yaml
+PY
+  then
+    log "Installing python3-yaml for merge support..."
+    apt-get update -y
+    apt-get install -y --no-install-recommends python3-yaml
+  fi
+
   python3 - "$BASE_GROUP_VARS_PATH" "$BUSTER_GROUP_VARS_PATH" "$GROUP_VARS_PATH" "$MERGED_GROUP_VARS_PATH" <<'PY'
 import sys, yaml, os
 
@@ -142,7 +152,7 @@ for path in paths:
     merged = merge(merged, data)
 
 with open(dest, 'w') as fh:
-    yaml.safe_dump(merged, fh, default_flow_style=False, sort_keys=False)
+    yaml.safe_dump(merged, fh, default_flow_style=False)
 PY
   log "Merged group_vars written to ${MERGED_GROUP_VARS_PATH}"
 }
