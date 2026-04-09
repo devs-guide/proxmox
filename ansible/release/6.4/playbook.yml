@@ -137,7 +137,7 @@
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     - name: Install required Ansible collections in venv
-      command: "{{ ansible_venv }}/bin/ansible-galaxy collection install community.general"
+      command: "{{ ansible_venv }}/bin/ansible-galaxy collection install community.general:8.6.0"
       environment:
         ANSIBLE_FORCE_COLOR: "false"
       changed_when: "'Nothing to do' not in install_collections.stdout"
