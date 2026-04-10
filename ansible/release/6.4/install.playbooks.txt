@@ -5,7 +5,6 @@ enterprise.yml
 bootstrap.yml
 packages.yml
 playbook.yml
-node.yml
 debian/users.yml
 debian/lan.yml
 debian/network.yml
@@ -14,5 +13,6 @@ debian/sysctl.yml
 debian/power.yml
 debian/logging.yml
 debian/performance.yml
-../dell/idrac.yml
 certs.yml
+node.yml
+dell/idrac.yml
