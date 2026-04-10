@@ -53,6 +53,27 @@ require.pve6() {
   exit 1
 }
 
+prepare.buster.archives() {
+  # Ensure apt points at archived Debian/Proxmox mirrors before any installs.
+  log "Preparing archived Debian/Proxmox repos for Buster..."
+  cat > /etc/apt/sources.list <<'EOF'
+deb http://archive.debian.org/debian buster main contrib non-free
+deb-src http://archive.debian.org/debian buster main contrib non-free
+deb http://archive.debian.org/debian-security buster/updates main contrib non-free
+deb-src http://archive.debian.org/debian-security buster/updates main contrib non-free
+EOF
+
+  cat > /etc/apt/apt.conf.d/99-archive-buster <<'EOF'
+Acquire::Check-Valid-Until "false";
+Acquire::AllowInsecureRepositories "true";
+EOF
+
+  rm -f /etc/apt/sources.list.d/pve-enterprise.list
+  cat > /etc/apt/sources.list.d/pve-no-subscription.list <<'EOF'
+deb http://archive.proxmox.com/debian/pve buster pve-no-subscription
+EOF
+}
+
 ensure.ansible.venv() {
   # Minimal bootstrap: ensure ansible-playbook exists (can be old); playbook.yml will enforce modern venv
   if command -v ansible-playbook >/dev/null 2>&1; then
@@ -221,6 +242,7 @@ main() {
   require.root
   require.apt
   require.pve6
+  prepare.buster.archives
   maybe.run.ansible
 }
 
