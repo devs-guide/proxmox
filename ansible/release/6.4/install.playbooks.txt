@@ -4,6 +4,7 @@ debian/sources.buster.yml
 enterprise.yml
 bootstrap.yml
 packages.yml
+debian/install.packages.yml
 playbook.yml
 debian/users.yml
 debian/lan.yml
