@@ -149,6 +149,8 @@ publish.ansible() {
   for playbook_to_run in ${PKGS[ansible]}; do
     rsync_includes+=( "--include=debian/${playbook_to_run}" )
   done
+  # Also include Dell-specific playbooks if referenced
+  rsync_includes+=( "--include=dell/**" )
 
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
 
