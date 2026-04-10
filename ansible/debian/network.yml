@@ -33,12 +33,24 @@
         fail_msg: "network_config is missing required keys (ssh_port, allowed_users, allow_subnets)"
 
   tasks:
+    - name: Ensure UFW is installed
+      apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    - name: Check UFW defaults file
+      stat:
+        path: /etc/default/ufw
+      register: ufw_default
+
     - name: Disable IPv6 in UFW
       lineinfile:
         path: /etc/default/ufw
         regexp: '^IPV6='
         line: 'IPV6=no'
       notify: Reload ufw
+      when: ufw_default.stat.exists
 
     - name: Configure SSH port
       lineinfile:
@@ -63,12 +75,6 @@
         name: sshd
         state: reloaded
       when: ansible_facts.services is not defined or 'sshd' in ansible_facts.services
-
-    - name: Ensure UFW is installed
-      apt:
-        name: ufw
-        state: present
-        update_cache: true
 
     - name: Allow SSH from permitted subnets
       ufw:

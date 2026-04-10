@@ -47,10 +47,17 @@ groups:
     description: System monitoring and I/O benchmarks.
     packages:
       - htop
+      - sysstat
       - atop
       - nmon
       - dstat
       - iotop
+      - bmon
+      - lm-sensors
+      - fancontrol
+      - i2c-tools
+      - hddtemp
+      - radeontop
       - fio
       - bonnie++
   networking:
@@ -66,6 +73,21 @@ groups:
     packages:
       - lshw
       - dmidecode
+      - inxi
+      - mesa-utils
+      - pciutils
+      - usbutils
+      - hwinfo
+      - intel-gpu-tools
+      - nvidia-detect    # optional, requires contrib/non-free enabled
+      - firmware-amd-graphics  # optional AMD GPU firmware (non-free)
+      - ipmitool
+      - freeipmi-tools
+      - ipmiutil
+      - smartmontools
+      - nvme-cli
+      - hdparm
+      - openssh-client
   dev_tools:
     description: Developer/admin utilities.
     packages:
