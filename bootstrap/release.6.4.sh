@@ -11,6 +11,7 @@ log.error(){ printf '[pve-6.4][error] %s\n' "$*" >&2; }
 TMP_DIR="/tmp/pve-6.4"
 BASE_URL="https://devs-guide.github.io/proxmox/ansible/release/6.4"
 DEBIAN_BASE_URL="https://devs-guide.github.io/proxmox/ansible/debian"
+DELL_BASE_URL="https://devs-guide.github.io/proxmox/ansible/dell"
 PLAYLIST="install.playbooks.txt"
 PLAYLIST_URL="${BASE_URL}/${PLAYLIST}"
 PLAYLIST_PATH="${TMP_DIR}/${PLAYLIST}"
@@ -185,6 +186,9 @@ fetch.playbook() {
   if [[ "${name}" == debian/* ]]; then
     url="${DEBIAN_BASE_URL}/${name#debian/}"
     dest="${TMP_DIR}/debian/${name#debian/}"
+  elif [[ "${name}" == dell/* ]]; then
+    url="${DELL_BASE_URL}/${name#dell/}"
+    dest="${TMP_DIR}/dell/${name#dell/}"
   else
     url="${BASE_URL}/${name}"
     dest="${TMP_DIR}/${name}"

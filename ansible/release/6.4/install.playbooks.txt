@@ -15,4 +15,4 @@ debian/logging.yml
 debian/performance.yml
 certs.yml
 node.yml
-../dell/idrac.yml
+dell/idrac.yml
