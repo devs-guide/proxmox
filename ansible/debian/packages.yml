@@ -94,6 +94,23 @@ groups:
       - git
       - python3
       - ksh
+  archive_iso_tools:
+    description: Archive/compression and disk image utilities.
+    packages:
+      - p7zip-full
+      - unrar-free
+      - libarchive-tools
+      - genisoimage
+      - xorriso
+      - udf-tools
+      - hfsprogs
+      - hfsutils
+      - xar
+      - apfs-fuse  # optional: read-only APFS support, availability varies by repo
+      - dmg2img
+      - file
+      - apt-file
+      - sleuthkit
   desktop_rdp_optional:
     description: Optional lightweight GUI and RDP stack.
     packages:
