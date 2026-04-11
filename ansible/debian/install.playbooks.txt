@@ -11,3 +11,4 @@ logging.yml
 performance.yml
 users.yml
 lan.yml
+node.yml

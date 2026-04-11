@@ -70,11 +70,18 @@
         create: false
         backrefs: false
 
-    - name: Reload sshd if config changed
+    - name: Determine SSH service name (ssh on modern Debian, sshd fallback)
+      set_fact:
+        ssh_service_name: >-
+          {{ 'ssh'
+             if (ansible_facts.services is defined and 'ssh' in ansible_facts.services)
+             else 'sshd' }}
+
+    - name: Reload SSH service if config changed
       service:
-        name: sshd
+        name: "{{ ssh_service_name }}"
         state: reloaded
-      when: ansible_facts.services is not defined or 'sshd' in ansible_facts.services
+      when: ssh_service_name is defined
 
     - name: Allow SSH from permitted subnets
       ufw:

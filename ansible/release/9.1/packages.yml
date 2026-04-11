@@ -1,0 +1,37 @@
+---
+- name: "[note] Trixie first-cut catalog"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - debug:
+        msg: >
+          Trixie package availability may differ (e.g., apfs-fuse may be absent).
+          Adjust package overrides if installs fail on missing packages.
+
+- name: "[pve-9.x]: base packages"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    base_packages:
+      - ca-certificates
+      - curl
+      - wget
+      - vim-tiny
+      - htop
+      - tmux
+      - net-tools
+      - rsync
+      - python3-pip
+      - python3-venv
+
+  tasks:
+    - name: Install baseline tools
+      apt:
+        name: "{{ base_packages }}"
+        state: present
+        update_cache: true

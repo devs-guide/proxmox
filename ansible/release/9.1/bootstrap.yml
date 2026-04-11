@@ -1,0 +1,21 @@
+---
+- name: "[pve-9.x]: apt bootstrap"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    apt_cache_valid_time: 0
+
+  tasks:
+    - name: Update apt cache (archive, allow unauth)
+      apt:
+        update_cache: true
+        cache_valid_time: "{{ apt_cache_valid_time }}"
+        allow_unauthenticated: true
+
+    - name: Safe upgrade
+      apt:
+        upgrade: safe
+        allow_unauthenticated: true

@@ -1,0 +1,76 @@
+---
+- name: "[pve-9.x]: regenerate pveproxy cert with IP SAN"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    cert_days: 730
+    cert_key_path: /etc/pve/local/pveproxy-ssl.key
+    cert_crt_path: /etc/pve/local/pveproxy-ssl.pem
+    cert_tmp_cnf: /tmp/pveproxy-openssl.cnf
+    cert_common_name: "{{ ansible_hostname }}{{ '.local' if (ansible_domain | default('')) == '' else '' }}"
+
+  tasks:
+    - name: Build SAN list
+      set_fact:
+        cert_sans: >-
+          {{
+            (
+              [
+                'DNS:' ~ ansible_hostname,
+                'DNS:' ~ ansible_fqdn
+              ]
+              + (
+                [ 'IP:' ~ ansible_default_ipv4.address ]
+                if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined)
+                else []
+              )
+            ) | unique
+          }}
+
+    - name: Write temporary OpenSSL config for pveproxy cert
+      copy:
+        dest: "{{ cert_tmp_cnf }}"
+        mode: "0644"
+        content: |
+          [ req ]
+          default_bits       = 2048
+          prompt             = no
+          default_md         = sha256
+          req_extensions     = v3_req
+          distinguished_name = req_distinguished_name
+
+          [ req_distinguished_name ]
+          C  = XX
+          ST = XX
+          L  = XX
+          O  = Proxmox Virtual Environment
+          OU = PVE Cluster Node
+          CN = {{ cert_common_name }}
+
+          [ v3_req ]
+          subjectAltName = {{ cert_sans | join(',') }}
+
+    - name: Generate pveproxy key and certificate with SAN
+      command: >
+        openssl req -x509 -nodes
+        -newkey rsa:2048
+        -keyout {{ cert_key_path }}
+        -out {{ cert_crt_path }}
+        -days {{ cert_days }}
+        -config {{ cert_tmp_cnf }}
+        -extensions v3_req
+      args:
+        creates: "{{ cert_crt_path }}"
+
+    - name: Restart pveproxy to load new cert
+      service:
+        name: pveproxy
+        state: restarted
+
+    - name: Remove temporary OpenSSL config
+      file:
+        path: "{{ cert_tmp_cnf }}"
+        state: absent

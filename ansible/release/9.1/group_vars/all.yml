@@ -1,0 +1,6 @@
+---
+# Release-specific overrides for Proxmox 9.1 (kept minimal; merged in CI)
+pages_ansible_dir: "ansible/release/9.1"
+package_catalog_filename: "packages.yml"
+package_catalog_url: "{{ pages_base_url }}/ansible/debian/{{ package_catalog_filename }}"
+apt_cache_valid_time: 0

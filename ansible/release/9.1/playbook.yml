@@ -1,0 +1,103 @@
+---
+- name: "[pve-9.x]: ansible venv (system python / ansible-core)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_venv: /opt/ansible-venv
+    ansible_pkg_spec: "ansible-core"  # rely on distro version unless overridden
+    system_python_candidates:
+      - python3
+      - python3.11
+      - python3.10
+      - python3.9
+      - python3.8
+
+  tasks:
+    - name: Check current venv python version (if present)
+      command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
+      register: ansible_venv_python_version
+      failed_when: false
+      changed_when: false
+
+    - name: Check current venv ansible version (if present)
+      command: "{{ ansible_venv }}/bin/ansible-playbook --version"
+      register: ansible_venv_ansible_version
+      failed_when: false
+      changed_when: false
+
+    - name: Remove existing Ansible venv if outdated (python or ansible)
+      file:
+        path: "{{ ansible_venv }}"
+        state: absent
+      when:
+        - ansible_venv_python_version.rc != 0
+          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
+          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version('2.15', '<'))
+
+    - name: Ensure python tooling present
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+
+    - name: Select python for venv (prefer first available)
+      shell: |
+        set -e
+        for cand in {{ system_python_candidates | join(' ') }}; do
+          if command -v "$cand" >/dev/null 2>&1; then
+            echo "$cand"
+            exit 0
+          fi
+        done
+        exit 1
+      register: system_python
+      changed_when: false
+      failed_when: false
+
+    - name: Abort if no python3 found
+      fail:
+        msg: "No suitable python3 found; install python3 before rerunning."
+      when: system_python.rc != 0
+
+    - name: Create ansible venv directory
+      file:
+        path: "{{ ansible_venv }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create ansible venv if missing
+      command: "{{ (system_python.stdout | trim) }} -m venv \"{{ ansible_venv }}\""
+      args:
+        creates: "{{ ansible_venv }}/bin/activate"
+
+    - name: Upgrade pip tooling in venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade pip setuptools wheel"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    - name: Install Ansible core into venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    - name: Install required Ansible collections in venv
+      command: "{{ ansible_venv }}/bin/ansible-galaxy collection install community.general:8.6.0"
+      environment:
+        ANSIBLE_FORCE_COLOR: "false"
+      changed_when: "'Nothing to do' not in install_collections.stdout"
+      register: install_collections
+
+    - name: Ensure passlib available in venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade passlib"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    - name: Expose preferred ansible-playbook path
+      set_fact:
+        ansible_playbook_bin: "{{ ansible_venv }}/bin/ansible-playbook"

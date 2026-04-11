@@ -106,7 +106,7 @@ groups:
       - hfsprogs
       - hfsutils
       - xar
-      - apfs-fuse  # optional: read-only APFS support, availability varies by repo
+      - apfs-fuse  # optional: read-only APFS support; may be absent on newer Debian releases (see release-specific notes)
       - dmg2img
       - file
       - apt-file

@@ -1,0 +1,64 @@
+---
+- name: "[debian]: configure apt sources for Trixie / Proxmox 9.x"
+  hosts: all
+  become: true
+  vars:
+    debian_release: "{{ debian_release | default('trixie') }}"
+    debian_components: "{{ debian_components | default('main contrib non-free non-free-firmware') }}"
+    proxmox_suite: "{{ proxmox_suite | default(debian_release) }}"
+    proxmox_component: "{{ proxmox_component | default('pve-no-subscription') }}"
+    proxmox_key_path: "/etc/apt/keyrings/proxmox-release-9.x.gpg"
+    proxmox_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-9.x.gpg"
+    debian_sources_path: "/etc/apt/sources.list.d/debian.sources"
+    proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"
+
+  tasks:
+    - name: Ensure apt keyring directory exists
+      file:
+        path: "/etc/apt/keyrings"
+        state: directory
+        mode: "0755"
+
+    - name: Install Proxmox repository key
+      get_url:
+        url: "{{ proxmox_key_url }}"
+        dest: "{{ proxmox_key_path }}"
+        mode: "0644"
+
+    - name: Configure Debian sources (deb822)
+      copy:
+        dest: "{{ debian_sources_path }}"
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: {{ debian_release }} {{ debian_release }}-updates
+          Components: {{ debian_components }}
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+          Types: deb
+          URIs: http://security.debian.org/debian-security
+          Suites: {{ debian_release }}-security
+          Components: {{ debian_components }}
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+    - name: Configure Proxmox no-subscription repo (deb822)
+      copy:
+        dest: "{{ proxmox_sources_path }}"
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: {{ proxmox_suite }}
+          Components: {{ proxmox_component }}
+          Signed-By: {{ proxmox_key_path }}
+
+    - name: Remove legacy Proxmox enterprise list if present
+      file:
+        path: "/etc/apt/sources.list.d/pve-enterprise.list"
+        state: absent
+
+    - name: Refresh apt cache for new sources
+      apt:
+        update_cache: true
+        cache_valid_time: "{{ apt_cache_valid_time | default(86400) }}"

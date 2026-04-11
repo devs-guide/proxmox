@@ -69,6 +69,44 @@ PY
   python3 -m pip install --user --quiet PyYAML
 }
 
+merge.groupvars() {
+  local platform_file="$1"
+  local release_file="$2"
+  local dest="$3"
+
+  ensure.pyyaml
+  python3 - "$platform_file" "$release_file" "$dest" <<'PY'
+import sys, yaml, pathlib
+base = pathlib.Path("ansible/group_vars/all.yml")
+platform = pathlib.Path(sys.argv[1])
+release = pathlib.Path(sys.argv[2])
+dest = pathlib.Path(sys.argv[3])
+
+def merge(a, b):
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return b
+    out = dict(a)
+    for k, v in b.items():
+        if k in out:
+            out[k] = merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+merged = {}
+for path in (base, platform, release):
+    with path.open() as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path} did not parse to a mapping")
+    merged = merge(merged, data)
+
+dest.parent.mkdir(parents=True, exist_ok=True)
+with dest.open("w") as fh:
+    yaml.safe_dump(merged, fh, default_flow_style=False, sort_keys=False)
+PY
+}
+
 # -------------------------
 # Whitelist loader
 # -------------------------
@@ -131,6 +169,15 @@ publish.proxmox64() {
   fi
 }
 
+publish.proxmox91() {
+  if [[ -f "bootstrap/release.9.1.sh" ]]; then
+    log.info "[www.pages] installing 9.1.sh"
+    install -m 0755 "bootstrap/release.9.1.sh" "${PATH_TO[publish]}/9.1.sh"
+  else
+    log.warn "[www.pages] release.9.1.sh not found; skipping 9.1.sh publish"
+  fi
+}
+
 publish.ansible() {
   log.info "[www.pages] syncing ansible whitelist"
   mkdir -p "${PATH_TO[publish]}/ansible"
@@ -143,7 +190,8 @@ publish.ansible() {
     "--include=group_vars/"           # shared vars directory
     "--include=group_vars/all.yml"    # global vars for playbooks
     "--include=group_vars/buster.yml" # platform-specific vars for Proxmox 6/Buster
-    "--include=debian.packages.yml"   # package catalog used by playbooks
+    "--include=debian.packages.yml"   # package catalog (legacy path, used by 6.4 RC)
+    "--include=debian/packages.yml"   # package catalog (current path under debian/)
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
@@ -209,6 +257,23 @@ PY
   fi
 }
 
+publish.ansible.release91() {
+  if [[ -d "ansible/release/9.1" ]]; then
+    log.info "[www.pages] syncing ansible release/9.1"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    rsync -av ansible/release/9.1/ "${tmpdir}/"
+
+    merge.groupvars "ansible/group_vars/trixie.yml" "ansible/release/9.1/group_vars/all.yml" "$tmpdir/group_vars/all.yml"
+
+    rsync -av "${tmpdir}/" "${PATH_TO[publish]}/ansible/release/9.1/"
+    rm -rf "${tmpdir}"
+  else
+    log.warn "[www.pages] ansible/release/9.1 not found; skipping"
+  fi
+}
+
 
 # -------------------------
 # Main runner
@@ -222,8 +287,10 @@ run.pages() {
   publish.www
   publish.bootstrap
   publish.proxmox64
+  publish.proxmox91
   publish.ansible
   publish.ansible.release64
+  publish.ansible.release91
 
   log.info "${MSG[done]}"
 }

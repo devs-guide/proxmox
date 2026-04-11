@@ -1,6 +1,6 @@
-# Proxmox VE 6.4 (Buster) archived playlist
+# Proxmox VE 9.1 (Trixie) playlist
 # Order matters
-debian/sources.buster.yml
+debian/sources.trixie.yml
 enterprise.yml
 bootstrap.yml
 packages.yml
@@ -16,4 +16,3 @@ debian/logging.yml
 debian/performance.yml
 certs.yml
 debian/node.yml
-# dell/idrac.yml
