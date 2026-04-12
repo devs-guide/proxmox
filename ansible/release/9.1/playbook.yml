@@ -1,19 +1,41 @@
 ---
-- name: "[pve-9.x]: ansible venv (system python / ansible-core)"
+- name: "[pve-9.x]: ansible venv (python 3.11 / ansible-core)"
   hosts: localhost
   connection: local
   gather_facts: false
   become: true
 
   vars:
-    ansible_venv: /opt/ansible-venv
-    ansible_pkg_spec: "ansible-core"  # rely on distro version unless overridden
+    python_version: "3.11.9"
+    python_major_minor: "3.11"
+    python_prefix: "/usr/local"
+    python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
+    python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
+    python_src_archive: "{{ python_src_dir }}.tgz"
+    ansible_venv_python: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
     system_python_candidates:
-      - python3
       - python3.11
-      - python3.10
-      - python3.9
-      - python3.8
+      - python3
+    ansible_venv: /opt/ansible-venv
+    ansible_pkg_spec: "ansible-core>=2.19,<2.21"
+    python_build_deps:
+      - build-essential
+      - libssl-dev
+      - zlib1g-dev
+      - libbz2-dev
+      - libreadline-dev
+      - libsqlite3-dev
+      - libncursesw5-dev
+      - tk-dev
+      - libgdbm-dev
+      - libgdbm-compat-dev
+      - liblzma-dev
+      - libffi-dev
+      - uuid-dev
+      - wget
+      - curl
+      - ca-certificates
+      - xz-utils
 
   tasks:
     - name: Check current venv python version (if present)
@@ -28,25 +50,13 @@
       failed_when: false
       changed_when: false
 
-    - name: Remove existing Ansible venv if outdated (python or ansible)
-      file:
-        path: "{{ ansible_venv }}"
-        state: absent
-      when:
-        - ansible_venv_python_version.rc != 0
-          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
-          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version('2.15', '<'))
-
-    - name: Ensure python tooling present
+    - name: Ensure python build deps present
       apt:
-        name:
-          - python3
-          - python3-pip
-          - python3-venv
+        name: "{{ python_build_deps }}"
         state: present
         update_cache: true
 
-    - name: Select python for venv (prefer first available)
+    - name: Try to locate a system python3.11
       shell: |
         set -e
         for cand in {{ system_python_candidates | join(' ') }}; do
@@ -60,10 +70,53 @@
       changed_when: false
       failed_when: false
 
-    - name: Abort if no python3 found
-      fail:
-        msg: "No suitable python3 found; install python3 before rerunning."
+    - name: Ensure python source directory exists
+      file:
+        path: "{{ python_prefix }}/src"
+        state: directory
+        mode: "0755"
+
+    - name: Download Python {{ python_version }} source
+      get_url:
+        url: "{{ python_src_url }}"
+        dest: "{{ python_src_archive }}"
+        mode: "0644"
       when: system_python.rc != 0
+
+    - name: Unpack Python {{ python_version }} source
+      unarchive:
+        src: "{{ python_src_archive }}"
+        dest: "{{ python_prefix }}/src"
+        remote_src: true
+        creates: "{{ python_src_dir }}"
+      when: system_python.rc != 0
+
+    - name: Build and install Python {{ python_version }}
+      shell: |
+        ./configure --enable-optimizations --with-ensurepip=install
+        make -j"$(nproc)"
+        make altinstall
+      args:
+        chdir: "{{ python_src_dir }}"
+        creates: "{{ ansible_venv_python }}"
+      when: system_python.rc != 0
+
+    - name: Select python for venv (prefer system if available)
+      set_fact:
+        ansible_venv_python: >-
+          {{
+            (system_python.stdout | default('') | trim)
+            if system_python.rc == 0 else ansible_venv_python
+          }}
+
+    - name: Remove existing Ansible venv if outdated (python or ansible)
+      file:
+        path: "{{ ansible_venv }}"
+        state: absent
+      when:
+        - ansible_venv_python_version.rc != 0
+          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith('3.11'))
+          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version('2.19', '<'))
 
     - name: Create ansible venv directory
       file:
