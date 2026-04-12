@@ -74,7 +74,7 @@
             + ((host_platform_family == 'proxmox') | ternary(['gpu_vendor_optional'], []))
           }}
 
-    - name: Show effective package groups (dry summary)
+    - name: Show effective package groups (post-excludes)
       debug:
         msg: "Group {{ item.key }} packages: {{ item.value.packages | default([]) }}"
       loop: "{{ effective_catalog | dict2items }}"

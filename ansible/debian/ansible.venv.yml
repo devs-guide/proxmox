@@ -47,7 +47,9 @@
           {{
             (system_ansible_version.rc != 0)
             or (
-              (system_ansible_version.stdout | regex_search('ansible \\[core ([0-9.]+)\\]', '\\1')) is version(ansible_core_min, '<')
+              (
+                (system_ansible_version.stdout | default('') | regex_search('ansible \\[core ([0-9.]+)\\]', '\\1') | default(''))
+              ) is version(ansible_core_min, '<')
             )
           }}
 
