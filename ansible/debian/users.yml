@@ -11,6 +11,13 @@
       - name: root
     default_password_hash_algo: sha512
 
+  pre_tasks:
+    - name: Ensure python3-passlib is present for password hashing
+      apt:
+        name: python3-passlib
+        state: present
+        update_cache: true
+
   tasks:
     - name: Ensure users exist with initial passwords
       user:
