@@ -11,3 +11,7 @@ package_overrides:
     packages: []  # hfsutils removed (not in Trixie)
   firmware:
     packages: []  # avoid proxmox-ve hook conflicts; keep firmware opt-in
+  gpu_vendor_optional:
+    packages: []  # avoid GPU/firmware helpers by default on PVE
+ansible_core_spec: "ansible-core>=2.19,<2.21"
+python_version: "3.11.9"

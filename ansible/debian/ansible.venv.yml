@@ -1,23 +1,21 @@
 ---
-- name: "[pve-9.x]: ansible venv (python 3.11 / ansible-core)"
-  hosts: localhost
-  connection: local
-  gather_facts: false
+- name: "[debian]: ansible venv (python 3.11)"
+  hosts: all
   become: true
-
   vars:
-    python_version: "3.11.9"
-    python_major_minor: "3.11"
-    python_prefix: "/usr/local"
+    python_version: "{{ python_version | default('3.11.9') }}"
+    python_major_minor: "{{ python_version.split('.')[0:2] | join('.') }}"
+    python_prefix: "{{ python_prefix | default('/usr/local') }}"
     python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
     python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
     python_src_archive: "{{ python_src_dir }}.tgz"
+    ansible_venv: "{{ ansible_venv | default('/opt/ansible-venv') }}"
+    ansible_core_spec: "{{ ansible_core_spec | default('ansible-core>=2.19,<2.21') }}"
+    ansible_core_min: "{{ ansible_core_min | default('2.19') }}"
     ansible_venv_python: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
     system_python_candidates:
       - python3.11
       - python3
-    ansible_venv: /opt/ansible-venv
-    ansible_pkg_spec: "ansible-core>=2.19,<2.21"
     python_build_deps:
       - build-essential
       - libssl-dev
@@ -36,7 +34,6 @@
       - curl
       - ca-certificates
       - xz-utils
-
   tasks:
     - name: Check current venv python version (if present)
       command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
@@ -115,8 +112,8 @@
         state: absent
       when:
         - ansible_venv_python_version.rc != 0
-          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith('3.11'))
-          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version('2.19', '<'))
+          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
+          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version(ansible_core_min, '<'))
 
     - name: Create ansible venv directory
       file:
@@ -125,7 +122,7 @@
         mode: "0755"
 
     - name: Create ansible venv if missing
-      command: "{{ (system_python.stdout | trim) }} -m venv \"{{ ansible_venv }}\""
+      command: "{{ ansible_venv_python }} -m venv \"{{ ansible_venv }}\""
       args:
         creates: "{{ ansible_venv }}/bin/activate"
 
@@ -135,7 +132,7 @@
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     - name: Install Ansible core into venv
-      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_pkg_spec }}"
+      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_core_spec }}"
       environment:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
@@ -143,8 +140,8 @@
       command: "{{ ansible_venv }}/bin/ansible-galaxy collection install community.general:8.6.0"
       environment:
         ANSIBLE_FORCE_COLOR: "false"
-      changed_when: "'Nothing to do' not in install_collections.stdout"
       register: install_collections
+      changed_when: "'Nothing to do' not in install_collections.stdout"
 
     - name: Ensure passlib available in venv
       command: "{{ ansible_venv }}/bin/pip install --upgrade passlib"
