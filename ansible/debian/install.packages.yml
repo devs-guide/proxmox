@@ -29,6 +29,11 @@
     exclude_packages: []   # e.g., [ "mailutils", "task-lxde-desktop" ]
 
   pre_tasks:
+    - name: Add proxmox-specific excludes to global exclude list
+      ansible.builtin.set_fact:
+        exclude_packages: "{{ exclude_packages + proxmox_excludes }}"
+      when: host_platform_family == 'proxmox'
+
     - name: Ensure package catalog exists alongside playbook
       ansible.builtin.stat:
         path: "{{ package_catalog_file }}"
@@ -56,27 +61,6 @@
             effective_catalog
             | dict2items
             | rejectattr('key', 'in', (host_platform_family == 'proxmox') | ternary(['firmware', 'apple_media_optional'], []))
-            | list
-            | items2dict
-          }}
-
-    - name: Apply Proxmox-specific package excludes
-      ansible.builtin.set_fact:
-        effective_catalog: >-
-          {{
-            effective_catalog
-            | dict2items
-            | map('combine', {
-                'value': {
-                  'packages': (
-                    (item.value.packages | default([]))
-                    | difference(
-                        (host_platform_family == 'proxmox')
-                        | ternary(proxmox_excludes, [])
-                      )
-                  )
-                }
-              })
             | list
             | items2dict
           }}

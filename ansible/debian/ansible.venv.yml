@@ -9,7 +9,7 @@
     python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
     python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
     python_src_archive: "{{ python_src_dir }}.tgz"
-    ansible_venv: "{{ ansible_venv | default('/opt/ansible-venv') }}"
+    ansible_venv: "/opt/ansible-venv"
     ansible_core_spec: "{{ ansible_core_spec | default('ansible-core>=2.19,<2.21') }}"
     ansible_core_min: "{{ ansible_core_min | default('2.19') }}"
     ansible_venv_python: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
