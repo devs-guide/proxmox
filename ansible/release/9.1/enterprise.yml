@@ -10,8 +10,27 @@
     proxmox_enterprise: false   # override via -e proxmox_enterprise=true
     proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"
     proxmox_key_path: "/etc/apt/keyrings/proxmox-release-trixie.gpg"
+    proxmox_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg"
 
   tasks:
+    - name: Ensure apt keyring directory exists
+      file:
+        path: "/etc/apt/keyrings"
+        state: directory
+        mode: "0755"
+
+    - name: Check for existing Proxmox repository key
+      stat:
+        path: "{{ proxmox_key_path }}"
+      register: proxmox_key
+
+    - name: Install Proxmox repository key (if missing)
+      get_url:
+        url: "{{ proxmox_key_url }}"
+        dest: "{{ proxmox_key_path }}"
+        mode: "0644"
+      when: not proxmox_key.stat.exists
+
     - name: Determine Proxmox component
       set_fact:
         proxmox_component: "{{ 'pve-enterprise' if proxmox_enterprise | bool else 'pve-no-subscription' }}"

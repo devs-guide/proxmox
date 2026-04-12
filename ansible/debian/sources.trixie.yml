@@ -3,14 +3,9 @@
   hosts: all
   become: true
   vars:
-    debian_release: "{{ debian_release | default('trixie') }}"
-    debian_components: "{{ debian_components | default('main contrib non-free non-free-firmware') }}"
-    proxmox_suite: "{{ proxmox_suite | default(debian_release) }}"
-    proxmox_component: "{{ proxmox_component | default('pve-no-subscription') }}"
-    proxmox_key_path: "/etc/apt/keyrings/proxmox-release-trixie.gpg"
-    proxmox_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg"
+    debian_release: "trixie"
+    debian_components: "main contrib non-free non-free-firmware"
     debian_sources_path: "/etc/apt/sources.list.d/debian.sources"
-    proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"
 
   tasks:
     - name: Ensure apt keyring directory exists
@@ -18,12 +13,6 @@
         path: "/etc/apt/keyrings"
         state: directory
         mode: "0755"
-
-    - name: Install Proxmox repository key
-      get_url:
-        url: "{{ proxmox_key_url }}"
-        dest: "{{ proxmox_key_path }}"
-        mode: "0644"
 
     - name: Configure Debian sources (deb822)
       copy:
@@ -42,23 +31,7 @@
           Components: {{ debian_components }}
           Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
-    - name: Configure Proxmox no-subscription repo (deb822)
-      copy:
-        dest: "{{ proxmox_sources_path }}"
-        mode: "0644"
-        content: |
-          Types: deb
-          URIs: http://download.proxmox.com/debian/pve
-          Suites: {{ proxmox_suite }}
-          Components: {{ proxmox_component }}
-          Signed-By: {{ proxmox_key_path }}
-
-    - name: Remove legacy Proxmox enterprise list if present
-      file:
-        path: "/etc/apt/sources.list.d/pve-enterprise.list"
-        state: absent
-
     - name: Refresh apt cache for new sources
       apt:
         update_cache: true
-        cache_valid_time: "{{ apt_cache_valid_time | default(86400) }}"
+        cache_valid_time: 0
