@@ -66,17 +66,20 @@
           {{
             effective_catalog
             | dict2items
-            | map(
-                'combine',
-                {
-                  'value': {
-                    'packages': (
-                      (item.value.packages | default([]))
-                      | difference((host_platform_family == 'proxmox') | ternary(proxmox_excludes, []))
-                    )
-                  }
+            | map('combine', {
+                'value': {
+                  'packages': (
+                    (item.value.packages | default([]))
+                    | difference(
+                        (host_platform_family == 'proxmox')
+                        | ternary(proxmox_excludes, [])
+                      )
+                  )
                 }
-              )
+              })
+            | list
+            | items2dict
+          }}
 
     - name: Compute effective default-disabled groups
       ansible.builtin.set_fact:
