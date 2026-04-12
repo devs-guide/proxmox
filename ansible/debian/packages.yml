@@ -73,7 +73,6 @@ groups:
       - lshw
       - dmidecode
       - inxi
-      - mesa-utils
       - pciutils
       - usbutils
       - hwinfo

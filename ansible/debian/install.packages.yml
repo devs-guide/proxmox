@@ -13,6 +13,10 @@
     package_overrides: {}
     # Host platform flavor (proxmox or debian); default proxmox for safety
     host_platform_family: "proxmox"
+    # Packages always excluded on Proxmox hosts to avoid pve-firmware conflicts
+    proxmox_excludes:
+      - firmware-amd-graphics
+      - firmware-realtek
 
     # Groups that are disabled by default but can be opted into via overrides
     # Keep desktop off by default everywhere; other optional groups are gated per host flavor.
@@ -56,6 +60,24 @@
             | items2dict
           }}
 
+    - name: Apply Proxmox-specific package excludes
+      ansible.builtin.set_fact:
+        effective_catalog: >-
+          {{
+            effective_catalog
+            | dict2items
+            | map(
+                'combine',
+                {
+                  'value': {
+                    'packages': (
+                      (item.value.packages | default([]))
+                      | difference((host_platform_family == 'proxmox') | ternary(proxmox_excludes, []))
+                    )
+                  }
+                }
+              )
+
     - name: Compute effective default-disabled groups
       ansible.builtin.set_fact:
         effective_disabled_groups: >-
@@ -71,6 +93,23 @@
       loop: "{{ effective_catalog | dict2items }}"
       loop_control:
         label: "{{ item.key }}"
+
+    - name: Simulate package installs per group (detect proxmox meta removals)
+      ansible.builtin.command: >
+        apt-get -s install {{ (item.value.packages | default([]) | difference(exclude_packages)) | join(' ') }}
+      register: sim_result
+      changed_when: false
+      failed_when: >
+        ('proxmox-ve' in sim_result.stdout)
+        or ('proxmox-default-kernel' in sim_result.stdout)
+        or ('pve-firmware' in sim_result.stdout)
+        or sim_result.rc != 0
+      loop: "{{ effective_catalog | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when:
+        - item.value.packages | default([]) | difference(exclude_packages) | length > 0
+        - package_group_overrides.get(item.key, item.key not in effective_disabled_groups)
 
     - name: Refresh apt cache (honors apt_cache_valid_time/apt_skip_cache_refresh)
       ansible.builtin.apt:
