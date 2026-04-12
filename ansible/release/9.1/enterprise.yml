@@ -8,36 +8,29 @@
   vars:
     pve_release: "{{ proxmox_suite | default('trixie') }}"
     proxmox_enterprise: false   # override via -e proxmox_enterprise=true
-    enterprise_repo: "deb https://enterprise.proxmox.com/debian/pve {{ pve_release }} pve-enterprise"
-    no_sub_repo: "deb http://download.proxmox.com/debian/pve {{ pve_release }} pve-no-subscription"
-    enterprise_list: "/etc/apt/sources.list.d/pve-enterprise.list"
-    no_sub_list: "/etc/apt/sources.list.d/pve-no-subscription.list"
+    proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"
+    proxmox_key_path: "/etc/apt/keyrings/proxmox-release-trixie.gpg"
 
   tasks:
-    - name: Configure enterprise repo (when enabled)
+    - name: Determine Proxmox component
+      set_fact:
+        proxmox_component: "{{ 'pve-enterprise' if proxmox_enterprise | bool else 'pve-no-subscription' }}"
+
+    - name: Configure Proxmox repo (deb822)
       copy:
-        dest: "{{ enterprise_list }}"
+        dest: "{{ proxmox_sources_path }}"
         mode: "0644"
         content: |
-          {{ enterprise_repo }}
-      when: proxmox_enterprise | bool
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: {{ pve_release }}
+          Components: {{ proxmox_component }}
+          Signed-By: {{ proxmox_key_path }}
 
-    - name: Remove enterprise repo when disabled
+    - name: Remove legacy list files if present
       file:
-        path: "{{ enterprise_list }}"
+        path: "{{ item }}"
         state: absent
-      when: not proxmox_enterprise | bool
-
-    - name: Configure no-subscription repo when enterprise disabled
-      copy:
-        dest: "{{ no_sub_list }}"
-        mode: "0644"
-        content: |
-          {{ no_sub_repo }}
-      when: not proxmox_enterprise | bool
-
-    - name: Remove no-subscription repo when enterprise enabled
-      file:
-        path: "{{ no_sub_list }}"
-        state: absent
-      when: proxmox_enterprise | bool
+      loop:
+        - /etc/apt/sources.list.d/pve-enterprise.list
+        - /etc/apt/sources.list.d/pve-no-subscription.list

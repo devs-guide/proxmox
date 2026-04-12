@@ -26,6 +26,8 @@ BASE_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${BASE_GROUP_VARS_FILE}"
 TRIXIE_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${TRIXIE_GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 MERGED_GROUP_VARS_PATH="${GROUP_VARS_DIR}/combined.yml"
+PROXMOX_KEY_PATH="/etc/apt/keyrings/proxmox-release-trixie.gpg"
+PROXMOX_KEY_URL="https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg"
 
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -39,6 +41,19 @@ require.apt() {
     log.error "apt-get not found; expected Proxmox/Debian-like system."
     exit 1
   fi
+}
+
+ensure.proxmox.key() {
+  mkdir -p /etc/apt/keyrings
+  if [ -f "${PROXMOX_KEY_PATH}" ]; then
+    return
+  fi
+  log "Fetching Proxmox signing key..."
+  if ! wget -qO "${PROXMOX_KEY_PATH}" "${PROXMOX_KEY_URL}"; then
+    log.error "Failed to download Proxmox key from ${PROXMOX_KEY_URL}"
+    exit 1
+  fi
+  chmod 0644 "${PROXMOX_KEY_PATH}"
 }
 
 require.pve9_or_trixie() {
@@ -63,14 +78,7 @@ prepare.trixie.sources() {
   log "Configuring Debian Trixie and Proxmox 9.x repositories (deb822)..."
   mkdir -p /etc/apt/keyrings
 
-  local proxmox_key="/etc/apt/keyrings/proxmox-release-9.x.gpg"
-  if [ ! -f "${proxmox_key}" ]; then
-    if ! wget -qO "${proxmox_key}" "https://enterprise.proxmox.com/debian/proxmox-release-9.x.gpg"; then
-      log.error "Failed to download Proxmox key"
-      exit 1
-    fi
-    chmod 0644 "${proxmox_key}"
-  fi
+  ensure.proxmox.key
 
   cat > /etc/apt/sources.list.d/debian.sources <<'EOF'
 Types: deb
@@ -91,7 +99,7 @@ Types: deb
 URIs: http://download.proxmox.com/debian/pve
 Suites: trixie
 Components: pve-no-subscription
-Signed-By: ${proxmox_key}
+Signed-By: ${PROXMOX_KEY_PATH}
 EOF
 
   rm -f /etc/apt/sources.list.d/pve-enterprise.list

@@ -7,8 +7,8 @@
     debian_components: "{{ debian_components | default('main contrib non-free non-free-firmware') }}"
     proxmox_suite: "{{ proxmox_suite | default(debian_release) }}"
     proxmox_component: "{{ proxmox_component | default('pve-no-subscription') }}"
-    proxmox_key_path: "/etc/apt/keyrings/proxmox-release-9.x.gpg"
-    proxmox_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-9.x.gpg"
+    proxmox_key_path: "/etc/apt/keyrings/proxmox-release-trixie.gpg"
+    proxmox_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg"
     debian_sources_path: "/etc/apt/sources.list.d/debian.sources"
     proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"
 

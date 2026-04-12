@@ -190,8 +190,10 @@ publish.ansible() {
     "--include=group_vars/"           # shared vars directory
     "--include=group_vars/all.yml"    # global vars for playbooks
     "--include=group_vars/buster.yml" # platform-specific vars for Proxmox 6/Buster
+    "--include=group_vars/trixie.yml" # platform-specific vars for Proxmox 9/Trixie
     "--include=debian.packages.yml"   # package catalog (legacy path, used by 6.4 RC)
     "--include=debian/packages.yml"   # package catalog (current path under debian/)
+    "--include=debian/sources.trixie.yml" # Trixie sources play for 9.1+
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
