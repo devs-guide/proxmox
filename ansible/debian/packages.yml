@@ -77,9 +77,6 @@ groups:
       - pciutils
       - usbutils
       - hwinfo
-      - intel-gpu-tools
-      - nvidia-detect    # optional, requires contrib/non-free enabled
-      - firmware-amd-graphics  # optional AMD GPU firmware (non-free)
       - ipmitool
       - freeipmi-tools
       - ipmiutil
@@ -87,6 +84,12 @@ groups:
       - nvme-cli
       - hdparm
       - openssh-client
+  gpu_vendor_optional:
+    description: GPU vendor helpers (opt-in; availability varies)
+    packages:
+      - intel-gpu-tools
+      - nvidia-detect
+      - firmware-amd-graphics
   dev_tools:
     description: Developer/admin utilities.
     packages:
@@ -102,13 +105,18 @@ groups:
       - genisoimage
       - xorriso
       - udf-tools
-      - hfsprogs
-      - xar
-      - apfs-fuse  # optional: read-only APFS support; may be absent on newer Debian releases (see release-specific notes)
       - dmg2img
       - file
       - apt-file
       - sleuthkit
+
+  apple_media_optional:
+    description: macOS/APFS/HFS utilities (opt-in; availability varies by release)
+    packages:
+      - hfsprogs
+      - hfsplus
+      - libfsapfs-utils
+      - xar
   desktop_rdp_optional:
     description: Optional lightweight GUI and RDP stack.
     packages:

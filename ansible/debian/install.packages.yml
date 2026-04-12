@@ -9,10 +9,19 @@
 
     # Enable/disable specific groups; defaults come from default_disabled_groups
     package_group_overrides: {}  # e.g., { security: false, desktop_rdp_optional: true }
+    # Release-specific package overrides; each key maps to a group name.
+    package_overrides: {}
+    # Host platform flavor (proxmox or debian); default proxmox for safety
+    host_platform_family: "proxmox"
 
     # Groups that are disabled by default but can be opted into via overrides
-    default_disabled_groups:
+    default_disabled_groups_base:
       - desktop_rdp_optional
+      - apple_media_optional
+      - gpu_vendor_optional
+      - firmware
+    # Computed effective defaults (adds Proxmox-only disables)
+    effective_disabled_groups: []
 
     # Optional: drop specific packages globally without editing the catalog
     exclude_packages: []   # e.g., [ "mailutils", "task-lxde-desktop" ]
@@ -34,6 +43,36 @@
       ansible.builtin.set_fact:
         package_catalog: "{{ lookup('file', package_catalog_file) | from_yaml }}"
 
+    - name: Merge package overrides into catalog
+      ansible.builtin.set_fact:
+        effective_catalog: "{{ package_catalog.groups | combine(package_overrides, recursive=True) }}"
+
+    - name: Apply host flavor gating
+      ansible.builtin.set_fact:
+        effective_catalog: >-
+          {{
+            effective_catalog
+            | dict2items
+            | rejectattr('key', 'in', (host_platform_family == 'proxmox') | ternary(['firmware', 'apple_media_optional'], []))
+            | list
+            | items2dict
+          }}
+
+    - name: Compute effective default-disabled groups
+      ansible.builtin.set_fact:
+        effective_disabled_groups: >-
+          {{
+            default_disabled_groups_base
+            + ((host_platform_family == 'proxmox') | ternary(['apple_media_optional', 'firmware'], []))
+          }}
+
+    - name: Show effective package groups (dry summary)
+      debug:
+        msg: "Group {{ item.key }} packages: {{ item.value.packages | default([]) }}"
+      loop: "{{ effective_catalog | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
     - name: Refresh apt cache (honors apt_cache_valid_time/apt_skip_cache_refresh)
       ansible.builtin.apt:
         update_cache: true
@@ -43,11 +82,11 @@
   tasks:
     - name: Install package groups (honor enabled/override flags and exclude list)
       ansible.builtin.apt:
-        name: "{{ item.value.packages | difference(exclude_packages) }}"
+        name: "{{ item.value.packages | default([]) | difference(exclude_packages) }}"
         state: present
-      loop: "{{ package_catalog.groups | dict2items }}"
+      loop: "{{ effective_catalog | dict2items }}"
       loop_control:
         label: "{{ item.key }}"
       when:
         - item.value.packages | default([]) | difference(exclude_packages) | length > 0
-        - package_group_overrides.get(item.key, item.key not in default_disabled_groups)
+        - package_group_overrides.get(item.key, item.key not in effective_disabled_groups)
