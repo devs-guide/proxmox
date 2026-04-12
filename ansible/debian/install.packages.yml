@@ -15,11 +15,9 @@
     host_platform_family: "proxmox"
 
     # Groups that are disabled by default but can be opted into via overrides
+    # Keep desktop off by default everywhere; other optional groups are gated per host flavor.
     default_disabled_groups_base:
       - desktop_rdp_optional
-      - apple_media_optional
-      - gpu_vendor_optional
-      - firmware
     # Computed effective defaults (adds Proxmox-only disables)
     effective_disabled_groups: []
 
@@ -64,6 +62,7 @@
           {{
             default_disabled_groups_base
             + ((host_platform_family == 'proxmox') | ternary(['apple_media_optional', 'firmware'], []))
+            + ((host_platform_family == 'proxmox') | ternary(['gpu_vendor_optional'], []))
           }}
 
     - name: Show effective package groups (dry summary)
