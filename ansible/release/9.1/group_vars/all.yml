@@ -4,3 +4,10 @@ pages_ansible_dir: "ansible/release/9.1"
 package_catalog_filename: "packages.yml"
 package_catalog_url: "{{ pages_base_url }}/ansible/debian/{{ package_catalog_filename }}"
 apt_cache_valid_time: 0
+package_overrides:
+  monitoring_benchmark:
+    packages: []  # hddtemp removed (not in Trixie)
+  archive_iso_tools:
+    packages: []  # hfsutils removed (not in Trixie)
+  firmware:
+    packages: []  # avoid proxmox-ve hook conflicts; keep firmware opt-in

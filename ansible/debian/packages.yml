@@ -56,7 +56,6 @@ groups:
       - lm-sensors
       - fancontrol
       - i2c-tools
-      - hddtemp
       - radeontop
       - fio
       - bonnie++
@@ -104,7 +103,6 @@ groups:
       - xorriso
       - udf-tools
       - hfsprogs
-      - hfsutils
       - xar
       - apfs-fuse  # optional: read-only APFS support; may be absent on newer Debian releases (see release-specific notes)
       - dmg2img
@@ -128,4 +126,4 @@ groups:
   firmware:
     description: Firmware commonly needed on commodity NICs.
     packages:
-      - firmware-realtek
+      # Leave firmware installs opt-in per release; empty by default on shared catalog
