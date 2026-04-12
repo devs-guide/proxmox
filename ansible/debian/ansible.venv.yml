@@ -3,9 +3,9 @@
   hosts: all
   become: true
   vars:
-    python_version: "{{ python_version | default('3.11.9') }}"
-    python_major_minor: "{{ python_version.split('.')[0:2] | join('.') }}"
-    python_prefix: "{{ python_prefix | default('/usr/local') }}"
+    python_version: "3.11.9"
+    python_major_minor: "3.11"
+    python_prefix: "/usr/local"
     python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
     python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
     python_src_archive: "{{ python_src_dir }}.tgz"
@@ -35,6 +35,26 @@
       - ca-certificates
       - xz-utils
   tasks:
+    - name: Check system ansible version
+      command: ansible-playbook --version
+      register: system_ansible_version
+      failed_when: false
+      changed_when: false
+
+    - name: Determine if venv is required
+      set_fact:
+        ansible_venv_required: >-
+          {{
+            (system_ansible_version.rc != 0)
+            or (
+              (system_ansible_version.stdout | regex_search('ansible \\[core ([0-9.]+)\\]', '\\1')) is version(ansible_core_min, '<')
+            )
+          }}
+
+    - name: Skip venv setup when system ansible meets minimum
+      meta: end_play
+      when: not ansible_venv_required
+
     - name: Check current venv python version (if present)
       command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
       register: ansible_venv_python_version
