@@ -3,6 +3,7 @@
   hosts: all
   become: true
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
     debian_release: "buster"
     debian_components: "main contrib non-free"
 

@@ -6,6 +6,7 @@
   become: false              # metal.sh already enforces root
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
     apt_cache_valid_time: 0  # always refresh; this is the initial run
 
   tasks:

@@ -3,6 +3,7 @@
   hosts: all
   become: true
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
     # Path to canonical package catalog (local) and remote fallback
     package_catalog_file: "{{ playbook_dir }}/{{ package_catalog_filename | default('debian.packages.yml') }}"
     package_catalog_url_effective: "{{ package_catalog_url | default(pages_base_url ~ '/' ~ pages_ansible_dir ~ '/' ~ package_catalog_filename) }}"

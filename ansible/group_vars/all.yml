@@ -19,6 +19,12 @@ package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_ca
 apt_cache_valid_time: 86400   # 1 day
 apt_skip_cache_refresh: true  # set to false, when not debuging playlists
 
+# Interpreter policy for managed Ansible:
+# keep apt-backed tasks on the distro Python that carries python3-apt,
+# while allowing the managed control plane to use custom Python 3.12.
+ansible_python_interpreter_system: "/usr/bin/python3"
+ansible_python_interpreter_managed: "/usr/local/bin/python3.12"
+
 # Networking defaults (can be overridden per host/group). allowed_users is
 # populated from user_defs in ansible/debian/users.yml; root is always added
 # at play time to avoid lockouts.

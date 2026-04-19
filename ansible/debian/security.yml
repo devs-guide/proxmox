@@ -4,6 +4,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
     security_packages:
       - fail2ban
       - auditd

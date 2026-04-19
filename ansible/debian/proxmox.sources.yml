@@ -3,6 +3,7 @@
     hosts: all
     become: true
     vars:
+      ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
       debian_release: "{{ ansible_facts.distribution_release | default('bookworm') }}"
       debian_components: "main contrib non-free-firmware"
 
