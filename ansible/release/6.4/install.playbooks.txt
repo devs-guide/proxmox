@@ -3,9 +3,10 @@
 debian/sources.buster.yml
 enterprise.yml
 bootstrap.yml
+debian/build.python.yml
+debian/ansible.venv.yml
 packages.yml
 debian/install.packages.yml
-playbook.yml
 debian/users.yml
 debian/lan.yml
 debian/network.yml

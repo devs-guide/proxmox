@@ -26,6 +26,17 @@ BASE_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${BASE_GROUP_VARS_FILE}"
 BUSTER_GROUP_VARS_PATH="${GROUP_VARS_DIR}/${BUSTER_GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 MERGED_GROUP_VARS_PATH="${GROUP_VARS_DIR}/combined.yml"
+PYTHON_VERSION="3.12.3"
+PYTHON_MAJOR_MINOR="3.12"
+PYTHON_PREFIX="/usr/local"
+PYTHON_BIN="${PYTHON_PREFIX}/bin/python${PYTHON_MAJOR_MINOR}"
+PYTHON_SRC_DIR="${PYTHON_PREFIX}/src/Python-${PYTHON_VERSION}"
+PYTHON_SRC_ARCHIVE="${PYTHON_SRC_DIR}.tgz"
+PYTHON_SRC_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
+ANSIBLE_VENV="/opt/ansible-venv"
+ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
+ANSIBLE_CORE_SPEC="ansible-core>=2.19,<2.20"
+PYTHON_BOOTSTRAP_BIN=""
 
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -75,17 +86,82 @@ deb http://archive.proxmox.com/debian/pve buster pve-no-subscription
 EOF
 }
 
-ensure.ansible.venv() {
-  # Minimal bootstrap: ensure ansible-playbook exists (can be old); playbook.yml will enforce modern venv
-  if command -v ansible-playbook >/dev/null 2>&1; then
-    log "Using existing system Ansible: $(ansible-playbook --version | head -n1)"
+ensure.python312() {
+  export DEBIAN_FRONTEND=noninteractive
+  if command -v "python${PYTHON_MAJOR_MINOR}" >/dev/null 2>&1; then
+    PYTHON_BOOTSTRAP_BIN="$(command -v "python${PYTHON_MAJOR_MINOR}")"
+    log "Using existing system Python: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
     return
   fi
 
-  log "Installing ansible from distro (temporary control)..."
-  export DEBIAN_FRONTEND=noninteractive
+  if [[ -x "${PYTHON_BIN}" ]]; then
+    PYTHON_BOOTSTRAP_BIN="${PYTHON_BIN}"
+    log "Using existing local Python: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+    return
+  fi
+
+  log "Installing Python ${PYTHON_VERSION} build prerequisites..."
   apt-get update -y
-  apt-get install -y --no-install-recommends ansible python3-apt
+  apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libncursesw5-dev \
+    tk-dev \
+    libgdbm-dev \
+    libgdbm-compat-dev \
+    liblzma-dev \
+    libffi-dev \
+    uuid-dev \
+    wget \
+    curl \
+    ca-certificates \
+    xz-utils
+
+  mkdir -p "${PYTHON_PREFIX}/src"
+  if [[ ! -s "${PYTHON_SRC_ARCHIVE}" ]]; then
+    log "Downloading Python ${PYTHON_VERSION} source..."
+    wget -qO "${PYTHON_SRC_ARCHIVE}" "${PYTHON_SRC_URL}"
+  fi
+
+  if [[ ! -d "${PYTHON_SRC_DIR}" ]]; then
+    log "Unpacking Python ${PYTHON_VERSION} source..."
+    tar -xzf "${PYTHON_SRC_ARCHIVE}" -C "${PYTHON_PREFIX}/src"
+  fi
+
+  log "Building Python ${PYTHON_VERSION}..."
+  (
+    cd "${PYTHON_SRC_DIR}"
+    ./configure --enable-optimizations --with-ensurepip=install
+    make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    make altinstall
+  )
+
+  PYTHON_BOOTSTRAP_BIN="${PYTHON_BIN}"
+}
+
+ensure.managed.ansible() {
+  export DEBIAN_FRONTEND=noninteractive
+  if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
+    if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q 'core 2\.19\.'; then
+      log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+      return
+    fi
+    log "Existing managed Ansible is out of policy; rebuilding venv..."
+    rm -rf "${ANSIBLE_VENV}"
+  fi
+
+  ensure.python312
+  log "Creating managed Ansible venv..."
+  mkdir -p "${ANSIBLE_VENV}"
+  "${PYTHON_BOOTSTRAP_BIN}" -m venv "${ANSIBLE_VENV}"
+  "${ANSIBLE_VENV}/bin/pip" install --upgrade pip setuptools wheel
+  "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
+  "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
+  log "Managed Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
 }
 
 fetch.playlist() {
@@ -208,19 +284,14 @@ fetch.playbook() {
 
 run.playlist() {
   log "Running 6.4 playlist via ansible..."
-  local ansible_bin="ansible-playbook"
+  local ansible_bin="${ANSIBLE_VENV_BIN}"
   local extra_vars_args=("-e" "@${MERGED_GROUP_VARS_PATH}")
-  local venv_ansible="/opt/ansible-venv/bin/ansible-playbook"
   while IFS= read -r line; do
     line="${line%%$'\r'}"
     line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
     [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
-    # After playbook.yml runs, prefer the venv ansible (ansible-core 2.15).
-    if [[ -x "${venv_ansible}" ]]; then
-      ansible_bin="${venv_ansible}"
-    fi
 
     if ! "${ansible_bin}" -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
       log.error "Ansible failed on playbook: ${line}"
@@ -235,7 +306,7 @@ maybe.run.ansible() {
     log "SKIP_ANSIBLE=1 set; skipping ansible playlist."
     return
   fi
-  ensure.ansible.venv
+  ensure.managed.ansible
   fetch.playlist
   fetch.groupvars
   merge.groupvars

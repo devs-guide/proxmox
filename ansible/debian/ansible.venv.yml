@@ -1,39 +1,15 @@
 ---
-- name: "[debian]: ansible venv (python 3.11)"
+- name: "[debian]: ansible venv (python 3.12 / ansible 12)"
   hosts: all
   become: true
   vars:
-    python_version: "3.11.9"
-    python_major_minor: "3.11"
-    python_prefix: "/usr/local"
-    python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
-    python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
-    python_src_archive: "{{ python_src_dir }}.tgz"
     ansible_venv: "/opt/ansible-venv"
-    ansible_core_spec: "{{ ansible_core_spec | default('ansible-core>=2.19,<2.21') }}"
+    python_version: "{{ python_version | default('3.12.3') }}"
+    python_major_minor: "{{ python_major_minor | default('3.12') }}"
+    python_prefix: "{{ python_prefix | default('/usr/local') }}"
+    ansible_core_spec: "{{ ansible_core_spec | default('ansible-core>=2.19,<2.20') }}"
     ansible_core_min: "{{ ansible_core_min | default('2.19') }}"
-    ansible_venv_python: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
-    system_python_candidates:
-      - python3.11
-      - python3
-    python_build_deps:
-      - build-essential
-      - libssl-dev
-      - zlib1g-dev
-      - libbz2-dev
-      - libreadline-dev
-      - libsqlite3-dev
-      - libncursesw5-dev
-      - tk-dev
-      - libgdbm-dev
-      - libgdbm-compat-dev
-      - liblzma-dev
-      - libffi-dev
-      - uuid-dev
-      - wget
-      - curl
-      - ca-certificates
-      - xz-utils
+    python_bootstrap_bin_default: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
   tasks:
     - name: Check system ansible version
       command: ansible-playbook --version
@@ -69,64 +45,9 @@
       failed_when: false
       changed_when: false
 
-    - name: Ensure python build deps present
-      apt:
-        name: "{{ python_build_deps }}"
-        state: present
-        update_cache: true
-
-    - name: Try to locate a system python3.11
-      shell: |
-        set -e
-        for cand in {{ system_python_candidates | join(' ') }}; do
-          if command -v "$cand" >/dev/null 2>&1; then
-            echo "$cand"
-            exit 0
-          fi
-        done
-        exit 1
-      register: system_python
-      changed_when: false
-      failed_when: false
-
-    - name: Ensure python source directory exists
-      file:
-        path: "{{ python_prefix }}/src"
-        state: directory
-        mode: "0755"
-
-    - name: Download Python {{ python_version }} source
-      get_url:
-        url: "{{ python_src_url }}"
-        dest: "{{ python_src_archive }}"
-        mode: "0644"
-      when: system_python.rc != 0
-
-    - name: Unpack Python {{ python_version }} source
-      unarchive:
-        src: "{{ python_src_archive }}"
-        dest: "{{ python_prefix }}/src"
-        remote_src: true
-        creates: "{{ python_src_dir }}"
-      when: system_python.rc != 0
-
-    - name: Build and install Python {{ python_version }}
-      shell: |
-        ./configure --enable-optimizations --with-ensurepip=install
-        make -j"$(nproc)"
-        make altinstall
-      args:
-        chdir: "{{ python_src_dir }}"
-        creates: "{{ ansible_venv_python }}"
-      when: system_python.rc != 0
-
-    - name: Select python for venv (prefer system if available)
+    - name: Select python for ansible venv
       set_fact:
-        ansible_venv_python: >-
-          {{
-            (system_python.stdout | default('') | trim)
-            if system_python.rc == 0 else ansible_venv_python
-          }}
+        ansible_venv_python: "{{ python_bootstrap_bin | default(python_bootstrap_bin_default) }}"
 
     - name: Remove existing Ansible venv if outdated (python or ansible)
       file:

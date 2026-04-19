@@ -1,0 +1,89 @@
+---
+- name: "[debian]: build python 3.12 when missing"
+  hosts: all
+  become: true
+  vars:
+    python_version: "{{ python_version | default('3.12.3') }}"
+    python_major_minor: "{{ python_major_minor | default('3.12') }}"
+    python_prefix: "{{ python_prefix | default('/usr/local') }}"
+    python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
+    python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
+    python_src_archive: "{{ python_src_dir }}.tgz"
+    python_build_deps:
+      - build-essential
+      - libssl-dev
+      - zlib1g-dev
+      - libbz2-dev
+      - libreadline-dev
+      - libsqlite3-dev
+      - libncursesw5-dev
+      - tk-dev
+      - libgdbm-dev
+      - libgdbm-compat-dev
+      - liblzma-dev
+      - libffi-dev
+      - uuid-dev
+      - wget
+      - curl
+      - ca-certificates
+      - xz-utils
+
+  tasks:
+    - name: Check whether python3.12 exists on the remote host
+      command: "python{{ python_major_minor }} --version"
+      register: python312_check
+      failed_when: false
+      changed_when: false
+
+    - name: Record whether a python build is required
+      set_fact:
+        python_build_required: "{{ python312_check.rc != 0 }}"
+
+    - name: Record preferred python executable when already present
+      set_fact:
+        python_bootstrap_bin: "python{{ python_major_minor }}"
+      when: not python_build_required
+
+    - name: Ensure python build dependencies are present
+      apt:
+        name: "{{ python_build_deps }}"
+        state: present
+        update_cache: true
+      when: python_build_required
+
+    - name: Ensure python source directory exists
+      file:
+        path: "{{ python_prefix }}/src"
+        state: directory
+        mode: "0755"
+      when: python_build_required
+
+    - name: Download Python {{ python_version }} source
+      get_url:
+        url: "{{ python_src_url }}"
+        dest: "{{ python_src_archive }}"
+        mode: "0644"
+      when: python_build_required
+
+    - name: Unpack Python {{ python_version }} source
+      unarchive:
+        src: "{{ python_src_archive }}"
+        dest: "{{ python_prefix }}/src"
+        remote_src: true
+        creates: "{{ python_src_dir }}"
+      when: python_build_required
+
+    - name: Build and install Python {{ python_version }}
+      shell: |
+        ./configure --enable-optimizations --with-ensurepip=install
+        make -j"$(nproc)"
+        make altinstall
+      args:
+        chdir: "{{ python_src_dir }}"
+        creates: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
+      when: python_build_required
+
+    - name: Record preferred python executable after build
+      set_fact:
+        python_bootstrap_bin: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
+      when: python_build_required
