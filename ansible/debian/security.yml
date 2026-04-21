@@ -4,7 +4,7 @@
   become: true
 
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     security_packages:
       - fail2ban
       - auditd
@@ -14,10 +14,8 @@
 
   tasks:
     - name: Install security and time packages
-      apt:
-        name: "{{ security_packages }}"
-        state: present
-        update_cache: false
+      command:
+        argv: "{{ ['apt-get', '-y', 'install'] + security_packages }}"
 
     - name: Ensure unattended-upgrades runs daily
       copy:

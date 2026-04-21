@@ -10,7 +10,7 @@ groups:
       - gnupg
       - curl
       - lsb-release
-      - net-toolsbut
+      - net-tools
       - iproute2
       - openssh-server
   time_sync:

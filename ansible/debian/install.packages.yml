@@ -2,8 +2,9 @@
 - name: Install Debian packages (grouped, user-tunable)
   hosts: all
   become: true
+  gather_facts: false
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     # Path to canonical package catalog (local) and remote fallback
     package_catalog_file: "{{ playbook_dir }}/{{ package_catalog_filename | default('debian.packages.yml') }}"
     package_catalog_url_effective: "{{ package_catalog_url | default(pages_base_url ~ '/' ~ pages_ansible_dir ~ '/' ~ package_catalog_filename) }}"
@@ -100,16 +101,17 @@
         - package_group_overrides.get(item.key, item.key not in effective_disabled_groups)
 
     - name: Refresh apt cache (honors apt_cache_valid_time/apt_skip_cache_refresh)
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: "{{ apt_cache_valid_time | default(86400) }}"
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - update
       when: not apt_skip_cache_refresh | default(false)
+      changed_when: false
 
   tasks:
     - name: Install package groups (honor enabled/override flags and exclude list)
-      ansible.builtin.apt:
-        name: "{{ item.value.packages | default([]) | difference(exclude_packages) }}"
-        state: present
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-y', 'install'] + (item.value.packages | default([]) | difference(exclude_packages)) }}"
       loop: "{{ effective_catalog | dict2items }}"
       loop_control:
         label: "{{ item.key }}"

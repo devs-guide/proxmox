@@ -1,10 +1,7 @@
 # Proxmox VE 6.4 (Buster) archived playlist
 # Order matters
-debian/sources.buster.yml
 enterprise.yml
 bootstrap.yml
-debian/build.python.yml
-debian/ansible.venv.yml
 packages.yml
 debian/install.packages.yml
 debian/users.yml

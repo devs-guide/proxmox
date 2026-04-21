@@ -3,16 +3,17 @@
   hosts: all
   become: true
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
 
   tasks:
     - name: Ensure rsyslog and logrotate are present
-      apt:
-        name:
+      command:
+        argv:
+          - apt-get
+          - "-y"
+          - install
           - rsyslog
           - logrotate
-        state: present
-        update_cache: false
 
     - name: Ensure rsyslog is running and enabled
       service:

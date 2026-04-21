@@ -2,22 +2,16 @@
 - name: "[debian]: baseline users (customize for production)"
   hosts: all
   become: true
+  gather_facts: true
 
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     user_defs:
       # password defaults to the username if not provided; override for real deployments
       - name: agent
       - name: proxmox
       - name: root
     default_password_hash_algo: sha512
-
-  pre_tasks:
-    - name: Ensure python3-passlib is present for password hashing
-      apt:
-        name: python3-passlib
-        state: present
-        update_cache: true
 
   tasks:
     - name: Ensure users exist with initial passwords

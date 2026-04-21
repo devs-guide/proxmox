@@ -3,13 +3,13 @@
   hosts: all
   become: true
   vars:
-    ansible_venv: "/opt/ansible-venv"
-    python_version: "{{ python_version | default('3.12.3') }}"
-    python_major_minor: "{{ python_major_minor | default('3.12') }}"
-    python_prefix: "{{ python_prefix | default('/usr/local') }}"
-    ansible_core_spec: "{{ ansible_core_spec | default('ansible-core>=2.19,<2.20') }}"
-    ansible_core_min: "{{ ansible_core_min | default('2.19') }}"
-    python_bootstrap_bin_default: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
+    ansible_venv: "{{ controller_ansible_venv | default('/opt/ansible-venv') }}"
+    python_version: "{{ controller_python_version | default('3.12.3') }}"
+    python_major_minor: "{{ controller_python_major_minor | default('3.12') }}"
+    python_prefix: "{{ controller_python_prefix | default('/usr/local') }}"
+    ansible_core_spec: "{{ controller_ansible_core_spec | default('ansible-core>=2.19,<2.20') }}"
+    ansible_core_min: "{{ controller_ansible_core_min | default('2.19') }}"
+    python_bootstrap_bin_default: "{{ managed_target_python_path | default(python_prefix ~ '/bin/python' ~ python_major_minor) }}"
   tasks:
     - name: Check system ansible version
       command: ansible-playbook --version

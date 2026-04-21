@@ -6,17 +6,21 @@
   become: true
 
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     apt_cache_valid_time: 0
 
   tasks:
     - name: Update apt cache (archive, allow unauth)
-      apt:
-        update_cache: true
-        cache_valid_time: "{{ apt_cache_valid_time }}"
-        allow_unauthenticated: true
+      command:
+        argv:
+          - apt-get
+          - update
+      changed_when: false
 
     - name: Safe upgrade
-      apt:
-        upgrade: safe
-        allow_unauthenticated: true
+      command:
+        argv:
+          - apt-get
+          - "-y"
+          - "--allow-unauthenticated"
+          - upgrade

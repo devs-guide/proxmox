@@ -3,7 +3,7 @@
   hosts: all
   become: true
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     # Allow per-play overrides; fallback to group_vars defaults
     network_overrides: {}
     network_config: "{{ (network_defaults | default({})) | combine(network_overrides | default({}), recursive=True) }}"
@@ -35,10 +35,19 @@
 
   tasks:
     - name: Ensure UFW is installed
-      apt:
-        name: ufw
-        state: present
-        update_cache: true
+      command:
+        argv:
+          - apt-get
+          - update
+      changed_when: false
+
+    - name: Install UFW package
+      command:
+        argv:
+          - apt-get
+          - "-y"
+          - install
+          - ufw
 
     - name: Check UFW defaults file
       stat:

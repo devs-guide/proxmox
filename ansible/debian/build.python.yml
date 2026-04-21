@@ -4,10 +4,13 @@
   become: true
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
-    python_version: "{{ python_version | default('3.12.3') }}"
-    python_major_minor: "{{ python_major_minor | default('3.12') }}"
-    python_prefix: "{{ python_prefix | default('/usr/local') }}"
-    python_src_dir: "{{ python_prefix }}/src/Python-{{ python_version }}"
+    python_version: "{{ managed_target_python_version | default('3.12.3') }}"
+    python_major_minor: "{{ managed_target_python_major_minor | default('3.12') }}"
+    python_source_prefix: "{{ managed_target_python_source_prefix | default('/usr/local') }}"
+    managed_target_python_home: "{{ managed_target_python_home | default('/opt/devsguide/py312') }}"
+    managed_target_python_path: "{{ managed_target_python_path | default(managed_target_python_home ~ '/bin/python') }}"
+    python_source_bin: "{{ python_source_prefix }}/bin/python{{ python_major_minor }}"
+    python_src_dir: "{{ python_source_prefix }}/src/Python-{{ python_version }}"
     python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
     python_src_archive: "{{ python_src_dir }}.tgz"
     python_build_deps:
@@ -30,20 +33,34 @@
       - xz-utils
 
   tasks:
-    - name: Check whether python3.12 exists on the remote host
-      command: "python{{ python_major_minor }} --version"
-      register: python312_check
+    - name: Check whether managed target python already exists
+      command: "{{ managed_target_python_path }} --version"
+      register: managed_target_python_check
       failed_when: false
       changed_when: false
 
-    - name: Record whether a python build is required
-      set_fact:
-        python_build_required: "{{ python312_check.rc != 0 }}"
+    - name: Check whether source python already exists
+      command: "{{ python_source_bin }} --version"
+      register: source_python_check
+      failed_when: false
+      changed_when: false
+      when: managed_target_python_check.rc != 0
 
-    - name: Record preferred python executable when already present
+    - name: Record whether a source python build is required
       set_fact:
-        python_bootstrap_bin: "python{{ python_major_minor }}"
-      when: not python_build_required
+        python_build_required: "{{ managed_target_python_check.rc != 0 and source_python_check.rc != 0 }}"
+
+    - name: Record preferred python executable when managed target python exists
+      set_fact:
+        python_bootstrap_bin: "{{ managed_target_python_path }}"
+      when: managed_target_python_check.rc == 0
+
+    - name: Record preferred source python executable when already present
+      set_fact:
+        python_bootstrap_bin: "{{ python_source_bin }}"
+      when:
+        - managed_target_python_check.rc != 0
+        - source_python_check.rc == 0
 
     - name: Ensure python build dependencies are present
       apt:
@@ -54,7 +71,7 @@
 
     - name: Ensure python source directory exists
       file:
-        path: "{{ python_prefix }}/src"
+        path: "{{ python_source_prefix }}/src"
         state: directory
         mode: "0755"
       when: python_build_required
@@ -69,7 +86,7 @@
     - name: Unpack Python {{ python_version }} source
       unarchive:
         src: "{{ python_src_archive }}"
-        dest: "{{ python_prefix }}/src"
+        dest: "{{ python_source_prefix }}/src"
         remote_src: true
         creates: "{{ python_src_dir }}"
       when: python_build_required
@@ -81,10 +98,28 @@
         make altinstall
       args:
         chdir: "{{ python_src_dir }}"
-        creates: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
+        creates: "{{ python_source_bin }}"
       when: python_build_required
 
-    - name: Record preferred python executable after build
+    - name: Record preferred source python executable after build
       set_fact:
-        python_bootstrap_bin: "{{ python_prefix }}/bin/python{{ python_major_minor }}"
+        python_bootstrap_bin: "{{ python_source_bin }}"
       when: python_build_required
+
+    - name: Ensure managed target python home parent exists
+      file:
+        path: "{{ managed_target_python_home | dirname }}"
+        state: directory
+        mode: "0755"
+      when: managed_target_python_check.rc != 0
+
+    - name: Create managed target python environment
+      command: "{{ python_bootstrap_bin }} -m venv \"{{ managed_target_python_home }}\""
+      args:
+        creates: "{{ managed_target_python_path }}"
+      when: managed_target_python_check.rc != 0
+
+    - name: Record managed target python executable after handoff creation
+      set_fact:
+        python_bootstrap_bin: "{{ managed_target_python_path }}"
+      when: managed_target_python_check.rc != 0

@@ -160,6 +160,15 @@ publish.bootstrap() {
   fi
 }
 
+publish.release.common() {
+  if [[ -f "bootstrap/release.common.sh" ]]; then
+    log.info "[www.pages] installing release.common.sh"
+    install -m 0755 "bootstrap/release.common.sh" "${PATH_TO[publish]}/release.common.sh"
+  else
+    log.warn "[www.pages] release.common.sh not found; skipping publish"
+  fi
+}
+
 publish.proxmox64() {
   if [[ -f "bootstrap/release.6.4.sh" ]]; then
     log.info "[www.pages] installing 6.4.sh"
@@ -288,6 +297,7 @@ run.pages() {
   publish.prepare
   publish.www
   publish.bootstrap
+  publish.release.common
   publish.proxmox64
   publish.proxmox91
   publish.ansible
