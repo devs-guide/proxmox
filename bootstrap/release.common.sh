@@ -72,23 +72,33 @@ ensure.python312() {
 }
 
 ensure.managed.target.python() {
+  local managed_version marker_path
+  marker_path="${MANAGED_TARGET_HANDOFF_MARKER:-${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready}"
+
   if [[ -x "${MANAGED_TARGET_PYTHON_PATH}" ]]; then
-    log "Using existing managed target Python: $("${MANAGED_TARGET_PYTHON_PATH}" --version 2>&1)"
-    PYTHON_BOOTSTRAP_BIN="${MANAGED_TARGET_PYTHON_PATH}"
-    return
+    if managed_version="$("${MANAGED_TARGET_PYTHON_PATH}" --version 2>&1)"; then
+      log "Using existing managed target Python: ${managed_version}"
+      printf '%s\n' "${managed_version}" > "${marker_path}"
+      PYTHON_BOOTSTRAP_BIN="${MANAGED_TARGET_PYTHON_PATH}"
+      return
+    fi
+    log "Existing managed target Python is invalid; rebuilding environment..."
+    rm -rf "${MANAGED_TARGET_PYTHON_HOME}"
   fi
 
   ensure.python312
   log "Creating managed target Python environment..."
   mkdir -p "$(dirname "${MANAGED_TARGET_PYTHON_HOME}")"
   "${PYTHON_BOOTSTRAP_BIN}" -m venv "${MANAGED_TARGET_PYTHON_HOME}"
+  managed_version="$("${MANAGED_TARGET_PYTHON_PATH}" --version 2>&1)"
+  printf '%s\n' "${managed_version}" > "${marker_path}"
   PYTHON_BOOTSTRAP_BIN="${MANAGED_TARGET_PYTHON_PATH}"
 }
 
 ensure.managed.ansible() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
-    if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q 'core 2\.19\.'; then
+    if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q 'core 2\.20\.'; then
       ensure.managed.target.python
       log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return

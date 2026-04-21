@@ -2,6 +2,7 @@
 # Order matters
 enterprise.yml
 bootstrap.yml
+handoff.yml
 packages.yml
 debian/install.packages.yml
 debian/users.yml

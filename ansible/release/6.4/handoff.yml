@@ -9,26 +9,14 @@
     ansible_python_interpreter: "{{ bootstrap_bridge_python_interpreter | default(ansible_python_interpreter_system) }}"
 
   tasks:
-    - name: Check managed target python path
-      command:
-        argv:
-          - test
-          - -x
-          - "{{ managed_target_python_path }}"
+    - name: Validate managed target python handoff boundary
+      raw: >-
+        test -x "{{ managed_target_python_path }}"
+        && test -f "{{ managed_target_handoff_marker }}"
+        && "{{ managed_target_python_path }}" --version
+        || {
+          echo "Managed target python handoff failed: {{ managed_target_python_path }} or {{ managed_target_handoff_marker }} is missing." >&2;
+          exit 1;
+        }
       register: managed_target_python_gate
       changed_when: false
-      failed_when: false
-
-    - name: Fail when managed target python handoff is not ready
-      fail:
-        msg: >-
-          Managed target python handoff failed: {{ managed_target_python_path }}
-          does not exist or is not executable. The bootstrap path must create
-          and validate the managed target runtime before post-handoff plays run.
-      when: managed_target_python_gate.rc != 0
-
-    - name: Show managed target python handoff
-      debug:
-        msg:
-          - "Managed target python ready."
-          - "handoff_interpreter={{ managed_target_python_path }}"

@@ -11,16 +11,8 @@
 
   tasks:
     - name: Update apt cache (archive, allow unauth)
-      command:
-        argv:
-          - apt-get
-          - update
+      raw: apt-get update
       changed_when: false
 
     - name: Safe upgrade
-      command:
-        argv:
-          - apt-get
-          - "-y"
-          - "--allow-unauthenticated"
-          - upgrade
+      raw: DEBIAN_FRONTEND=noninteractive apt-get -y --allow-unauthenticated upgrade

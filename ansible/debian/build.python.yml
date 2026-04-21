@@ -9,6 +9,7 @@
     python_source_prefix: "{{ managed_target_python_source_prefix | default('/usr/local') }}"
     managed_target_python_home: "{{ managed_target_python_home | default('/opt/ansible/py312') }}"
     managed_target_python_path: "{{ managed_target_python_path | default(managed_target_python_home ~ '/bin/python') }}"
+    managed_target_handoff_marker: "{{ managed_target_handoff_marker | default(managed_target_python_home ~ '/.handoff-ready') }}"
     python_source_bin: "{{ python_source_prefix }}/bin/python{{ python_major_minor }}"
     python_src_dir: "{{ python_source_prefix }}/src/Python-{{ python_version }}"
     python_src_url: "https://www.python.org/ftp/python/{{ python_version }}/Python-{{ python_version }}.tgz"
@@ -123,3 +124,15 @@
       set_fact:
         python_bootstrap_bin: "{{ managed_target_python_path }}"
       when: managed_target_python_check.rc != 0
+
+    - name: Validate managed target python executable
+      command: "{{ managed_target_python_path }} --version"
+      register: managed_target_python_version_check
+      changed_when: false
+
+    - name: Write managed target handoff marker
+      copy:
+        dest: "{{ managed_target_handoff_marker }}"
+        mode: "0644"
+        content: |
+          {{ managed_target_python_version_check.stdout | default(managed_target_python_version_check.stderr, true) }}
