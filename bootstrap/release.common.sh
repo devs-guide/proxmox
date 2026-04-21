@@ -89,6 +89,7 @@ ensure.managed.ansible() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
     if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q 'core 2\.19\.'; then
+      ensure.managed.target.python
       log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return
     fi

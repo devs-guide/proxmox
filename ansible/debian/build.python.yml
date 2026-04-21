@@ -7,7 +7,7 @@
     python_version: "{{ managed_target_python_version | default('3.12.3') }}"
     python_major_minor: "{{ managed_target_python_major_minor | default('3.12') }}"
     python_source_prefix: "{{ managed_target_python_source_prefix | default('/usr/local') }}"
-    managed_target_python_home: "{{ managed_target_python_home | default('/opt/devsguide/py312') }}"
+    managed_target_python_home: "{{ managed_target_python_home | default('/opt/ansible/py312') }}"
     managed_target_python_path: "{{ managed_target_python_path | default(managed_target_python_home ~ '/bin/python') }}"
     python_source_bin: "{{ python_source_prefix }}/bin/python{{ python_major_minor }}"
     python_src_dir: "{{ python_source_prefix }}/src/Python-{{ python_version }}"

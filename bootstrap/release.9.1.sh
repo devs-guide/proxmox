@@ -43,7 +43,7 @@ PYTHON_SRC_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYT
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
 ANSIBLE_CORE_SPEC="ansible-core>=2.19,<2.20"
-MANAGED_TARGET_PYTHON_HOME="/opt/devsguide/py312"
+MANAGED_TARGET_PYTHON_HOME="/opt/ansible/py312"
 MANAGED_TARGET_PYTHON_PATH="${MANAGED_TARGET_PYTHON_HOME}/bin/python"
 PYTHON_BOOTSTRAP_BIN=""
 RELEASE_LABEL="9.1"

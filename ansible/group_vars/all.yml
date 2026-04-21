@@ -31,7 +31,7 @@ controller_ansible_core_min: "2.19"
 managed_target_python_version: "3.12.3"
 managed_target_python_major_minor: "3.12"
 managed_target_python_source_prefix: "/usr/local"
-managed_target_python_home: "/opt/devsguide/py312"
+managed_target_python_home: "/opt/ansible/py312"
 managed_target_python_path: "{{ managed_target_python_home }}/bin/python"
 bootstrap_mode: "direct_handoff"
 bootstrap_use_raw_only: false
