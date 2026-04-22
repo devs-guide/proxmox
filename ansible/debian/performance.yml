@@ -10,11 +10,16 @@
     disable_console_blanking: false
 
   tasks:
-    - name: Collect installed package facts (apt)
-      ansible.builtin.package_facts:
-        manager: apt
-      vars:
-        ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    - name: Check whether linux-cpupower is installed
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - -f=${Status}
+          - linux-cpupower
+      register: cpupower_package_check
+      changed_when: false
+      failed_when: false
 
     - name: Collect service facts
       ansible.builtin.service_facts:
@@ -30,7 +35,8 @@
           GOVERNOR="performance"
       when:
         - cpupower_enable
-        - "'linux-cpupower' in ansible_facts.packages"
+        - cpupower_package_check.rc == 0
+        - "'install ok installed' in (cpupower_package_check.stdout | default(''))"
       notify: Restart cpupower service
 
     - name: Ensure cpupower service enabled (if present)
@@ -40,7 +46,8 @@
         state: started
       when:
         - cpupower_enable
-        - "'linux-cpupower' in ansible_facts.packages"
+        - cpupower_package_check.rc == 0
+        - "'install ok installed' in (cpupower_package_check.stdout | default(''))"
         - ansible_facts.services is defined
         - "'cpupower.service' in ansible_facts.services or 'cpupower' in ansible_facts.services"
 
