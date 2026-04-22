@@ -13,6 +13,8 @@
     - name: Collect installed package facts (apt)
       ansible.builtin.package_facts:
         manager: apt
+      vars:
+        ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
 
     - name: Collect service facts
       ansible.builtin.service_facts:
