@@ -6,6 +6,7 @@
   gather_facts: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     cert_days: 730
     cert_key_path: /etc/pve/local/pveproxy-ssl.key
     cert_crt_path: /etc/pve/local/pveproxy-ssl.pem

@@ -4,6 +4,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     cpupower_enable: false
     cpupower_default_path: /etc/default/cpupower
     usb_autosuspend_disable: false

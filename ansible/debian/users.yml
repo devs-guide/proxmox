@@ -24,5 +24,5 @@
 
     - name: Clear password expiry and inactivity requirements
       command: >
-        chage -I -1 -m 0 -M 99999 -E -1 -d {{ ansible_date_time.date }} {{ item.name }}
+        chage -I -1 -m 0 -M 99999 -E -1 -d {{ ansible_facts["date_time"]["date"] }} {{ item.name }}
       loop: "{{ user_defs }}"

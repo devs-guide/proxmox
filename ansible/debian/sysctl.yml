@@ -4,6 +4,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     sysctl_settings:
       net.ipv4.conf.all.rp_filter: 1
       net.ipv4.conf.default.rp_filter: 1

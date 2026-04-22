@@ -6,6 +6,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     pve_release: "buster"
     # Toggle enterprise repo; override via extra vars (-e proxmox_enterprise=true)
     proxmox_enterprise: false

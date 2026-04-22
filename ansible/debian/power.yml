@@ -4,6 +4,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     sleep_conf_path: /etc/systemd/sleep.conf
     logind_conf_path: /etc/systemd/logind.conf
     sleep_settings:

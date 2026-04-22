@@ -6,6 +6,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     nvm_version: "v0.39.7"
     nvm_dir: "/root/.nvm"
     node_version: "lts/*"
