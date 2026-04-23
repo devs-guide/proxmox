@@ -34,17 +34,11 @@
         exclude_packages_effective: "{{ exclude_packages_effective + proxmox_excludes }}"
       when: host_platform_family == 'proxmox'
 
-    - name: Ensure package catalog exists alongside playbook
-      ansible.builtin.stat:
-        path: "{{ package_catalog_file }}"
-      register: pkg_catalog
-
-    - name: Download package catalog if missing
+    - name: Refresh package catalog from published source
       ansible.builtin.get_url:
         url: "{{ package_catalog_url_effective }}"
         dest: "{{ package_catalog_file }}"
         mode: "0644"
-      when: not pkg_catalog.stat.exists
 
     - name: Load canonical Debian package catalog
       ansible.builtin.set_fact:
@@ -116,3 +110,4 @@
       when:
         - item.value.packages | default([]) | difference(exclude_packages_effective) | length > 0
         - package_group_overrides_effective.get(item.key, item.key not in effective_disabled_groups)
+
