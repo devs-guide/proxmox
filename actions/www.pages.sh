@@ -131,6 +131,24 @@ load.whitelist.ansible() {
   PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, of playbook files
 }
 
+load.release.playbook.refs() {
+  local release_dir="$1"
+  local playlist_file="${PATH_TO[root]}/ansible/release/${release_dir}/install.playbooks.txt"
+  local -n out_refs="$2"
+
+  [[ -f "${playlist_file}" ]] || return 0
+
+  mapfile -t _release_items < <(
+    sed 's/[[:space:]]*$//' "${playlist_file}" | grep -vE '^[[:space:]]*(#|$)'
+  )
+
+  local playbook_ref
+  for playbook_ref in "${_release_items[@]}"; do
+    [[ "${playbook_ref}" == debian/* ]] || continue
+    out_refs["${playbook_ref}"]=1
+  done
+}
+
 # -------------------------
 # Helpers
 # -------------------------
@@ -192,6 +210,7 @@ publish.ansible() {
   mkdir -p "${PATH_TO[publish]}/ansible"
 
   load.whitelist.ansible   # populates PKGS[ansible]
+  declare -A shared_playbooks=()
 
   local rsync_includes=(
     "--include=${PLAYBOOKS}"          # playlist file
@@ -206,7 +225,12 @@ publish.ansible() {
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
-    rsync_includes+=( "--include=debian/${playbook_to_run}" )
+    shared_playbooks["debian/${playbook_to_run}"]=1
+  done
+  load.release.playbook.refs "6.4" shared_playbooks
+  load.release.playbook.refs "9.1" shared_playbooks
+  for playbook_to_run in "${!shared_playbooks[@]}"; do
+    rsync_includes+=( "--include=${playbook_to_run}" )
   done
   # Also include Dell-specific playbooks if referenced
   rsync_includes+=( "--include=dell/**" )
