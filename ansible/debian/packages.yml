@@ -103,7 +103,7 @@ groups:
       - libarchive-tools
       - genisoimage
       - xorriso
-      - udf-tools
+      - udftools
       - dmg2img
       - file
       - apt-file
