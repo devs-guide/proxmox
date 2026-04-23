@@ -66,4 +66,25 @@ run_package_check() {
 run_package_check "9.1/Trixie"
 run_package_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
 
+run_runner_model_check() {
+  local release_label="$1"
+  shift
+
+  echo "[validate.runtime] exercising users -> lan -> network for ${release_label} ..."
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/users.yml"
+
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/lan.yml"
+
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/network.yml"
+}
+
+run_runner_model_check "9.1/Trixie"
+run_runner_model_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
+
 echo "[validate.runtime] done (check-mode only; no packages changed)."

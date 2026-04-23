@@ -49,6 +49,10 @@ user_defs:
   - name: proxmox
   - name: root
 
+# Optional explicit SSH policy override. When empty, SSH users are derived from
+# network_defaults.allowed_users or shared user_defs.
+ssh_allowed_users: []
+
 # Networking defaults (can be overridden per host/group). allowed_users is
 # derived from shared user_defs; root is always added at play time to avoid lockouts.
 network_defaults:

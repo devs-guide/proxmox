@@ -21,6 +21,10 @@
       set_fact:
         lan_allowed_users: "{{ (lan_users | default([])) | union(['root']) }}"
 
-    - name: Set LAN defaults for subsequent plays
+    - name: Show derived LAN allowed users
+      debug:
+        msg: "LAN defaults derived from shared vars: {{ lan_allowed_users | join(' ') }}"
+
+    - name: Set LAN defaults for this play only
       set_fact:
         network_defaults: "{{ lan_defaults | combine({'allowed_users': lan_allowed_users}) }}"

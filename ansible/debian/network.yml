@@ -15,14 +15,39 @@
           - ansible_facts.os_family == "Debian"
         fail_msg: "This playbook is intended for Debian-family hosts."
 
+    - name: Capture shared user names
+      set_fact:
+        shared_user_names: "{{ (user_defs | default([])) | map(attribute='name') | list }}"
+
+    - name: Resolve SSH policy inputs
+      set_fact:
+        resolved_ssh_allowed_users: >-
+          {{
+            ssh_allowed_users
+            if (ssh_allowed_users | default([]) | length > 0)
+            else (
+              network_config.allowed_users
+              if (network_config.allowed_users | default([]) | length > 0)
+              else shared_user_names
+            )
+          }}
+
     - name: Build safe networking values (users, subnets)
       set_fact:
-        network_allowed_users: "{{ (network_config.allowed_users | default([])) | union(['root']) }}"
+        network_allowed_users: "{{ (resolved_ssh_allowed_users | default([])) | union(['root']) }}"
         network_allow_subnets: "{{ network_config.allow_subnets | default([]) }}"
 
     - name: Ensure networking values are usable
       set_fact:
         network_allow_subnets: "{{ ['10.0.0.0/24'] if (network_allow_subnets | length == 0) else network_allow_subnets }}"
+
+    - name: Show resolved shared user_defs
+      debug:
+        msg: "Shared user_defs resolved to: {{ shared_user_names | join(' ') }}"
+
+    - name: Show resolved ssh_allowed_users input
+      debug:
+        msg: "SSH policy source users resolved to: {{ resolved_ssh_allowed_users | default([]) | join(' ') }}"
 
     - name: Show final SSH-allowed users
       debug:
