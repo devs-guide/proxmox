@@ -13,7 +13,7 @@
       rdp_port: 3389
 
   tasks:
-    - name: Capture allowed users from user_defs (if provided)
+    - name: Capture allowed users from shared user_defs
       set_fact:
         lan_users: "{{ (user_defs | default([])) | map(attribute='name') | list }}"
 

@@ -24,14 +24,21 @@
       set_fact:
         network_allow_subnets: "{{ ['10.0.0.0/24'] if (network_allow_subnets | length == 0) else network_allow_subnets }}"
 
+    - name: Show final SSH-allowed users
+      debug:
+        msg: "SSH AllowUsers will be set to: {{ network_allowed_users | join(' ') }}"
+
     - name: Validate required networking defaults are present
       assert:
         that:
           - network_config.ssh_port is defined
           - network_allowed_users | length > 0
+          - "'agent' in network_allowed_users"
+          - "'proxmox' in network_allowed_users"
+          - "'root' in network_allowed_users"
           - network_allow_subnets | length > 0
           - (not (network_config.allow_rdp | default(false) | bool)) or (network_config.rdp_port is defined)
-        fail_msg: "network_config is missing required keys (ssh_port, allowed_users, allow_subnets)"
+        fail_msg: "network_config is missing required SSH policy values (ssh_port, allowed_users, allow_subnets)"
 
   tasks:
     - name: Ensure UFW is installed
