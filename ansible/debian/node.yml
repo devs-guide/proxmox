@@ -7,6 +7,7 @@
 
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    node_enable: false
     nvm_version: "v0.39.7"
     nvm_dir: "/root/.nvm"
     node_version: "lts/*"
@@ -31,7 +32,9 @@
         /bin/bash /tmp/nvm-install.sh
       args:
         creates: "{{ nvm_dir }}/nvm.sh"
-      when: not nvm_sh.stat.exists
+      when:
+        - node_enable | bool
+        - not nvm_sh.stat.exists
 
     - name: Install Node.js via nvm
       shell: |
@@ -40,10 +43,15 @@
         . "{{ nvm_dir }}/nvm.sh"
         if ! nvm ls "{{ node_version }}" >/dev/null 2>&1; then
           nvm install "{{ node_version }}"
+          changed=1
+        else
+          changed=0
         fi
         nvm alias default "{{ node_version }}"
-        nvm use default
-      changed_when: true
+        echo "changed=${changed}"
+      register: node_install_result
+      changed_when: "'changed=1' in node_install_result.stdout"
+      when: node_enable | bool
 
     - name: Ensure nvm profile hook is available
       copy:
@@ -53,6 +61,7 @@
           export NVM_DIR="{{ nvm_dir }}"
           [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
           [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+      when: node_enable | bool
 
     - name: Ensure root bashrc sources nvm
       lineinfile:
@@ -60,17 +69,31 @@
         create: yes
         line: '[ -s /etc/profile.d/nvm.sh ] && . /etc/profile.d/nvm.sh'
         state: present
+      when: node_enable | bool
 
     - name: Symlink node and npm for non-login shells
       shell: |
         set -e
         export NVM_DIR="{{ nvm_dir }}"
         . "{{ nvm_dir }}/nvm.sh"
-        node_path="$(nvm which default || true)"
+        node_path="$(nvm which default)"
         npm_path="$(dirname "$node_path")/npm"
+        changed=0
         if [ -x "$node_path" ]; then
+          if [ "$(readlink /usr/local/bin/node 2>/dev/null || true)" != "$node_path" ]; then
+            changed=1
+          fi
           ln -sf "$node_path" /usr/local/bin/node
         fi
         if [ -x "$npm_path" ]; then
+          if [ "$(readlink /usr/local/bin/npm 2>/dev/null || true)" != "$npm_path" ]; then
+            changed=1
+          fi
           ln -sf "$npm_path" /usr/local/bin/npm
         fi
+        echo "changed=${changed}"
+      register: node_symlink_result
+      changed_when: "'changed=1' in node_symlink_result.stdout"
+      when:
+        - node_enable | bool
+        - nvm_sh.stat.exists

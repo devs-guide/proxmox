@@ -11,7 +11,7 @@
     cert_key_path: /etc/pve/local/pveproxy-ssl.key
     cert_crt_path: /etc/pve/local/pveproxy-ssl.pem
     cert_tmp_cnf: /tmp/pveproxy-openssl.cnf
-    cert_common_name: "{{ ansible_hostname }}{{ '.local' if (ansible_domain | default('')) == '' else '' }}"
+    cert_common_name: "{{ ansible_facts['hostname'] }}{{ '.local' if (ansible_facts.get('domain', '')) == '' else '' }}"
 
   tasks:
     - name: Build SAN list
@@ -20,12 +20,12 @@
           {{
             (
               [
-                'DNS:' ~ ansible_hostname,
-                'DNS:' ~ ansible_fqdn
+                'DNS:' ~ ansible_facts['hostname'],
+                'DNS:' ~ ansible_facts.get('fqdn', ansible_facts['hostname'])
               ]
               + (
-                [ 'IP:' ~ ansible_default_ipv4.address ]
-                if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined)
+                [ 'IP:' ~ ansible_facts.get('default_ipv4', {}).get('address') ]
+                if (ansible_facts.get('default_ipv4', {}).get('address') is not none)
                 else []
               )
             ) | unique

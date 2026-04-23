@@ -6,6 +6,7 @@
   become: true
 
   vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     pve_release: "{{ proxmox_suite | default('trixie') }}"
     proxmox_enterprise: false   # override via -e proxmox_enterprise=true
     proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"

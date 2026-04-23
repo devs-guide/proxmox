@@ -68,6 +68,50 @@
             + ((host_platform_family == 'proxmox') | ternary(['gpu_vendor_optional'], []))
           }}
 
+    - name: Check whether udftools is available from configured repositories
+      ansible.builtin.command:
+        argv:
+          - apt-cache
+          - show
+          - udftools
+      register: udftools_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: Remove udftools from archive_iso_tools when unavailable
+      ansible.builtin.set_fact:
+        effective_catalog: >-
+          {{
+            effective_catalog
+            | combine(
+                {
+                  'archive_iso_tools': (
+                    effective_catalog.get('archive_iso_tools', {})
+                    | combine(
+                        {
+                          'packages': (
+                            effective_catalog.get('archive_iso_tools', {}).get('packages', [])
+                            | difference(['udftools'])
+                          )
+                        },
+                        recursive=True
+                      )
+                  )
+                },
+                recursive=True
+              )
+          }}
+      when:
+        - effective_catalog.get('archive_iso_tools') is mapping
+        - udftools_package_check.rc != 0
+
+    - name: Report when udftools is unavailable on this host
+      ansible.builtin.debug:
+        msg: "Skipping udftools for archive_iso_tools because it is not available from configured repositories on this host."
+      when:
+        - effective_catalog.get('archive_iso_tools') is mapping
+        - udftools_package_check.rc != 0
+
     - name: Show effective package groups (post-excludes)
       debug:
         msg: "Group {{ item.key }} packages: {{ item.value.packages | default([]) | difference(exclude_packages_effective) }}"
@@ -110,4 +154,3 @@
       when:
         - item.value.packages | default([]) | difference(exclude_packages_effective) | length > 0
         - package_group_overrides_effective.get(item.key, item.key not in effective_disabled_groups)
-

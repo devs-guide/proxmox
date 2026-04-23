@@ -13,7 +13,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 files=(
   "bootstrap/release.9.1.sh"
+  "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
+  "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
   "ansible/debian/install.packages.yml"
@@ -45,15 +47,23 @@ if grep -qx 'debian/ansible.venv.yml' "${ROOT}/ansible/release/9.1/install.playb
 fi
 echo "[validate.runtime][ok] 9.1 playlist delegates runtime bootstrap to release.common.sh"
 
-echo "[validate.runtime] showing effective package groups (host_platform_family=proxmox) ..."
-ANSIBLE_NOCOLOR=1 \
-ANSIBLE_FORCE_COLOR=0 \
-  ansible-playbook \
-  -i localhost, \
-  -c local \
-  -e host_platform_family=proxmox \
-  -e apt_skip_cache_refresh=true \
-  --check \
-  "${ROOT}/ansible/debian/install.packages.yml"
+run_package_check() {
+  local release_label="$1"
+  shift
+  echo "[validate.runtime] simulating install.packages.yml for ${release_label} ..."
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook \
+    -i localhost, \
+    -c local \
+    -e host_platform_family=proxmox \
+    -e apt_skip_cache_refresh=true \
+    "$@" \
+    --check \
+    "${ROOT}/ansible/debian/install.packages.yml"
+}
+
+run_package_check "9.1/Trixie"
+run_package_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."

@@ -20,6 +20,7 @@
         password: "{{ (item.password | default(item.name, true)) | password_hash(default_password_hash_algo) }}"
         shell: /bin/bash
         state: present
+        update_password: always
       loop: "{{ user_defs }}"
 
     - name: Clear password expiry and inactivity requirements
