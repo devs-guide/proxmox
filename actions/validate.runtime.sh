@@ -13,6 +13,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 files=(
   "bootstrap/release.9.1.sh"
+  "bootstrap/release.common.sh"
+  "ansible/release/9.1/install.playbooks.txt"
+  "ansible/debian/ansible.venv.yml"
   "ansible/debian/install.packages.yml"
   "ansible/debian/packages.yml"
   "ansible/debian/sources.trixie.yml"
@@ -34,6 +37,13 @@ if [[ "${missing}" -ne 0 ]]; then
   echo "[validate.runtime] missing files detected; aborting."
   exit 1
 fi
+
+echo "[validate.runtime] checking 9.1 playlist runtime authority..."
+if grep -qx 'debian/ansible.venv.yml' "${ROOT}/ansible/release/9.1/install.playbooks.txt"; then
+  echo "[validate.runtime][error] 9.1 playlist still references debian/ansible.venv.yml"
+  exit 1
+fi
+echo "[validate.runtime][ok] 9.1 playlist delegates runtime bootstrap to release.common.sh"
 
 echo "[validate.runtime] showing effective package groups (host_platform_family=proxmox) ..."
 ANSIBLE_NOCOLOR=1 \

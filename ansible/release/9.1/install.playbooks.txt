@@ -3,7 +3,6 @@
 debian/sources.trixie.yml
 enterprise.yml
 bootstrap.yml
-debian/ansible.venv.yml
 packages.yml
 debian/install.packages.yml
 debian/users.yml

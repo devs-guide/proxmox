@@ -9,39 +9,46 @@
     python_prefix: "{{ controller_python_prefix | default('/usr/local') }}"
     ansible_core_spec: "{{ controller_ansible_core_spec | default('ansible-core>=2.20,<2.21') }}"
     ansible_core_min: "{{ controller_ansible_core_min | default('2.20') }}"
+    ansible_core_ceiling: "{{ controller_ansible_core_ceiling | default('2.21') }}"
     python_bootstrap_bin_default: "{{ managed_target_python_path | default(python_prefix ~ '/bin/python' ~ python_major_minor) }}"
   tasks:
-    - name: Check system ansible version
-      command: ansible-playbook --version
-      register: system_ansible_version
+    - name: Check current venv ansible version (if present)
+      command: "{{ ansible_venv }}/bin/ansible-playbook --version"
+      register: ansible_venv_ansible_version
       failed_when: false
       changed_when: false
 
-    - name: Determine if venv is required
+    - name: Extract managed ansible core version safely
       set_fact:
-        ansible_venv_required: >-
+        ansible_venv_core_version: >-
           {{
-            (system_ansible_version.rc != 0)
-            or (
-              (
-                (system_ansible_version.stdout | default('') | regex_search('ansible \\[core ([0-9.]+)\\]', '\\1') | default(''))
-              ) is version(ansible_core_min, '<')
+            (
+              ansible_venv_ansible_version.stdout
+              | default('')
+              | regex_search('core ([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)', '\\1')
+              | default('', true)
             )
           }}
 
-    - name: Skip venv setup when system ansible meets minimum
+    - name: Determine if venv repair is required
+      set_fact:
+        ansible_venv_required: >-
+          {{
+            (ansible_venv_ansible_version.rc != 0)
+            or (
+              (ansible_venv_core_version | length) == 0
+            )
+            or (ansible_venv_core_version is version(ansible_core_min, '<'))
+            or (ansible_venv_core_version is version(ansible_core_ceiling, '>='))
+          }}
+
+    - name: Skip venv setup when managed Ansible already meets policy
       meta: end_play
       when: not ansible_venv_required
 
     - name: Check current venv python version (if present)
       command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
       register: ansible_venv_python_version
-      failed_when: false
-      changed_when: false
-
-    - name: Check current venv ansible version (if present)
-      command: "{{ ansible_venv }}/bin/ansible-playbook --version"
-      register: ansible_venv_ansible_version
       failed_when: false
       changed_when: false
 
@@ -56,7 +63,9 @@
       when:
         - ansible_venv_python_version.rc != 0
           or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
-          or (ansible_venv_ansible_version.stdout is defined and (ansible_venv_ansible_version.stdout | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)')) is version(ansible_core_min, '<'))
+          or (ansible_venv_core_version | length) == 0
+          or (ansible_venv_core_version is version(ansible_core_min, '<'))
+          or (ansible_venv_core_version is version(ansible_core_ceiling, '>='))
 
     - name: Create ansible venv directory
       file:
