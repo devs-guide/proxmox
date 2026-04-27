@@ -7,9 +7,17 @@
 
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
-    proxmox_feature_facts_dir: "/etc/devsguide/proxmox/facts"
+    proxmox_feature_facts_dir: "/etc/ansible/proxmox/facts"
     proxmox_hardware_facts_path: "{{ proxmox_feature_facts_dir }}/hardware.yml"
+    proxmox_hardware_nics_tsv_path: "{{ proxmox_feature_facts_dir }}/hardware.nics.tsv"
     proxmox_gui_port: 8006
+    proxmox_high_speed_drivers:
+      - ixgbe
+      - i40e
+      - ice
+      - mlx5_core
+      - bnxt_en
+      - atlantic
 
   pre_tasks:
     - name: Assert this host is a Proxmox node
@@ -144,67 +152,96 @@
         nic_name: "{{ nic_fields[0] }}"
         nic_fields: "{{ item.stdout.split('|') }}"
         nic_ipv4_data: "{{ ansible_facts.get(nic_fields[0], {}).get('ipv4', {}) }}"
+        nic_driver: "{{ nic_fields[1] if (nic_fields | length > 1 and nic_fields[1] | length > 0 and nic_fields[1] != 'none') else none }}"
+        nic_pci: "{{ nic_fields[2] if (nic_fields | length > 2 and nic_fields[2] | length > 0) else none }}"
+        nic_speed_mbps: "{{ (nic_fields[3] | int) if (nic_fields | length > 3 and nic_fields[3] is match('^[0-9]+$')) else none }}"
+        nic_has_ip: "{{ (nic_ipv4_data.get('address') | default('', true) | string | length) > 0 }}"
+        nic_bridge_member: >-
+          {{
+            (
+              proxmox_bridge_link.stdout_lines
+              | default([])
+              | select('search', '^\\d+:\\s+' ~ nic_fields[0] ~ '(?:@[^:]+)?:')
+              | list
+              | first
+              | default('')
+              | regex_search(' master (\\S+)', '\\1')
+              | default([], true)
+              | first
+            ) or none
+          }}
+        nic_is_management: "{{ nic_fields[0] == proxmox_management_nic }}"
+        nic_driver_highspeed: "{{ nic_driver in proxmox_high_speed_drivers }}"
+        nic_speed_is_10g: "{{ (nic_speed_mbps is not none) and ((nic_speed_mbps | int) >= 10000) }}"
+        nic_is_data_candidate: >-
+          {{
+            (not nic_is_management)
+            and (not nic_has_ip)
+            and ((nic_bridge_member | default('')) | length == 0)
+          }}
+        nic_recommendation_score: >-
+          {{
+            (
+              (20 if (not nic_is_management) else 0)
+              + (20 if (not nic_has_ip) else 0)
+              + (20 if (((nic_bridge_member | default('')) | length) == 0) else 0)
+              + (20 if nic_driver_highspeed else 0)
+              + (20 if nic_speed_is_10g else 0)
+            ) | int
+          }}
         nic_data:
-          driver: "{{ nic_fields[1] if (nic_fields | length > 1 and nic_fields[1] | length > 0) else none }}"
-          pci: "{{ nic_fields[2] if (nic_fields | length > 2 and nic_fields[2] | length > 0) else none }}"
-          speed_mbps: "{{ (nic_fields[3] | int) if (nic_fields | length > 3 and nic_fields[3] is match('^[0-9]+$')) else none }}"
-          has_ip: "{{ nic_ipv4_data.get('address') is defined }}"
+          driver: "{{ nic_driver }}"
+          pci: "{{ nic_pci }}"
+          speed_mbps: "{{ nic_speed_mbps }}"
+          has_ip: "{{ nic_has_ip }}"
           ip_cidr: >-
             {{
               (nic_ipv4_data.address ~ '/' ~ (nic_ipv4_data.prefix | string))
-              if (nic_ipv4_data.get('address') is defined and nic_ipv4_data.get('prefix') is defined)
+              if (
+                nic_has_ip
+                and nic_ipv4_data.get('prefix') is not none
+              )
               else none
             }}
-          bridge_member: >-
+          bridge_member: "{{ nic_bridge_member }}"
+          mac: "{{ ansible_facts.get(nic_fields[0], {}).get('macaddress') | default(none, true) }}"
+          operstate: "{{ ansible_facts.get(nic_fields[0], {}).get('operstate') | default(none, true) }}"
+          carrier: "{{ ansible_facts.get(nic_fields[0], {}).get('carrier') | default(none, true) }}"
+          management_candidate: "{{ nic_is_management }}"
+          role_guess: "{{ 'management' if nic_is_management else ('data_candidate' if nic_is_data_candidate else 'other') }}"
+          driver_highspeed: "{{ nic_driver_highspeed }}"
+          speed_10g_or_higher: "{{ nic_speed_is_10g }}"
+          recommendation_score: "{{ nic_recommendation_score }}"
+          recommendation_reasons: >-
             {{
-              (
-                proxmox_bridge_link.stdout_lines
-                | default([])
-                | select('search', '^\\d+:\\s+' ~ nic_fields[0] ~ '(?:@[^:]+)?:')
-                | list
-                | first
-                | default('')
-                | regex_search(' master (\\S+)', '\\1')
-                | default([], true)
-                | first
-              )
-              or none
+              [
+                ('not-management' if not nic_is_management else none),
+                ('no-host-ip' if not nic_has_ip else none),
+                ('not-bridge-member' if ((nic_bridge_member | default('')) | length == 0) else none),
+                ('highspeed-driver' if nic_driver_highspeed else none),
+                ('speed-10g-or-higher' if nic_speed_is_10g else none)
+              ] | reject('equalto', none) | list
             }}
-          management_candidate: "{{ nic_fields[0] == proxmox_management_nic }}"
-          data_candidate: >-
-            {{
-              (nic_fields[0] != proxmox_management_nic)
-              and not (nic_ipv4_data.get('address') is defined)
-              and (
-                (
-                  proxmox_bridge_link.stdout_lines
-                  | default([])
-                  | select('search', '^\\d+:\\s+' ~ nic_fields[0] ~ '(?:@[^:]+)?:')
-                  | list
-                  | first
-                  | default('')
-                  | regex_search(' master (\\S+)', '\\1')
-                  | default([], true)
-                  | first
-                  | default('')
-                ) | length == 0
-              )
-              and (nic_fields | length > 3 and nic_fields[3] is match('^[0-9]+$') and (nic_fields[3] | int) >= 10000)
-            }}
+          data_candidate: "{{ nic_is_data_candidate }}"
       loop: "{{ proxmox_nic_hw_details.results }}"
+
+    - name: Derive ranked data NIC candidates
+      set_fact:
+        proxmox_data_nics: >-
+          {{
+            proxmox_nic_hardware_map
+            | dict2items
+            | selectattr('value.data_candidate', 'equalto', true)
+            | sort(attribute='value.recommendation_score', reverse=true)
+            | map(attribute='key')
+            | list
+          }}
 
     - name: Derive first candidate data NIC
       set_fact:
         proxmox_data_nic: >-
           {{
-            (
-              proxmox_nic_hardware_map
-              | dict2items
-              | selectattr('value.data_candidate', 'equalto', true)
-              | map(attribute='key')
-              | list
-              | first
-            ) | default('', true)
+            (proxmox_data_nics | first) | default('', true)
           }}
 
     - name: Build persisted Proxmox hardware facts
@@ -251,6 +288,7 @@
             interfaces_file: "{{ proxmox_network_interfaces_file.content | b64decode }}"
           candidates:
             data_nic: "{{ proxmox_data_nic if (proxmox_data_nic | length > 0) else none }}"
+            data_nics: "{{ proxmox_data_nics | default([]) }}"
 
     - name: Ensure Proxmox feature facts directory exists
       file:
@@ -267,6 +305,31 @@
           proxmox_hardware_discovered:
           {{ proxmox_hardware_discovered | to_nice_yaml(indent=2) | indent(2, true) }}
 
+    - name: Persist operator-readable NIC summary TSV
+      copy:
+        dest: "{{ proxmox_hardware_nics_tsv_path }}"
+        mode: "0644"
+        content: |
+          iface	role_guess	score	speed_mbps	driver	pci	mac	ip_cidr	bridge_member	operstate	carrier	reason
+          {% for nic_item in proxmox_nic_hardware_map | dict2items | sort(attribute='value.recommendation_score', reverse=true) %}
+          {{ [
+            nic_item.key,
+            nic_item.value.role_guess | default('-'),
+            (nic_item.value.recommendation_score | default(0) | string),
+            (nic_item.value.speed_mbps if nic_item.value.speed_mbps is not none else '-') | string,
+            (nic_item.value.driver if nic_item.value.driver is not none else '-'),
+            (nic_item.value.pci if nic_item.value.pci is not none else '-'),
+            (nic_item.value.mac if nic_item.value.mac is not none else '-'),
+            (nic_item.value.ip_cidr if nic_item.value.ip_cidr is not none else '-'),
+            (nic_item.value.bridge_member if nic_item.value.bridge_member is not none else '-'),
+            (nic_item.value.operstate if nic_item.value.operstate is not none else '-'),
+            (nic_item.value.carrier if nic_item.value.carrier is not none else '-'),
+            ((nic_item.value.recommendation_reasons | default([])) | join(',') if ((nic_item.value.recommendation_reasons | default([])) | length > 0) else '-')
+          ] | join('\t') }}
+          {% endfor %}
+
     - name: Report persisted hardware facts path
       debug:
-        msg: "Persisted Proxmox hardware facts to {{ proxmox_hardware_facts_path }}"
+        msg:
+          - "Persisted Proxmox hardware facts to {{ proxmox_hardware_facts_path }}"
+          - "Persisted Proxmox NIC summary to {{ proxmox_hardware_nics_tsv_path }}"

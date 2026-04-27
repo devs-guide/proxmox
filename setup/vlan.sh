@@ -13,8 +13,6 @@ log.error() { printf '[setup.vlan][error] %s\n' "$*" >&2; }
 TMP_DIR="/tmp/pve-feature-vlan"
 PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
 PLAYBOOK_ROOT="${TMP_DIR}/ansible"
-PLAYBOOK_PROXMOX_DIR="${PLAYBOOK_ROOT}/proxmox"
-PLAYBOOK_HELPER_DIR="${PLAYBOOK_PROXMOX_DIR}/helper"
 PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
 LOCAL_COMMON_HELPER="../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
@@ -23,10 +21,16 @@ COMMON_HELPER_PATH="${TMP_DIR}/${COMMON_HELPER_NAME}"
 GROUP_VARS_FILE="proxmox.yml"
 GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
-HARDWARE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/proxmox/helper/hardware.yml"
-HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_HELPER_DIR}/hardware.yml"
-VLAN_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/proxmox/vlan.yml"
-VLAN_PLAYBOOK_PATH="${PLAYBOOK_PROXMOX_DIR}/vlan.yml"
+FEATURE_PLAYBOOKS=(
+  "proxmox/helper/hardware.yml"
+  "proxmox/vlan.yml"
+)
+HARDWARE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
+VLAN_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
+HARDWARE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${HARDWARE_PLAYBOOK_REL}"
+HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${HARDWARE_PLAYBOOK_REL}"
+VLAN_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${VLAN_PLAYBOOK_REL}"
+VLAN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${VLAN_PLAYBOOK_REL}"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
 ANSIBLE_CORE_VERSION="2.20.5"
@@ -46,6 +50,44 @@ FEATURE_MODE="${1:-${PROXMOX_VLAN_MODE:-preflight}}"
 FEATURE_USE_DISCOVERY="${PROXMOX_VLAN_USE_DISCOVERY:-true}"
 FEATURE_BASELINE_BYPASS="${PROXMOX_FEATURE_SKIP_BASELINE_CHECK:-0}"
 FEATURE_OOB_ACK="${PROXMOX_VLAN_CONFIRM_OOB:-}"
+FEATURE_INTERACTIVE="${PROXMOX_VLAN_INTERACTIVE:-1}"
+FACTS_DIR="${PROXMOX_VLAN_FACTS_DIR:-/etc/ansible/proxmox/facts}"
+HARDWARE_FACTS_PATH="${PROXMOX_VLAN_HARDWARE_FACTS_PATH:-${FACTS_DIR}/hardware.yml}"
+HARDWARE_NICS_TSV="${PROXMOX_VLAN_HARDWARE_NICS_TSV:-${FACTS_DIR}/hardware.nics.tsv}"
+VLAN_SELECTION_PATH="${PROXMOX_VLAN_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
+DEFAULT_DATA_BRIDGE="${PROXMOX_VLAN_DATA_BRIDGE:-vmbr1}"
+DEFAULT_BRIDGE_VIDS="${PROXMOX_VLAN_BRIDGE_VIDS:-10 20 30 40}"
+ALLOW_VLAN_1="${PROXMOX_VLAN_ALLOW_VLAN_1:-false}"
+ALLOW_ALL_VLAN_RANGE="${PROXMOX_VLAN_ALLOW_ALL_VLAN_RANGE:-false}"
+ALLOW_SAME_MANAGEMENT_AND_DATA_NIC="${PROXMOX_VLAN_ALLOW_SAME_MANAGEMENT_AND_DATA_NIC:-false}"
+ALLOW_DATA_NIC_WITH_HOST_IP="${PROXMOX_VLAN_ALLOW_DATA_NIC_WITH_HOST_IP:-false}"
+ALLOW_DATA_NIC_BRIDGE_MEMBER="${PROXMOX_VLAN_ALLOW_DATA_NIC_BRIDGE_MEMBER:-false}"
+
+declare -a NIC_IFACE=()
+declare -a NIC_ROLE=()
+declare -a NIC_SCORE=()
+declare -a NIC_SPEED=()
+declare -a NIC_DRIVER=()
+declare -a NIC_PCI=()
+declare -a NIC_MAC=()
+declare -a NIC_IP=()
+declare -a NIC_BRIDGE_MEMBER=()
+declare -a NIC_OPERSTATE=()
+declare -a NIC_CARRIER=()
+declare -a NIC_REASON=()
+
+MGMT_BRIDGE=""
+MGMT_NIC=""
+MGMT_IP_CIDR=""
+MGMT_GATEWAY=""
+MGMT_GUI_PORT="8006"
+SELECTED_DATA_NIC=""
+SELECTED_DATA_BRIDGE=""
+SELECTED_DATA_BRIDGE_VIDS=""
+SELECTED_DATA_DRIVER=""
+SELECTED_DATA_PCI=""
+SELECTED_DATA_HOST_IP="null"
+SELECTION_OOB_ACK="false"
 
 source.release.common() {
   local script_dir=""
@@ -74,6 +116,14 @@ source.release.common() {
 }
 
 source.release.common
+
+is.true() {
+  local value="${1:-}"
+  case "${value,,}" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 require.proxmox() {
   if command -v pveversion >/dev/null 2>&1; then
@@ -130,19 +180,403 @@ require.oob.ack() {
   fi
 }
 
+open.tty() {
+  if [[ ! -r /dev/tty ]]; then
+    return 1
+  fi
+  exec 3<>/dev/tty
+  return 0
+}
+
+prompt.tty() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer=""
+
+  if [[ -n "${default}" ]]; then
+    printf '%s [%s]: ' "${prompt}" "${default}" >&3
+  else
+    printf '%s: ' "${prompt}" >&3
+  fi
+  read -r -u 3 answer || true
+  if [[ -z "${answer}" ]]; then
+    answer="${default}"
+  fi
+  printf '%s\n' "${answer}"
+}
+
+menu.tty() {
+  local prompt="$1"
+  shift
+  local -a options=("$@")
+  local answer=""
+  local i
+
+  while true; do
+    printf '%s\n' "${prompt}" >&3
+    for i in "${!options[@]}"; do
+      printf '  %d) %s\n' "$((i + 1))" "${options[$i]}" >&3
+    done
+    printf 'Select option: ' >&3
+    read -r -u 3 answer || true
+    if [[ "${answer}" =~ ^[0-9]+$ ]] && ((answer >= 1 && answer <= ${#options[@]})); then
+      printf '%s\n' "${answer}"
+      return 0
+    fi
+    printf 'Invalid selection.\n' >&3
+  done
+}
+
+yaml.quote() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "${value}"
+}
+
+yaml.scalar.or.null() {
+  local value="${1:-}"
+  if [[ -z "${value}" || "${value}" == "-" ]]; then
+    printf 'null'
+  else
+    yaml.quote "${value}"
+  fi
+}
+
+build.management.snapshot() {
+  local default_route_device
+  default_route_device="$(ip route show default | awk 'NR==1 {print $5}')"
+  MGMT_GATEWAY="$(ip route show default | awk 'NR==1 {print $3}')"
+
+  if [[ "${default_route_device}" =~ ^vmbr[0-9]+$ ]]; then
+    MGMT_BRIDGE="${default_route_device}"
+  else
+    MGMT_BRIDGE="vmbr0"
+  fi
+
+  MGMT_NIC="$(
+    bridge link 2>/dev/null \
+      | awk -v bridge="${MGMT_BRIDGE}" '
+          $0 ~ (" master " bridge " ") {
+            nic=$2
+            sub(/@.*/, "", nic)
+            sub(/:/, "", nic)
+            print nic
+            exit
+          }
+        '
+  )"
+  if [[ -z "${MGMT_NIC}" && -n "${default_route_device}" && ! "${default_route_device}" =~ ^vmbr[0-9]+$ ]]; then
+    MGMT_NIC="${default_route_device}"
+  fi
+
+  MGMT_IP_CIDR="$(ip -o -4 addr show dev "${MGMT_BRIDGE}" 2>/dev/null | awk 'NR==1 {print $4}')"
+  if [[ -z "${MGMT_IP_CIDR}" && -n "${MGMT_NIC}" ]]; then
+    MGMT_IP_CIDR="$(ip -o -4 addr show dev "${MGMT_NIC}" 2>/dev/null | awk 'NR==1 {print $4}')"
+  fi
+}
+
+load.nic.summary() {
+  local iface role score speed driver pci mac ip_cidr bridge_member operstate carrier reason
+  [[ -f "${HARDWARE_NICS_TSV}" ]] || {
+    log.error "Missing NIC summary: ${HARDWARE_NICS_TSV}"
+    exit 1
+  }
+
+  NIC_IFACE=()
+  NIC_ROLE=()
+  NIC_SCORE=()
+  NIC_SPEED=()
+  NIC_DRIVER=()
+  NIC_PCI=()
+  NIC_MAC=()
+  NIC_IP=()
+  NIC_BRIDGE_MEMBER=()
+  NIC_OPERSTATE=()
+  NIC_CARRIER=()
+  NIC_REASON=()
+
+  while IFS=$'\t' read -r iface role score speed driver pci mac ip_cidr bridge_member operstate carrier reason; do
+    [[ -n "${iface}" ]] || continue
+    [[ "${iface}" == "iface" ]] && continue
+    NIC_IFACE+=("${iface}")
+    NIC_ROLE+=("${role:-other}")
+    NIC_SCORE+=("${score:-0}")
+    NIC_SPEED+=("${speed:-"-"}")
+    NIC_DRIVER+=("${driver:-"-"}")
+    NIC_PCI+=("${pci:-"-"}")
+    NIC_MAC+=("${mac:-"-"}")
+    NIC_IP+=("${ip_cidr:-"-"}")
+    NIC_BRIDGE_MEMBER+=("${bridge_member:-"-"}")
+    NIC_OPERSTATE+=("${operstate:-"-"}")
+    NIC_CARRIER+=("${carrier:-"-"}")
+    NIC_REASON+=("${reason:-"-"}")
+  done < "${HARDWARE_NICS_TSV}"
+
+  if ((${#NIC_IFACE[@]} == 0)); then
+    log.error "No NIC rows found in ${HARDWARE_NICS_TSV}."
+    exit 1
+  fi
+}
+
+lookup.nic.index() {
+  local target="$1"
+  local i
+  for i in "${!NIC_IFACE[@]}"; do
+    if [[ "${NIC_IFACE[$i]}" == "${target}" ]]; then
+      printf '%s\n' "${i}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate.bridge.vids() {
+  local vids="$1"
+  local token start end
+  vids="$(printf '%s' "${vids}" | xargs)"
+
+  [[ -n "${vids}" ]] || {
+    log.error "VLAN IDs cannot be empty."
+    exit 1
+  }
+  [[ "${vids}" =~ ^[0-9][0-9\ \-]*$ ]] || {
+    log.error "Invalid VLAN ID syntax: ${vids}"
+    exit 1
+  }
+
+  for token in ${vids}; do
+    if [[ "${token}" == *-* ]]; then
+      start="${token%-*}"
+      end="${token#*-}"
+      [[ "${start}" =~ ^[0-9]+$ && "${end}" =~ ^[0-9]+$ ]] || {
+        log.error "Invalid VLAN range token: ${token}"
+        exit 1
+      }
+      ((start >= 1 && start <= 4094 && end >= 1 && end <= 4094 && start <= end)) || {
+        log.error "VLAN range out of bounds: ${token}"
+        exit 1
+      }
+      if ! is.true "${ALLOW_ALL_VLAN_RANGE}" && ((start == 1 && end == 4094)); then
+        log.error "Full VLAN range 1-4094 is blocked by policy."
+        exit 1
+      fi
+      if ! is.true "${ALLOW_VLAN_1}" && ((start <= 1 && end >= 1)); then
+        log.error "VLAN 1 is blocked by policy."
+        exit 1
+      fi
+    else
+      [[ "${token}" =~ ^[0-9]+$ ]] || {
+        log.error "Invalid VLAN token: ${token}"
+        exit 1
+      }
+      ((token >= 1 && token <= 4094)) || {
+        log.error "VLAN ID out of bounds: ${token}"
+        exit 1
+      }
+      if ! is.true "${ALLOW_VLAN_1}" && ((token == 1)); then
+        log.error "VLAN 1 is blocked by policy."
+        exit 1
+      fi
+    fi
+  done
+}
+
+validate.selection() {
+  local selected_index selected_ip selected_bridge_member
+  selected_index="$(lookup.nic.index "${SELECTED_DATA_NIC}" || true)"
+  [[ -n "${selected_index}" ]] || {
+    log.error "Selected NIC was not found in NIC summary: ${SELECTED_DATA_NIC}"
+    exit 1
+  }
+
+  selected_ip="${NIC_IP[$selected_index]}"
+  selected_bridge_member="${NIC_BRIDGE_MEMBER[$selected_index]}"
+
+  if [[ -n "${MGMT_NIC}" && "${SELECTED_DATA_NIC}" == "${MGMT_NIC}" ]] && ! is.true "${ALLOW_SAME_MANAGEMENT_AND_DATA_NIC}"; then
+    log.error "Selected data NIC matches management NIC (${MGMT_NIC}) and policy forbids this."
+    exit 1
+  fi
+  if [[ "${selected_ip}" != "-" ]] && ! is.true "${ALLOW_DATA_NIC_WITH_HOST_IP}"; then
+    log.error "Selected NIC (${SELECTED_DATA_NIC}) already has host IP (${selected_ip}) and policy forbids this."
+    exit 1
+  fi
+  if [[ "${selected_bridge_member}" != "-" ]] && ! is.true "${ALLOW_DATA_NIC_BRIDGE_MEMBER}"; then
+    log.error "Selected NIC (${SELECTED_DATA_NIC}) already belongs to bridge ${selected_bridge_member} and policy forbids this."
+    exit 1
+  fi
+  [[ "${SELECTED_DATA_BRIDGE}" =~ ^vmbr[0-9]+$ ]] || {
+    log.error "Data bridge must match vmbr<id>; got: ${SELECTED_DATA_BRIDGE}"
+    exit 1
+  }
+  validate.bridge.vids "${SELECTED_DATA_BRIDGE_VIDS}"
+}
+
+choose.data.nic.interactive() {
+  local -a menu_options=()
+  local -a menu_indexes=()
+  local i choice score_label safe_label recommend_label
+
+  for i in "${!NIC_IFACE[@]}"; do
+    score_label="${NIC_SCORE[$i]}"
+    safe_label="candidate"
+    if [[ -n "${MGMT_NIC}" && "${NIC_IFACE[$i]}" == "${MGMT_NIC}" ]]; then
+      safe_label="management"
+    elif [[ "${NIC_IP[$i]}" != "-" ]]; then
+      safe_label="has-ip"
+    elif [[ "${NIC_BRIDGE_MEMBER[$i]}" != "-" ]]; then
+      safe_label="bridge-member:${NIC_BRIDGE_MEMBER[$i]}"
+    fi
+    recommend_label=""
+    if [[ "${NIC_ROLE[$i]}" == "data_candidate" ]]; then
+      recommend_label=" | recommended"
+    fi
+    menu_options+=("${NIC_IFACE[$i]} | score=${score_label} | speed=${NIC_SPEED[$i]} | driver=${NIC_DRIVER[$i]} | ip=${NIC_IP[$i]} | state=${safe_label}${recommend_label}")
+    menu_indexes+=("${i}")
+  done
+  menu_options+=("abort")
+
+  choice="$(menu.tty "Select VM/LXC data NIC:" "${menu_options[@]}")"
+  if ((choice == ${#menu_options[@]})); then
+    log.error "Operator aborted NIC selection."
+    exit 1
+  fi
+
+  i="${menu_indexes[$((choice - 1))]}"
+  SELECTED_DATA_NIC="${NIC_IFACE[$i]}"
+  SELECTED_DATA_DRIVER="${NIC_DRIVER[$i]}"
+  SELECTED_DATA_PCI="${NIC_PCI[$i]}"
+}
+
+select.mode.interactive() {
+  local choice
+  choice="$(menu.tty "Select VLAN execution mode (current: ${FEATURE_MODE}):" "preflight (validate only)" "write (write config + dry-run reload)" "apply (write + reload)")"
+  case "${choice}" in
+    1) FEATURE_MODE="preflight" ;;
+    2) FEATURE_MODE="write" ;;
+    3) FEATURE_MODE="apply" ;;
+    *) log.error "Invalid mode selection"; exit 1 ;;
+  esac
+}
+
+write.selection.file() {
+  mkdir -p "${FACTS_DIR}"
+  cat > "${VLAN_SELECTION_PATH}" <<EOF
+---
+proxmox_vlan_operator_selection:
+  confirmed: true
+  source: "setup/vlan.sh"
+  management:
+    bridge: $(yaml.quote "${MGMT_BRIDGE}")
+    nic: $(yaml.scalar.or.null "${MGMT_NIC}")
+    ip_cidr: $(yaml.scalar.or.null "${MGMT_IP_CIDR}")
+    gateway: $(yaml.scalar.or.null "${MGMT_GATEWAY}")
+    gui_port: ${MGMT_GUI_PORT}
+  data:
+    bridge: $(yaml.quote "${SELECTED_DATA_BRIDGE}")
+    nic: $(yaml.quote "${SELECTED_DATA_NIC}")
+    expected_driver: $(yaml.scalar.or.null "${SELECTED_DATA_DRIVER}")
+    expected_pci: $(yaml.scalar.or.null "${SELECTED_DATA_PCI}")
+    bridge_vlan_aware: true
+    bridge_vids: $(yaml.quote "${SELECTED_DATA_BRIDGE_VIDS}")
+    host_ip: ${SELECTED_DATA_HOST_IP}
+  safety:
+    oob_console_ack: ${SELECTION_OOB_ACK}
+EOF
+  log "Persisted operator selection: ${VLAN_SELECTION_PATH}"
+}
+
+collect.operator.selection() {
+  local interactive_ui=0
+  local confirm_choice oob_choice
+  local selected_index
+
+  [[ -f "${HARDWARE_FACTS_PATH}" ]] || {
+    log.error "Missing hardware facts: ${HARDWARE_FACTS_PATH}"
+    exit 1
+  }
+
+  load.nic.summary
+  build.management.snapshot
+  SELECTED_DATA_BRIDGE="${DEFAULT_DATA_BRIDGE}"
+  SELECTED_DATA_BRIDGE_VIDS="${DEFAULT_BRIDGE_VIDS}"
+
+  if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
+    interactive_ui=1
+  fi
+
+  if ((interactive_ui == 1)); then
+    printf '\nDetected Proxmox admin path:\n' >&3
+    printf '  GUI port:       %s\n' "${MGMT_GUI_PORT}" >&3
+    printf '  bridge:         %s\n' "${MGMT_BRIDGE}" >&3
+    printf '  management NIC: %s\n' "${MGMT_NIC:-unknown}" >&3
+    printf '  IP/CIDR:        %s\n' "${MGMT_IP_CIDR:-unknown}" >&3
+    printf '  gateway:        %s\n\n' "${MGMT_GATEWAY:-unknown}" >&3
+
+    confirm_choice="$(menu.tty "Confirm this is the Proxmox GUI/admin network path:" "yes" "abort")"
+    if [[ "${confirm_choice}" != "1" ]]; then
+      log.error "Operator aborted management path confirmation."
+      exit 1
+    fi
+
+    choose.data.nic.interactive
+    SELECTED_DATA_BRIDGE="$(prompt.tty "Enter data bridge name" "${SELECTED_DATA_BRIDGE}")"
+    SELECTED_DATA_BRIDGE_VIDS="$(prompt.tty "Enter VLAN IDs/ranges (space separated)" "${SELECTED_DATA_BRIDGE_VIDS}")"
+    select.mode.interactive
+
+    if [[ "${FEATURE_MODE}" == "preflight" ]]; then
+      SELECTION_OOB_ACK="false"
+      FEATURE_OOB_ACK="${FEATURE_OOB_ACK:-NO}"
+    else
+      oob_choice="$(menu.tty "Confirm out-of-band console access is available:" "yes" "abort")"
+      if [[ "${oob_choice}" != "1" ]]; then
+        log.error "Operator aborted because OOB console was not confirmed."
+        exit 1
+      fi
+      SELECTION_OOB_ACK="true"
+      FEATURE_OOB_ACK="YES"
+    fi
+  else
+    SELECTED_DATA_NIC="${PROXMOX_VLAN_DATA_NIC:-}"
+    [[ -n "${SELECTED_DATA_NIC}" ]] || {
+      log.error "Interactive UI unavailable. Set PROXMOX_VLAN_DATA_NIC for non-interactive mode."
+      exit 1
+    }
+
+    selected_index="$(lookup.nic.index "${SELECTED_DATA_NIC}" || true)"
+    if [[ -n "${selected_index}" ]]; then
+      SELECTED_DATA_DRIVER="${NIC_DRIVER[$selected_index]}"
+      SELECTED_DATA_PCI="${NIC_PCI[$selected_index]}"
+    fi
+
+    if [[ "${FEATURE_MODE}" == "preflight" ]]; then
+      SELECTION_OOB_ACK="false"
+    else
+      if is.true "${FEATURE_OOB_ACK}"; then
+        FEATURE_OOB_ACK="YES"
+        SELECTION_OOB_ACK="true"
+      else
+        SELECTION_OOB_ACK="false"
+      fi
+    fi
+  fi
+
+  require.valid.mode
+  validate.selection
+  write.selection.file
+}
+
 use.local.feature.files() {
   local script_dir repo_root
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   repo_root="$(cd "${script_dir}/.." && pwd)"
 
-  if [[ -r "${repo_root}/ansible/proxmox/helper/hardware.yml" && -r "${repo_root}/ansible/proxmox/vlan.yml" && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
+  if [[ -r "${repo_root}/ansible/${HARDWARE_PLAYBOOK_REL}" && -r "${repo_root}/ansible/${VLAN_PLAYBOOK_REL}" && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
-    PLAYBOOK_PROXMOX_DIR="${PLAYBOOK_ROOT}/proxmox"
-    PLAYBOOK_HELPER_DIR="${PLAYBOOK_PROXMOX_DIR}/helper"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
-    HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_HELPER_DIR}/hardware.yml"
-    VLAN_PLAYBOOK_PATH="${PLAYBOOK_PROXMOX_DIR}/vlan.yml"
+    HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${HARDWARE_PLAYBOOK_REL}"
+    VLAN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${VLAN_PLAYBOOK_REL}"
     log "Using local feature files from ${repo_root}."
     return 0
   fi
@@ -171,7 +605,7 @@ prepare.feature.files() {
     return
   fi
 
-  mkdir -p "${PLAYBOOK_HELPER_DIR}" "${PLAYBOOK_GROUP_VARS_DIR}"
+  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}"
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
   fetch.feature.file "${HARDWARE_PLAYBOOK_URL}" "${HARDWARE_PLAYBOOK_PATH}"
   fetch.feature.file "${VLAN_PLAYBOOK_URL}" "${VLAN_PLAYBOOK_PATH}"
@@ -186,13 +620,16 @@ run.feature.playbook() {
 run.vlan.feature() {
   log "Running Proxmox hardware discovery helper..."
   run.feature.playbook "${HARDWARE_PLAYBOOK_PATH}"
+  collect.operator.selection
+  require.oob.ack
 
   log "Running Proxmox VLAN feature in mode=${FEATURE_MODE}..."
   run.feature.playbook \
     "${VLAN_PLAYBOOK_PATH}" \
     -e "proxmox_feature_defaults.vlan.enabled=true" \
     -e "proxmox_feature_defaults.vlan.mode=${FEATURE_MODE}" \
-    -e "proxmox_feature_defaults.vlan.use_discovered_hardware=${FEATURE_USE_DISCOVERY}"
+    -e "proxmox_feature_defaults.vlan.use_discovered_hardware=${FEATURE_USE_DISCOVERY}" \
+    -e "proxmox_vlan_selection_path=${VLAN_SELECTION_PATH}"
 }
 
 main() {
@@ -201,7 +638,6 @@ main() {
   require.proxmox
   require.valid.mode
   require.baseline.ready
-  require.oob.ack
   ensure.managed.ansible
   prepare.feature.files
   run.vlan.feature

@@ -8,11 +8,13 @@
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     proxmox_feature_group_vars_path: "{{ playbook_dir }}/../group_vars/proxmox.yml"
-    proxmox_feature_facts_dir: "/etc/devsguide/proxmox/facts"
+    proxmox_feature_facts_dir: "/etc/ansible/proxmox/facts"
     proxmox_hardware_facts_path: "{{ proxmox_feature_facts_dir }}/hardware.yml"
-    proxmox_vlan_block_marker: "# {mark} ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"
-    proxmox_vlan_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"
-    proxmox_vlan_block_end: "# END ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"
+    proxmox_vlan_selection_path: "{{ proxmox_feature_facts_dir }}/vlan.selection.yml"
+    proxmox_vlan_block_marker: "# {mark} ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1"
+    proxmox_vlan_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1"
+    proxmox_vlan_block_end: "# END ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1"
+    proxmox_vlan_legacy_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"
     proxmox_vlan_vmbr1_safe_defaults:
       management:
         bridge: "vmbr0"
@@ -34,6 +36,7 @@
         require_data_nic_unused: true
         require_data_nic_no_ip: true
         require_ifreload_dry_run: true
+        oob_console_ack: false
       workloads:
         migrate: false
         vm_vlan_map: {}
@@ -43,6 +46,7 @@
         enabled: false
         mode: "preflight"
         use_discovered_hardware: true
+        require_operator_selection: true
 
   pre_tasks:
     - name: Load manual Proxmox feature defaults
@@ -93,11 +97,47 @@
         - proxmox_feature_defaults_effective.vlan.use_discovered_hardware | bool
         - proxmox_hardware_facts_stat.stat.exists
 
+    - name: Stat operator selection file
+      stat:
+        path: "{{ proxmox_vlan_selection_path }}"
+      register: proxmox_vlan_selection_stat
+
+    - name: Require operator selection file when selection policy is enabled
+      assert:
+        that:
+          - proxmox_vlan_selection_stat.stat.exists
+        fail_msg: >-
+          Operator selection file is required at {{ proxmox_vlan_selection_path }}.
+          Run setup/vlan.sh or set
+          -e proxmox_feature_defaults.vlan.require_operator_selection=false.
+      when: proxmox_feature_defaults_effective.vlan.require_operator_selection | bool
+
+    - name: Load operator selection file
+      include_vars:
+        file: "{{ proxmox_vlan_selection_path }}"
+      when: proxmox_vlan_selection_stat.stat.exists
+
+    - name: Require confirmed operator selection when selection policy is enabled
+      assert:
+        that:
+          - proxmox_vlan_operator_selection.confirmed | default(false) | bool
+        fail_msg: >-
+          Operator selection file exists but confirmed=true was not set.
+      when: proxmox_feature_defaults_effective.vlan.require_operator_selection | bool
+
   tasks:
     - name: Capture current interfaces file
       slurp:
         src: /etc/network/interfaces
       register: proxmox_interfaces_file
+
+    - name: Normalize operator selection payload
+      set_fact:
+        proxmox_vlan_selection: "{{ proxmox_vlan_operator_selection | default({}) }}"
+
+    - name: Normalize discovered hardware payload
+      set_fact:
+        proxmox_hardware_discovered_effective: "{{ proxmox_hardware_discovered | default({}) }}"
 
     - name: Build effective VLAN feature model
       set_fact:
@@ -107,8 +147,12 @@
               {{
                 proxmox_vlan.management.bridge
                 | default(
-                    proxmox_hardware_discovered.management.bridge
-                    | default(proxmox_vlan_vmbr1_safe_defaults.management.bridge),
+                    proxmox_vlan_selection.management.bridge
+                    | default(
+                        proxmox_hardware_discovered_effective.management.bridge
+                        | default(proxmox_vlan_vmbr1_safe_defaults.management.bridge),
+                        true
+                      ),
                     true
                   )
               }}
@@ -116,8 +160,12 @@
               {{
                 proxmox_vlan.management.nic
                 | default(
-                    proxmox_hardware_discovered.management.nic
-                    | default(proxmox_vlan_vmbr1_safe_defaults.management.nic),
+                    proxmox_vlan_selection.management.nic
+                    | default(
+                        proxmox_hardware_discovered_effective.management.nic
+                        | default(proxmox_vlan_vmbr1_safe_defaults.management.nic),
+                        true
+                      ),
                     true
                   )
               }}
@@ -125,8 +173,12 @@
               {{
                 proxmox_vlan.management.ip_cidr
                 | default(
-                    proxmox_hardware_discovered.management.ip_cidr
-                    | default(proxmox_vlan_vmbr1_safe_defaults.management.ip_cidr),
+                    proxmox_vlan_selection.management.ip_cidr
+                    | default(
+                        proxmox_hardware_discovered_effective.management.ip_cidr
+                        | default(proxmox_vlan_vmbr1_safe_defaults.management.ip_cidr),
+                        true
+                      ),
                     true
                   )
               }}
@@ -134,8 +186,12 @@
               {{
                 proxmox_vlan.management.gateway
                 | default(
-                    proxmox_hardware_discovered.management.gateway
-                    | default(proxmox_vlan_vmbr1_safe_defaults.management.gateway),
+                    proxmox_vlan_selection.management.gateway
+                    | default(
+                        proxmox_hardware_discovered_effective.management.gateway
+                        | default(proxmox_vlan_vmbr1_safe_defaults.management.gateway),
+                        true
+                      ),
                     true
                   )
               }}
@@ -143,31 +199,121 @@
               {{
                 proxmox_vlan.management.gui_port
                 | default(
-                    proxmox_hardware_discovered.management.gui_port
-                    | default(proxmox_vlan_vmbr1_safe_defaults.management.gui_port),
+                    proxmox_vlan_selection.management.gui_port
+                    | default(
+                        proxmox_hardware_discovered_effective.management.gui_port
+                        | default(proxmox_vlan_vmbr1_safe_defaults.management.gui_port),
+                        true
+                      ),
                     true
                   )
               }}
           data:
-            bridge: "{{ proxmox_vlan.data.bridge | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge, true) }}"
+            bridge: >-
+              {{
+                proxmox_vlan.data.bridge
+                | default(
+                    proxmox_vlan_selection.data.bridge
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge),
+                    true
+                  )
+              }}
             nic: >-
               {{
                 proxmox_vlan.data.nic
                 | default(
-                    proxmox_hardware_discovered.candidates.data_nic
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.nic),
+                    proxmox_vlan_selection.data.nic
+                    | default(
+                        proxmox_hardware_discovered_effective.candidates.data_nic
+                        | default(proxmox_vlan_vmbr1_safe_defaults.data.nic),
+                        true
+                      ),
                     true
                   )
               }}
-            expected_driver: "{{ proxmox_vlan.data.expected_driver | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_driver, true) }}"
-            expected_pci: "{{ proxmox_vlan.data.expected_pci | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_pci, true) }}"
-            bridge_vlan_aware: "{{ proxmox_vlan.data.bridge_vlan_aware | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vlan_aware, true) }}"
-            bridge_vids: "{{ proxmox_vlan.data.bridge_vids | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vids, true) }}"
-            host_ip: "{{ proxmox_vlan.data.host_ip | default(proxmox_vlan_vmbr1_safe_defaults.data.host_ip, true) }}"
-          safety: "{{ proxmox_vlan_vmbr1_safe_defaults.safety | combine(proxmox_vlan.safety | default({}), recursive=true) }}"
-          workloads: "{{ proxmox_vlan_vmbr1_safe_defaults.workloads | combine(proxmox_vlan.workloads | default({}), recursive=true) }}"
+            expected_driver: >-
+              {{
+                proxmox_vlan.data.expected_driver
+                | default(
+                    proxmox_vlan_selection.data.expected_driver
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_driver),
+                    true
+                  )
+              }}
+            expected_pci: >-
+              {{
+                proxmox_vlan.data.expected_pci
+                | default(
+                    proxmox_vlan_selection.data.expected_pci
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_pci),
+                    true
+                  )
+              }}
+            bridge_vlan_aware: >-
+              {{
+                proxmox_vlan.data.bridge_vlan_aware
+                | default(
+                    proxmox_vlan_selection.data.bridge_vlan_aware
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vlan_aware),
+                    true
+                  )
+              }}
+            bridge_vids: >-
+              {{
+                proxmox_vlan.data.bridge_vids
+                | default(
+                    proxmox_vlan_selection.data.bridge_vids
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vids),
+                    true
+                  )
+              }}
+            host_ip: >-
+              {{
+                proxmox_vlan.data.host_ip
+                | default(
+                    proxmox_vlan_selection.data.host_ip
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.host_ip),
+                    true
+                  )
+              }}
+          safety: >-
+            {{
+              proxmox_vlan_vmbr1_safe_defaults.safety
+              | combine(proxmox_vlan_selection.safety | default({}), recursive=true)
+              | combine(proxmox_vlan.safety | default({}), recursive=true)
+            }}
+          workloads: >-
+            {{
+              proxmox_vlan_vmbr1_safe_defaults.workloads
+              | combine(proxmox_vlan_selection.workloads | default({}), recursive=true)
+              | combine(proxmox_vlan.workloads | default({}), recursive=true)
+            }}
         proxmox_vlan_mode: "{{ proxmox_feature_defaults_effective.vlan.mode }}"
         proxmox_vlan_discovery_enabled: "{{ proxmox_feature_defaults_effective.vlan.use_discovered_hardware | bool }}"
+        proxmox_vlan_require_operator_selection: "{{ proxmox_feature_defaults_effective.vlan.require_operator_selection | bool }}"
+
+    - name: Assert operator selection maps to discovered management path
+      assert:
+        that:
+          - proxmox_vlan_selection.management.bridge | default('') == proxmox_hardware_discovered_effective.management.bridge
+          - proxmox_vlan_selection.management.nic | default('') == proxmox_hardware_discovered_effective.management.nic
+        fail_msg: >-
+          Operator selection management path does not match discovered management
+          path. Refusing to continue.
+      when:
+        - proxmox_vlan_require_operator_selection
+        - proxmox_vlan_discovery_enabled
+
+    - name: Require out-of-band console acknowledgement for write/apply
+      assert:
+        that:
+          - proxmox_vlan_effective.safety.oob_console_ack | default(false) | bool
+        fail_msg: >-
+          write/apply requires oob_console_ack=true in {{ proxmox_vlan_selection_path }}
+          or explicit safety override.
+      when:
+        - proxmox_vlan_mode in ['write', 'apply']
+        - proxmox_vlan_effective.safety.require_oob_console | bool
 
     - name: Assert data NIC was resolved
       assert:
@@ -176,19 +322,54 @@
           - proxmox_vlan_effective.data.nic | length > 0
         fail_msg: "No data NIC was resolved for proxmox_vlan.data.nic."
 
+    - name: Assert data bridge differs from management bridge
+      assert:
+        that:
+          - proxmox_vlan_effective.data.bridge != proxmox_vlan_effective.management.bridge
+        fail_msg: >-
+          Data bridge {{ proxmox_vlan_effective.data.bridge }} matches management
+          bridge {{ proxmox_vlan_effective.management.bridge }}.
+
     - name: Derive discovered NIC record for effective data NIC
       set_fact:
         proxmox_vlan_data_nic_record: >-
           {{
-            proxmox_hardware_discovered.network.nics[proxmox_vlan_effective.data.nic]
+            proxmox_hardware_discovered_effective.network.nics[proxmox_vlan_effective.data.nic]
             if (
-              proxmox_hardware_discovered is defined
-              and proxmox_hardware_discovered.network is defined
-              and proxmox_hardware_discovered.network.nics is defined
-              and proxmox_vlan_effective.data.nic in proxmox_hardware_discovered.network.nics
+              proxmox_hardware_discovered_effective.network is defined
+              and proxmox_hardware_discovered_effective.network.nics is defined
+              and proxmox_vlan_effective.data.nic in proxmox_hardware_discovered_effective.network.nics
             )
             else {}
           }}
+
+    - name: Assert discovered data NIC exists when discovery is enabled
+      assert:
+        that:
+          - proxmox_hardware_discovered_effective.network is defined
+          - proxmox_hardware_discovered_effective.network.nics is defined
+          - proxmox_vlan_effective.data.nic in proxmox_hardware_discovered_effective.network.nics
+        fail_msg: >-
+          Selected data NIC {{ proxmox_vlan_effective.data.nic }} is not present in
+          discovered hardware facts.
+      when: proxmox_vlan_discovery_enabled
+
+    - name: Derive VLAN tokens for syntax validation
+      set_fact:
+        proxmox_vlan_vid_tokens: "{{ proxmox_vlan_effective.data.bridge_vids | string | regex_findall('\\S+') }}"
+
+    - name: Assert VLAN IDs are not empty
+      assert:
+        that:
+          - proxmox_vlan_vid_tokens | length > 0
+        fail_msg: "VLAN ID list is empty."
+
+    - name: Assert VLAN token syntax is valid for ifupdown2
+      assert:
+        that:
+          - (proxmox_vlan_vid_tokens | select('match', '^[0-9]+(-[0-9]+)?$') | list | length) == (proxmox_vlan_vid_tokens | length)
+        fail_msg: >-
+          VLAN tokens must be numeric IDs or ranges (for example: 10 20 30-40).
 
     - name: Assert management plane remains on vmbr0
       assert:
@@ -202,8 +383,8 @@
     - name: Assert discovered management bridge matches effective bridge
       assert:
         that:
-          - proxmox_hardware_discovered.management.bridge == proxmox_vlan_effective.management.bridge
-          - proxmox_hardware_discovered.management.nic == proxmox_vlan_effective.management.nic
+          - proxmox_hardware_discovered_effective.management.bridge == proxmox_vlan_effective.management.bridge
+          - proxmox_hardware_discovered_effective.management.nic == proxmox_vlan_effective.management.nic
         fail_msg: >-
           Effective management settings do not match discovered hardware facts.
           Refusing to modify network state.
@@ -214,9 +395,9 @@
     - name: Assert Proxmox GUI listener remains on the management plane
       assert:
         that:
-          - proxmox_hardware_discovered.management.gui_listening | default(false)
-          - proxmox_hardware_discovered.management.default_route_uses_management | default(false)
-          - (proxmox_vlan_effective.management.gui_port | int) == (proxmox_hardware_discovered.management.gui_port | int)
+          - proxmox_hardware_discovered_effective.management.gui_listening | default(false)
+          - proxmox_hardware_discovered_effective.management.default_route_uses_management | default(false)
+          - (proxmox_vlan_effective.management.gui_port | int) == (proxmox_hardware_discovered_effective.management.gui_port | int)
         fail_msg: >-
           The discovered Proxmox GUI state is not anchored to the current management
           plane. Refusing to continue.
@@ -286,7 +467,11 @@
             ) is not none
             and (
               proxmox_interfaces_file.content | b64decode
-              | regex_search(proxmox_vlan_block_begin | regex_escape, multiline=True)
+              | regex_search(proxmox_vlan_block_begin, multiline=True)
+            ) is none
+            and (
+              proxmox_interfaces_file.content | b64decode
+              | regex_search(proxmox_vlan_legacy_block_begin, multiline=True)
             ) is none
           }}
 
@@ -339,30 +524,53 @@
           Preflight completed successfully. No changes were written because mode=preflight.
       when: proxmox_vlan_mode == 'preflight'
 
-    - name: Write managed vmbr1 block
-      blockinfile:
-        path: /etc/network/interfaces
-        marker: "{{ proxmox_vlan_block_marker }}"
-        block: "{{ proxmox_vlan_managed_block }}"
-        insertafter: EOF
-        create: false
+    - name: Write/apply VLAN bridge with rollback protection
+      block:
+        - name: Backup /etc/network/interfaces
+          copy:
+            src: /etc/network/interfaces
+            dest: "/etc/network/interfaces.bak.proxmox-vlan.{{ ansible_date_time.iso8601_basic_short }}"
+            remote_src: true
+            mode: "0644"
+          register: proxmox_vlan_interfaces_backup
+
+        - name: Write managed vmbr1 block
+          blockinfile:
+            path: /etc/network/interfaces
+            marker: "{{ proxmox_vlan_block_marker }}"
+            block: "{{ proxmox_vlan_managed_block }}"
+            insertafter: EOF
+            create: false
+
+        - name: Dry-run interface reload after writing managed block
+          command:
+            argv:
+              - ifreload
+              - -a
+              - -s
+          register: proxmox_ifreload_dry_run
+          changed_when: false
+          when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
+
+        - name: Apply interface reload
+          command:
+            argv:
+              - ifreload
+              - -a
+          when: proxmox_vlan_mode == 'apply'
+      rescue:
+        - name: Restore previous /etc/network/interfaces
+          copy:
+            src: "{{ proxmox_vlan_interfaces_backup.dest }}"
+            dest: /etc/network/interfaces
+            remote_src: true
+            mode: "0644"
+          when:
+            - proxmox_vlan_interfaces_backup is defined
+            - proxmox_vlan_interfaces_backup.dest is defined
+
+        - name: Fail after rollback
+          fail:
+            msg: >-
+              VLAN write/apply failed; restored previous /etc/network/interfaces.
       when: proxmox_vlan_mode in ['write', 'apply']
-
-    - name: Dry-run interface reload after writing managed block
-      command:
-        argv:
-          - ifreload
-          - -a
-          - -s
-      register: proxmox_ifreload_dry_run
-      changed_when: false
-      when:
-        - proxmox_vlan_mode in ['write', 'apply']
-        - proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
-
-    - name: Apply interface reload
-      command:
-        argv:
-          - ifreload
-          - -a
-      when: proxmox_vlan_mode == 'apply'

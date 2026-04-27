@@ -8,6 +8,21 @@ proxmox_feature_defaults:
     enabled: false
     mode: "preflight"  # preflight | write | apply
     use_discovered_hardware: true
+    require_operator_selection: true
+
+proxmox_vlan_ui:
+  enabled: true
+  facts_dir: "/etc/ansible/proxmox/facts"
+  hardware_facts_path: "/etc/ansible/proxmox/facts/hardware.yml"
+  hardware_nics_tsv_path: "/etc/ansible/proxmox/facts/hardware.nics.tsv"
+  selection_path: "/etc/ansible/proxmox/facts/vlan.selection.yml"
+  default_data_bridge: "vmbr1"
+  default_bridge_vids: "10 20 30 40"
+  allow_vlan_1: false
+  allow_all_vlan_range: false
+  allow_same_management_and_data_nic: false
+  allow_data_nic_with_host_ip: false
+  allow_data_nic_bridge_member: false
 
 proxmox_vlan:
   management:
@@ -37,4 +52,3 @@ proxmox_vlan:
     migrate: false
     vm_vlan_map: {}
     ct_vlan_map: {}
-

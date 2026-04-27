@@ -13,6 +13,7 @@ declare -A PKGS
 
 # --- Playlist (Of Playbooks) File Name:
 PLAYBOOKS="debian/install.playbooks.txt"
+SETUP_VLAN_RUNNER="setup/vlan.sh"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -129,6 +130,28 @@ load.whitelist.ansible() {
   fi
 
   PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, of playbook files
+}
+
+load.setup.vlan.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_VLAN_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_VLAN_RUNNER} not found; skipping setup-vlan playbook refs"
+    PKGS[setup_vlan]=""
+    return 0
+  }
+
+  mapfile -t _setup_vlan_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_vlan_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_VLAN_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_vlan]="${_setup_vlan_items[*]}"
 }
 
 load.release.playbook.refs() {
@@ -250,6 +273,12 @@ publish.ansible() {
   done
   load.release.playbook.refs "6.4" shared_playbooks
   load.release.playbook.refs "9.1" shared_playbooks
+
+  load.setup.vlan.playbooks
+  for playbook_to_run in ${PKGS[setup_vlan]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
   for playbook_to_run in "${!shared_playbooks[@]}"; do
     rsync_includes+=( "--include=${playbook_to_run}" )
   done
@@ -257,6 +286,9 @@ publish.ansible() {
   rsync_includes+=( "--include=dell/**" )
 
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
+  if [[ -n "${PKGS[setup_vlan]:-}" ]]; then
+    log.info "[www.pages] setup vlan entries: ${PKGS[setup_vlan]}"
+  fi
 
   rsync -av \
     --include='*/' \

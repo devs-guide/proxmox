@@ -13,8 +13,6 @@ FILES=(
   "ansible/debian/install.packages.yml:ansible/debian/install.packages.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
-  "ansible/proxmox/helper/hardware.yml:ansible/proxmox/helper/hardware.yml"
-  "ansible/proxmox/vlan.yml:ansible/proxmox/vlan.yml"
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml:ansible/release/9.1/group_vars/all.yml"
@@ -46,6 +44,62 @@ for entry in "${FILES[@]}"; do
     echo "[validate.pages][ok] ${local_path} matches published ${url}"
   fi
 done
+
+check_setup_feature_refs() {
+  local runner_path="${WORKDIR}/setup/vlan.sh"
+  local feature_ref
+  local -a _setup_feature_refs=()
+
+  if [[ ! -f "${runner_path}" ]]; then
+    echo "[validate.pages][error] missing local setup runner: ${runner_path}"
+    rc=1
+    return
+  fi
+
+  while IFS= read -r feature_ref; do
+    [[ -n "${feature_ref}" ]] || continue
+    _setup_feature_refs+=("${feature_ref}")
+  done < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner_path}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_feature_refs[@]} == 0)); then
+    echo "[validate.pages][error] setup/vlan.sh has empty or missing FEATURE_PLAYBOOKS array"
+    rc=1
+    return
+  fi
+
+  for feature_ref in "${_setup_feature_refs[@]}"; do
+    local local_playbook="ansible/${feature_ref}"
+    local remote_playbook="ansible/${feature_ref}"
+    local tmp_playbook="${TMPDIR}/${remote_playbook}"
+    local playbook_url="${BASE_URL}/${remote_playbook}"
+
+    if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
+      echo "[validate.pages][error] setup/vlan.sh references missing local playbook: ${local_playbook}"
+      rc=1
+      continue
+    fi
+
+    mkdir -p "$(dirname "${tmp_playbook}")"
+    echo "[validate.pages] fetch ${playbook_url}"
+    if ! curl -fsSL "${playbook_url}" -o "${tmp_playbook}"; then
+      echo "[validate.pages][error] failed to fetch setup.vlan dependency ${playbook_url}"
+      rc=1
+      continue
+    fi
+
+    if ! diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" >/dev/null; then
+      echo "[validate.pages][diff] ${local_playbook} differs from published ${playbook_url}"
+      diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" || true
+      rc=1
+    else
+      echo "[validate.pages][ok] ${local_playbook} matches published ${playbook_url}"
+    fi
+  done
+}
 
 check_playlist_refs() {
   local playlist_path="$1"
@@ -99,6 +153,7 @@ check_playlist_refs() {
 
 check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
 check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
+check_setup_feature_refs
 
 rm -rf "${TMPDIR}"
 exit "${rc}"

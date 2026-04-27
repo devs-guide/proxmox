@@ -52,12 +52,28 @@ fi
 echo "[validate.runtime][ok] 9.1 playlist delegates runtime bootstrap to release.common.sh"
 
 echo "[validate.runtime] checking Proxmox feature runner contract..."
-if ! grep -q 'ansible/proxmox/helper/hardware.yml' "${ROOT}/setup/vlan.sh"; then
-  echo "[validate.runtime][error] setup/vlan.sh does not reference ansible/proxmox/helper/hardware.yml"
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not define FEATURE_PLAYBOOKS array"
   exit 1
 fi
-if ! grep -q 'ansible/proxmox/vlan.yml' "${ROOT}/setup/vlan.sh"; then
-  echo "[validate.runtime][error] setup/vlan.sh does not reference ansible/proxmox/vlan.yml"
+if ! grep -q '"proxmox/helper/hardware.yml"' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh FEATURE_PLAYBOOKS is missing proxmox/helper/hardware.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/vlan.yml"' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh FEATURE_PLAYBOOKS is missing proxmox/vlan.yml"
+  exit 1
+fi
+if ! grep -q '/dev/tty' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh is missing TTY input handling (/dev/tty)"
+  exit 1
+fi
+if ! grep -q 'hardware.nics.tsv' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh is missing hardware.nics.tsv usage"
+  exit 1
+fi
+if ! grep -q 'vlan.selection.yml' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh is missing vlan.selection.yml usage"
   exit 1
 fi
 if ! grep -q 'proxmox_feature_defaults.vlan.enabled=true' "${ROOT}/setup/vlan.sh"; then
@@ -65,6 +81,40 @@ if ! grep -q 'proxmox_feature_defaults.vlan.enabled=true' "${ROOT}/setup/vlan.sh
   exit 1
 fi
 echo "[validate.runtime][ok] setup/vlan.sh references the expected Proxmox feature flow"
+
+echo "[validate.runtime] checking VLAN playbook safety contract..."
+if ! grep -q 'proxmox_vlan_operator_selection' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml does not consume proxmox_vlan_operator_selection"
+  exit 1
+fi
+if ! grep -q 'oob_console_ack' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml does not enforce oob_console_ack"
+  exit 1
+fi
+if ! grep -q 'interfaces.bak.proxmox-vlan' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml is missing rollback backup marker"
+  exit 1
+fi
+echo "[validate.runtime][ok] ansible/proxmox/vlan.yml includes selection/oob/rollback safeguards"
+
+echo "[validate.runtime] checking publish wiring contract..."
+if grep -qE '(^|[[:space:]])proxmox/' "${ROOT}/ansible/debian/install.playbooks.txt"; then
+  echo "[validate.runtime][error] ansible/debian/install.playbooks.txt must remain Debian-only (found proxmox entry)"
+  exit 1
+fi
+if ! grep -q 'load.setup.vlan.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/vlan.sh feature playbook refs"
+  exit 1
+fi
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh FEATURE_PLAYBOOKS array not found for publish parsing"
+  exit 1
+fi
+if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
+  echo "[validate.runtime][error] setup/vlan.playbooks.txt should not exist (array model is source-of-truth)"
+  exit 1
+fi
+echo "[validate.runtime][ok] publish wiring follows setup/vlan.sh FEATURE_PLAYBOOKS model"
 
 echo "[validate.runtime] checking shell syntax..."
 bash -n "${ROOT}/bootstrap/release.6.4.sh"
