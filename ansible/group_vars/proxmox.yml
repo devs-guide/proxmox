@@ -1,0 +1,40 @@
+---
+# Manual Proxmox feature defaults.
+# This file is for user-invoked feature playbooks under ansible/proxmox/ and
+# setup runners under setup/. It is not part of the Debian baseline bootstrap.
+
+proxmox_feature_defaults:
+  vlan:
+    enabled: false
+    mode: "preflight"  # preflight | write | apply
+    use_discovered_hardware: true
+
+proxmox_vlan:
+  management:
+    bridge: null
+    nic: null
+    ip_cidr: null
+    gateway: null
+    gui_port: 8006
+
+  data:
+    bridge: "vmbr1"
+    nic: null
+    expected_driver: null
+    expected_pci: null
+    bridge_vlan_aware: true
+    bridge_vids: "10 20 30 40"
+    host_ip: null
+
+  safety:
+    require_oob_console: true
+    require_management_unchanged: true
+    require_data_nic_unused: true
+    require_data_nic_no_ip: true
+    require_ifreload_dry_run: true
+
+  workloads:
+    migrate: false
+    vm_vlan_map: {}
+    ct_vlan_map: {}
+

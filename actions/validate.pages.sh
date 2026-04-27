@@ -9,9 +9,13 @@ FILES=(
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
+  "setup.vlan.sh:setup/vlan.sh"
   "ansible/debian/install.packages.yml:ansible/debian/install.packages.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
+  "ansible/proxmox/helper/hardware.yml:ansible/proxmox/helper/hardware.yml"
+  "ansible/proxmox/vlan.yml:ansible/proxmox/vlan.yml"
+  "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml:ansible/release/9.1/group_vars/all.yml"
 )
@@ -75,7 +79,7 @@ check_playlist_refs() {
     fi
 
     local remote_playbook="ansible/${playbook_ref}"
-    if [[ ! "${playbook_ref}" == debian/* ]]; then
+    if [[ ! "${playbook_ref}" == debian/* && ! "${playbook_ref}" == proxmox/* ]]; then
       local release_dir
       release_dir="$(basename "$(dirname "${playlist_path}")")"
       remote_playbook="ansible/release/${release_dir}/${playbook_ref}"

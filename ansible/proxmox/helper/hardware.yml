@@ -1,0 +1,272 @@
+---
+- name: "[proxmox]: discover hardware and persist feature facts"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_facts_dir: "/etc/devsguide/proxmox/facts"
+    proxmox_hardware_facts_path: "{{ proxmox_feature_facts_dir }}/hardware.yml"
+    proxmox_gui_port: 8006
+
+  pre_tasks:
+    - name: Assert this host is a Proxmox node
+      command:
+        argv:
+          - pveversion
+      register: proxmox_version_check
+      changed_when: false
+
+  tasks:
+    - name: Capture default route device
+      command:
+        argv:
+          - sh
+          - -c
+          - ip route show default | awk 'NR==1 {print $5}'
+      register: proxmox_default_route_device
+      changed_when: false
+      failed_when: false
+
+    - name: Capture default route gateway
+      command:
+        argv:
+          - sh
+          - -c
+          - ip route show default | awk 'NR==1 {print $3}'
+      register: proxmox_default_route_gateway
+      changed_when: false
+      failed_when: false
+
+    - name: Capture bridge membership view
+      command:
+        argv:
+          - bridge
+          - link
+      register: proxmox_bridge_link
+      changed_when: false
+      failed_when: false
+
+    - name: Capture bridge VLAN view
+      command:
+        argv:
+          - bridge
+          - vlan
+          - show
+      register: proxmox_bridge_vlan
+      changed_when: false
+      failed_when: false
+
+    - name: Capture Proxmox GUI listener state
+      command:
+        argv:
+          - sh
+          - -c
+          - "ss -tulpen | grep -q ':{{ proxmox_gui_port }}\\b'"
+      register: proxmox_gui_listener
+      changed_when: false
+      failed_when: false
+
+    - name: Capture interface config file
+      slurp:
+        src: /etc/network/interfaces
+      register: proxmox_network_interfaces_file
+
+    - name: Derive management bridge
+      set_fact:
+        proxmox_management_bridge: >-
+          {{
+            proxmox_default_route_device.stdout
+            if (proxmox_default_route_device.stdout | default('')) is match('^vmbr[0-9]+$')
+            else 'vmbr0'
+          }}
+
+    - name: Derive interfaces that belong to the management bridge
+      set_fact:
+        proxmox_management_bridge_ports: >-
+          {{
+            proxmox_bridge_link.stdout_lines
+            | default([])
+            | select('search', ' master ' ~ proxmox_management_bridge ~ ' ')
+            | map('regex_replace', '^\\d+:\\s+([^:@]+)(?:@[^:]+)?:.*$', '\\1')
+            | list
+          }}
+
+    - name: Derive management NIC
+      set_fact:
+        proxmox_management_nic: "{{ (proxmox_management_bridge_ports | first) | default(proxmox_default_route_device.stdout | default('')) }}"
+
+    - name: Build candidate physical NIC list
+      set_fact:
+        proxmox_candidate_nics: >-
+          {{
+            ansible_facts.interfaces
+            | default([])
+            | reject('match', '^lo$')
+            | reject('match', '^vmbr[0-9]+$')
+            | reject('match', '^tap')
+            | reject('match', '^fw')
+            | reject('match', '^veth')
+            | reject('match', '^vlan')
+            | reject('match', '^bond')
+            | list
+          }}
+
+    - name: Collect per-NIC driver, PCI, and speed details
+      shell: |
+        set -eu
+        nic="{{ item }}"
+        driver="none"
+        pci=""
+        speed=""
+        if [ -L "/sys/class/net/${nic}/device/driver" ]; then
+          driver="$(basename "$(readlink -f "/sys/class/net/${nic}/device/driver")")"
+        fi
+        if [ -L "/sys/class/net/${nic}/device" ]; then
+          pci="$(basename "$(readlink -f "/sys/class/net/${nic}/device")")"
+        fi
+        if [ -r "/sys/class/net/${nic}/speed" ]; then
+          speed="$(cat "/sys/class/net/${nic}/speed" 2>/dev/null || true)"
+        fi
+        printf '%s|%s|%s|%s\n' "${nic}" "${driver}" "${pci}" "${speed}"
+      args:
+        executable: /bin/bash
+      loop: "{{ proxmox_candidate_nics }}"
+      register: proxmox_nic_hw_details
+      changed_when: false
+
+    - name: Build NIC hardware map
+      set_fact:
+        proxmox_nic_hardware_map: "{{ proxmox_nic_hardware_map | default({}) | combine({nic_name: nic_data}) }}"
+      vars:
+        nic_name: "{{ nic_fields[0] }}"
+        nic_fields: "{{ item.stdout.split('|') }}"
+        nic_ipv4_data: "{{ ansible_facts.get(nic_fields[0], {}).get('ipv4', {}) }}"
+        nic_data:
+          driver: "{{ nic_fields[1] if (nic_fields | length > 1 and nic_fields[1] | length > 0) else none }}"
+          pci: "{{ nic_fields[2] if (nic_fields | length > 2 and nic_fields[2] | length > 0) else none }}"
+          speed_mbps: "{{ (nic_fields[3] | int) if (nic_fields | length > 3 and nic_fields[3] is match('^[0-9]+$')) else none }}"
+          has_ip: "{{ nic_ipv4_data.get('address') is defined }}"
+          ip_cidr: >-
+            {{
+              (nic_ipv4_data.address ~ '/' ~ (nic_ipv4_data.prefix | string))
+              if (nic_ipv4_data.get('address') is defined and nic_ipv4_data.get('prefix') is defined)
+              else none
+            }}
+          bridge_member: >-
+            {{
+              (
+                proxmox_bridge_link.stdout_lines
+                | default([])
+                | select('search', '^\\d+:\\s+' ~ nic_fields[0] ~ '(?:@[^:]+)?:')
+                | list
+                | first
+                | default('')
+                | regex_search(' master (\\S+)', '\\1')
+                | default([], true)
+                | first
+              )
+              or none
+            }}
+          management_candidate: "{{ nic_fields[0] == proxmox_management_nic }}"
+          data_candidate: >-
+            {{
+              (nic_fields[0] != proxmox_management_nic)
+              and not (nic_ipv4_data.get('address') is defined)
+              and (
+                (
+                  proxmox_bridge_link.stdout_lines
+                  | default([])
+                  | select('search', '^\\d+:\\s+' ~ nic_fields[0] ~ '(?:@[^:]+)?:')
+                  | list
+                  | first
+                  | default('')
+                  | regex_search(' master (\\S+)', '\\1')
+                  | default([], true)
+                  | first
+                  | default('')
+                ) | length == 0
+              )
+              and (nic_fields | length > 3 and nic_fields[3] is match('^[0-9]+$') and (nic_fields[3] | int) >= 10000)
+            }}
+      loop: "{{ proxmox_nic_hw_details.results }}"
+
+    - name: Derive first candidate data NIC
+      set_fact:
+        proxmox_data_nic: >-
+          {{
+            (
+              proxmox_nic_hardware_map
+              | dict2items
+              | selectattr('value.data_candidate', 'equalto', true)
+              | map(attribute='key')
+              | list
+              | first
+            ) | default('', true)
+          }}
+
+    - name: Build persisted Proxmox hardware facts
+      set_fact:
+        proxmox_hardware_discovered:
+          node: "{{ ansible_facts.hostname }}"
+          generated_by: "ansible/proxmox/helper/hardware.yml"
+          management:
+            bridge: "{{ proxmox_management_bridge }}"
+            nic: "{{ proxmox_management_nic if (proxmox_management_nic | length > 0) else none }}"
+            ip_cidr: >-
+              {{
+                (
+                  ansible_facts.get('default_ipv4', {}).get('address', '')
+                  ~ '/'
+                  ~ (ansible_facts.get('default_ipv4', {}).get('prefix', '') | string)
+                )
+                if (
+                  ansible_facts.get('default_ipv4', {}).get('address') is defined
+                  and ansible_facts.get('default_ipv4', {}).get('prefix') is defined
+                )
+                else none
+              }}
+            gateway: "{{ proxmox_default_route_gateway.stdout | default('') or none }}"
+            gui_port: "{{ proxmox_gui_port }}"
+            gui_listening: "{{ proxmox_gui_listener.rc == 0 }}"
+            default_route_uses_management: "{{ proxmox_default_route_device.stdout | default('') == proxmox_management_bridge }}"
+          network:
+            bridges: >-
+              {{
+                {
+                  proxmox_management_bridge: {
+                    'ports': proxmox_management_bridge_ports,
+                    'has_host_ip': proxmox_default_route_device.stdout | default('') == proxmox_management_bridge
+                  },
+                  'vmbr1': {
+                    'exists': 'vmbr1' in (ansible_facts.interfaces | default([]))
+                  }
+                }
+              }}
+            nics: "{{ proxmox_nic_hardware_map }}"
+            bridge_link_raw: "{{ proxmox_bridge_link.stdout_lines | default([]) }}"
+            bridge_vlan_raw: "{{ proxmox_bridge_vlan.stdout_lines | default([]) }}"
+            interfaces_file: "{{ proxmox_network_interfaces_file.content | b64decode }}"
+          candidates:
+            data_nic: "{{ proxmox_data_nic if (proxmox_data_nic | length > 0) else none }}"
+
+    - name: Ensure Proxmox feature facts directory exists
+      file:
+        path: "{{ proxmox_feature_facts_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Persist discovered Proxmox hardware facts
+      copy:
+        dest: "{{ proxmox_hardware_facts_path }}"
+        mode: "0644"
+        content: |
+          ---
+          proxmox_hardware_discovered:
+          {{ proxmox_hardware_discovered | to_nice_yaml(indent=2) | indent(2, true) }}
+
+    - name: Report persisted hardware facts path
+      debug:
+        msg: "Persisted Proxmox hardware facts to {{ proxmox_hardware_facts_path }}"

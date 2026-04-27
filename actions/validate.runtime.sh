@@ -15,12 +15,16 @@ files=(
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
+  "setup/vlan.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
   "ansible/debian/install.packages.yml"
   "ansible/debian/packages.yml"
   "ansible/debian/sources.trixie.yml"
+  "ansible/group_vars/proxmox.yml"
+  "ansible/proxmox/helper/hardware.yml"
+  "ansible/proxmox/vlan.yml"
   "ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml"
 )
@@ -46,6 +50,33 @@ if grep -qx 'debian/ansible.venv.yml' "${ROOT}/ansible/release/9.1/install.playb
   exit 1
 fi
 echo "[validate.runtime][ok] 9.1 playlist delegates runtime bootstrap to release.common.sh"
+
+echo "[validate.runtime] checking Proxmox feature runner contract..."
+if ! grep -q 'ansible/proxmox/helper/hardware.yml' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not reference ansible/proxmox/helper/hardware.yml"
+  exit 1
+fi
+if ! grep -q 'ansible/proxmox/vlan.yml' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not reference ansible/proxmox/vlan.yml"
+  exit 1
+fi
+if ! grep -q 'proxmox_feature_defaults.vlan.enabled=true' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not explicitly enable the VLAN feature"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/vlan.sh references the expected Proxmox feature flow"
+
+echo "[validate.runtime] checking shell syntax..."
+bash -n "${ROOT}/bootstrap/release.6.4.sh"
+bash -n "${ROOT}/bootstrap/release.9.1.sh"
+bash -n "${ROOT}/bootstrap/release.common.sh"
+bash -n "${ROOT}/setup/vlan.sh"
+echo "[validate.runtime][ok] shell syntax checks passed"
+
+if ! command -v ansible-playbook >/dev/null 2>&1; then
+  echo "[validate.runtime][warn] ansible-playbook not found; skipping check-mode validation"
+  exit 0
+fi
 
 run_package_check() {
   local release_label="$1"
@@ -86,5 +117,21 @@ run_runner_model_check() {
 
 run_runner_model_check "9.1/Trixie"
 run_runner_model_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
+
+run_proxmox_feature_check() {
+  local feature_label="$1"
+  shift
+
+  echo "[validate.runtime] syntax-checking ${feature_label} ..."
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/helper/hardware.yml"
+
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/vlan.yml"
+}
+
+run_proxmox_feature_check "proxmox feature playbooks" -e @${ROOT}/ansible/group_vars/proxmox.yml
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."

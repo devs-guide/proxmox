@@ -144,9 +144,20 @@ load.release.playbook.refs() {
 
   local playbook_ref
   for playbook_ref in "${_release_items[@]}"; do
-    [[ "${playbook_ref}" == debian/* ]] || continue
+    [[ "${playbook_ref}" == debian/* || "${playbook_ref}" == proxmox/* ]] || continue
     out_refs["${playbook_ref}"]=1
   done
+}
+
+normalize.shared.playbook.ref() {
+  local playbook_ref="$1"
+
+  if [[ "${playbook_ref}" == */* ]]; then
+    printf '%s\n' "${playbook_ref}"
+    return
+  fi
+
+  printf 'debian/%s\n' "${playbook_ref}"
 }
 
 # -------------------------
@@ -205,6 +216,15 @@ publish.proxmox91() {
   fi
 }
 
+publish.setup.features() {
+  if [[ -f "setup/vlan.sh" ]]; then
+    log.info "[www.pages] installing setup.vlan.sh"
+    install -m 0755 "setup/vlan.sh" "${PATH_TO[publish]}/setup.vlan.sh"
+  else
+    log.warn "[www.pages] setup/vlan.sh not found; skipping setup.vlan.sh publish"
+  fi
+}
+
 publish.ansible() {
   log.info "[www.pages] syncing ansible whitelist"
   mkdir -p "${PATH_TO[publish]}/ansible"
@@ -219,13 +239,14 @@ publish.ansible() {
     "--include=group_vars/all.yml"    # global vars for playbooks
     "--include=group_vars/buster.yml" # platform-specific vars for Proxmox 6/Buster
     "--include=group_vars/trixie.yml" # platform-specific vars for Proxmox 9/Trixie
+    "--include=group_vars/proxmox.yml" # manual Proxmox feature defaults
     "--include=debian.packages.yml"   # package catalog (legacy path, used by 6.4 RC)
     "--include=debian/packages.yml"   # package catalog (current path under debian/)
     "--include=debian/sources.trixie.yml" # Trixie sources play for 9.1+
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
-    shared_playbooks["debian/${playbook_to_run}"]=1
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
   done
   load.release.playbook.refs "6.4" shared_playbooks
   load.release.playbook.refs "9.1" shared_playbooks
@@ -324,6 +345,7 @@ run.pages() {
   publish.release.common
   publish.proxmox64
   publish.proxmox91
+  publish.setup.features
   publish.ansible
   publish.ansible.release64
   publish.ansible.release91
