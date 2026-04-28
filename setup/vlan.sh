@@ -69,6 +69,7 @@ declare -a NIC_SCORE=()
 declare -a NIC_SPEED=()
 declare -a NIC_DRIVER=()
 declare -a NIC_PCI=()
+declare -a NIC_PCI_LABEL=()
 declare -a NIC_MAC=()
 declare -a NIC_IP=()
 declare -a NIC_BRIDGE_MEMBER=()
@@ -243,6 +244,55 @@ yaml.scalar.or.null() {
   fi
 }
 
+nic.speed.class() {
+  local driver="${1:-}"
+  local speed="${2:-}"
+
+  if [[ "${speed}" =~ ^[0-9]+$ ]]; then
+    if (( speed >= 10000 )); then
+      printf '10GbE-class'
+      return
+    fi
+    if (( speed >= 1000 )); then
+      printf '1GbE-class'
+      return
+    fi
+  fi
+
+  case "${driver}" in
+    ixgbe|i40e|ice|mlx5_core|bnxt_en|atlantic)
+      printf '10GbE-class'
+      ;;
+    igb|e1000e|igc|tg3|r8169)
+      printf '1GbE-class'
+      ;;
+    *)
+      printf 'unknown-class'
+      ;;
+  esac
+}
+
+nic.recommendation.label() {
+  local role="${1:-}"
+  local score="${2:-0}"
+  local driver="${3:-}"
+
+  if [[ "${role}" == "data_candidate" ]]; then
+    case "${driver}" in
+      ixgbe|i40e|ice|mlx5_core|bnxt_en|atlantic)
+        printf 'RECOMMENDED'
+        return
+        ;;
+    esac
+    if [[ "${score}" =~ ^[0-9]+$ ]] && (( score >= 60 )); then
+      printf 'fallback'
+      return
+    fi
+  fi
+
+  printf 'not-selectable'
+}
+
 build.management.snapshot() {
   local default_route_device
   default_route_device="$(ip route show default | awk 'NR==1 {print $5}')"
@@ -277,7 +327,8 @@ build.management.snapshot() {
 }
 
 load.nic.summary() {
-  local iface role score speed driver pci mac ip_cidr bridge_member operstate carrier reason
+  local row field_count
+  local iface role score speed driver pci pci_label mac ip_cidr bridge_member operstate carrier reason
   [[ -f "${HARDWARE_NICS_TSV}" ]] || {
     log.error "Missing NIC summary: ${HARDWARE_NICS_TSV}"
     exit 1
@@ -289,6 +340,7 @@ load.nic.summary() {
   NIC_SPEED=()
   NIC_DRIVER=()
   NIC_PCI=()
+  NIC_PCI_LABEL=()
   NIC_MAC=()
   NIC_IP=()
   NIC_BRIDGE_MEMBER=()
@@ -296,15 +348,44 @@ load.nic.summary() {
   NIC_CARRIER=()
   NIC_REASON=()
 
-  while IFS=$'\t' read -r iface role score speed driver pci mac ip_cidr bridge_member operstate carrier reason; do
-    [[ -n "${iface}" ]] || continue
-    [[ "${iface}" == "iface" ]] && continue
+  while IFS= read -r row || [[ -n "${row}" ]]; do
+    [[ -n "${row}" ]] || continue
+
+    row="${row%$'\r'}"
+    [[ "${row}" == iface$'\t'* ]] && continue
+    [[ "${row}" == 'iface\t'* ]] && continue
+
+    row="${row//\\t/$'\t'}"
+    field_count="$(awk -F $'\t' '{print NF; exit}' <<< "${row}")"
+
+    iface=""
+    role=""
+    score=""
+    speed=""
+    driver=""
+    pci=""
+    pci_label=""
+    mac=""
+    ip_cidr=""
+    bridge_member=""
+    operstate=""
+    carrier=""
+    reason=""
+
+    if [[ "${field_count}" -ge 13 ]]; then
+      IFS=$'\t' read -r iface role score speed driver pci pci_label mac ip_cidr bridge_member operstate carrier reason <<< "${row}"
+    else
+      IFS=$'\t' read -r iface role score speed driver pci mac ip_cidr bridge_member operstate carrier reason <<< "${row}"
+    fi
+
+    [[ -n "${iface:-}" ]] || continue
     NIC_IFACE+=("${iface}")
     NIC_ROLE+=("${role:-other}")
     NIC_SCORE+=("${score:-0}")
     NIC_SPEED+=("${speed:-"-"}")
     NIC_DRIVER+=("${driver:-"-"}")
     NIC_PCI+=("${pci:-"-"}")
+    NIC_PCI_LABEL+=("${pci_label:-"-"}")
     NIC_MAC+=("${mac:-"-"}")
     NIC_IP+=("${ip_cidr:-"-"}")
     NIC_BRIDGE_MEMBER+=("${bridge_member:-"-"}")
@@ -415,26 +496,41 @@ validate.selection() {
 choose.data.nic.interactive() {
   local -a menu_options=()
   local -a menu_indexes=()
-  local i choice score_label safe_label recommend_label
+  local i choice speed_class recommend_label state_label pci_label
 
   for i in "${!NIC_IFACE[@]}"; do
-    score_label="${NIC_SCORE[$i]}"
-    safe_label="candidate"
     if [[ -n "${MGMT_NIC}" && "${NIC_IFACE[$i]}" == "${MGMT_NIC}" ]]; then
-      safe_label="management"
-    elif [[ "${NIC_IP[$i]}" != "-" ]]; then
-      safe_label="has-ip"
-    elif [[ "${NIC_BRIDGE_MEMBER[$i]}" != "-" ]]; then
-      safe_label="bridge-member:${NIC_BRIDGE_MEMBER[$i]}"
+      continue
     fi
-    recommend_label=""
-    if [[ "${NIC_ROLE[$i]}" == "data_candidate" ]]; then
-      recommend_label=" | recommended"
+    if [[ "${NIC_IP[$i]}" != "-" ]] && ! is.true "${ALLOW_DATA_NIC_WITH_HOST_IP}"; then
+      continue
     fi
-    menu_options+=("${NIC_IFACE[$i]} | score=${score_label} | speed=${NIC_SPEED[$i]} | driver=${NIC_DRIVER[$i]} | ip=${NIC_IP[$i]} | state=${safe_label}${recommend_label}")
+    if [[ "${NIC_BRIDGE_MEMBER[$i]}" != "-" ]] && ! is.true "${ALLOW_DATA_NIC_BRIDGE_MEMBER}"; then
+      continue
+    fi
+
+    speed_class="$(nic.speed.class "${NIC_DRIVER[$i]}" "${NIC_SPEED[$i]}")"
+    recommend_label="$(nic.recommendation.label "${NIC_ROLE[$i]}" "${NIC_SCORE[$i]}" "${NIC_DRIVER[$i]}")"
+    state_label="${NIC_OPERSTATE[$i]}"
+    if [[ "${NIC_CARRIER[$i]}" == "0" && "${state_label}" != "-" ]]; then
+      state_label="${state_label}/unplugged"
+    fi
+    pci_label="${NIC_PCI_LABEL[$i]}"
+    if [[ "${pci_label}" == "-" && "${NIC_DRIVER[$i]}" == "ixgbe" ]]; then
+      pci_label="Intel X540"
+    fi
+
+    menu_options+=("${NIC_IFACE[$i]} | ${pci_label} | ${speed_class} | driver=${NIC_DRIVER[$i]} | pci=${NIC_PCI[$i]} | mac=${NIC_MAC[$i]} | ip=${NIC_IP[$i]} | bridge=${NIC_BRIDGE_MEMBER[$i]} | state=${state_label} | ${recommend_label}")
     menu_indexes+=("${i}")
   done
   menu_options+=("abort")
+
+  if ((${#menu_indexes[@]} == 0)); then
+    log.error "No selectable data NICs were found in ${HARDWARE_NICS_TSV}."
+    exit 1
+  fi
+
+  printf '\nSelectable VM/LXC data NICs:\n\n' >&3
 
   choice="$(menu.tty "Select VM/LXC data NIC:" "${menu_options[@]}")"
   if ((choice == ${#menu_options[@]})); then

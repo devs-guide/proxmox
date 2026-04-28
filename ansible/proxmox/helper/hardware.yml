@@ -114,21 +114,46 @@
             | default([])
             | reject('match', '^lo$')
             | reject('match', '^vmbr[0-9]+$')
+            | reject('match', '^br-')
             | reject('match', '^tap')
             | reject('match', '^fw')
             | reject('match', '^veth')
             | reject('match', '^vlan')
             | reject('match', '^bond')
+            | reject('match', '^dummy')
+            | reject('match', '^docker')
+            | reject('match', '^virbr')
+            | reject('match', '^wl')
+            | reject('match', '^ww')
+            | reject('search', '\\.')
             | list
           }}
 
-    - name: Collect normalized per-NIC hardware, link, bridge, and IP details
+    - name: Keep only physical NICs with backing device entries
+      stat:
+        path: "/sys/class/net/{{ item }}/device"
+      loop: "{{ proxmox_candidate_nics }}"
+      register: proxmox_candidate_nic_device_stats
+      changed_when: false
+
+    - name: Reduce candidate NICs to physical interfaces
+      set_fact:
+        proxmox_candidate_nics: >-
+          {{
+            proxmox_candidate_nic_device_stats.results
+            | selectattr('stat.exists')
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Collect normalized per-NIC hardware, link, bridge, IP, and PCI label details
       shell: |
         set -eu
         nic="{{ item }}"
 
         driver="-"
         pci="-"
+        pci_label="-"
         speed="-"
         mac="-"
         operstate="-"
@@ -143,6 +168,10 @@
         if [ -L "/sys/class/net/${nic}/device" ]; then
           pci="$(basename "$(readlink -f "/sys/class/net/${nic}/device")")"
           [ -n "${pci}" ] || pci="-"
+        fi
+        if [ "${pci}" != "-" ] && command -v lspci >/dev/null 2>&1; then
+          pci_label="$(lspci -s "${pci}" 2>/dev/null | cut -d' ' -f2- || true)"
+          [ -n "${pci_label}" ] || pci_label="-"
         fi
         if [ -r "/sys/class/net/${nic}/speed" ]; then
           speed="$(cat "/sys/class/net/${nic}/speed" 2>/dev/null || true)"
@@ -184,10 +213,11 @@
         ip_cidr="$(ip -o -4 addr show dev "${nic}" 2>/dev/null | awk 'NR==1 {print $4}')"
         [ -n "${ip_cidr}" ] || ip_cidr="-"
 
-        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
           "${nic}" \
           "${driver}" \
           "${pci}" \
+          "${pci_label}" \
           "${speed}" \
           "${mac}" \
           "${operstate}" \
@@ -205,18 +235,20 @@
         proxmox_nic_hardware_map: "{{ proxmox_nic_hardware_map | default({}) | combine({nic_name: nic_data}) }}"
       vars:
         nic_fields_raw: "{{ item.stdout.split('|') }}"
-        nic_fields: "{{ nic_fields_raw + ['-', '-', '-', '-', '-', '-', '-', '-', '-'] }}"
+        nic_fields: "{{ nic_fields_raw + ['-', '-', '-', '-', '-', '-', '-', '-', '-', '-'] }}"
         nic_name: "{{ nic_fields[0] }}"
         nic_driver_raw: "{{ nic_fields[1] }}"
         nic_pci_raw: "{{ nic_fields[2] }}"
-        nic_speed_raw: "{{ nic_fields[3] }}"
-        nic_mac_raw: "{{ nic_fields[4] }}"
-        nic_operstate_raw: "{{ nic_fields[5] }}"
-        nic_carrier_raw: "{{ nic_fields[6] }}"
-        nic_bridge_member_raw: "{{ nic_fields[7] }}"
-        nic_ip_cidr_raw: "{{ nic_fields[8] }}"
+        nic_pci_label_raw: "{{ nic_fields[3] }}"
+        nic_speed_raw: "{{ nic_fields[4] }}"
+        nic_mac_raw: "{{ nic_fields[5] }}"
+        nic_operstate_raw: "{{ nic_fields[6] }}"
+        nic_carrier_raw: "{{ nic_fields[7] }}"
+        nic_bridge_member_raw: "{{ nic_fields[8] }}"
+        nic_ip_cidr_raw: "{{ nic_fields[9] }}"
         nic_driver: "{{ none if nic_driver_raw in ['', '-', 'none'] else nic_driver_raw }}"
         nic_pci: "{{ none if nic_pci_raw in ['', '-'] else nic_pci_raw }}"
+        nic_pci_label: "{{ none if nic_pci_label_raw in ['', '-'] else nic_pci_label_raw }}"
         nic_speed_mbps: "{{ (nic_speed_raw | int) if nic_speed_raw is match('^[0-9]+$') else none }}"
         nic_mac: "{{ none if nic_mac_raw in ['', '-'] else nic_mac_raw }}"
         nic_operstate: "{{ none if nic_operstate_raw in ['', '-'] else nic_operstate_raw }}"
@@ -246,6 +278,7 @@
         nic_data:
           driver: "{{ nic_driver }}"
           pci: "{{ nic_pci }}"
+          pci_label: "{{ nic_pci_label }}"
           speed_mbps: "{{ nic_speed_mbps }}"
           has_ip: "{{ nic_has_ip }}"
           ip_cidr: "{{ nic_ip_cidr }}"
@@ -363,7 +396,7 @@
         dest: "{{ proxmox_hardware_nics_tsv_path }}"
         mode: "0644"
         content: |
-          iface	role_guess	score	speed_mbps	driver	pci	mac	ip_cidr	bridge_member	operstate	carrier	reason
+          iface	role_guess	score	speed_mbps	driver	pci	pci_label	mac	ip_cidr	bridge_member	operstate	carrier	reason
           {% for nic_item in proxmox_nic_hardware_map | dict2items | sort(attribute='value.recommendation_score', reverse=true) %}
           {{ [
             nic_item.key,
@@ -372,6 +405,7 @@
             (nic_item.value.speed_mbps if nic_item.value.speed_mbps is not none else '-') | string,
             (nic_item.value.driver if nic_item.value.driver is not none else '-'),
             (nic_item.value.pci if nic_item.value.pci is not none else '-'),
+            (nic_item.value.pci_label if nic_item.value.pci_label is not none else '-'),
             (nic_item.value.mac if nic_item.value.mac is not none else '-'),
             (nic_item.value.ip_cidr if nic_item.value.ip_cidr is not none else '-'),
             (nic_item.value.bridge_member if nic_item.value.bridge_member is not none else '-'),

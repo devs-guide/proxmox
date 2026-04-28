@@ -68,6 +68,10 @@ if ! grep -q '/dev/tty' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh is missing TTY input handling (/dev/tty)"
   exit 1
 fi
+if ! grep -q "row=\"\${row//\\\\t/\\\$'\\\\t'}\"" "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not normalize literal \\t rows from hardware.nics.tsv"
+  exit 1
+fi
 if ! grep -q 'hardware.nics.tsv' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh is missing hardware.nics.tsv usage"
   exit 1
@@ -80,7 +84,11 @@ if ! grep -q 'proxmox_feature_defaults.vlan.enabled=true' "${ROOT}/setup/vlan.sh
   echo "[validate.runtime][error] setup/vlan.sh does not explicitly enable the VLAN feature"
   exit 1
 fi
-echo "[validate.runtime][ok] setup/vlan.sh references the expected Proxmox feature flow"
+if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh is missing the readable VLAN NIC selection UI"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/vlan.sh references the expected Proxmox feature flow and readable NIC UI"
 
 echo "[validate.runtime] checking VLAN playbook safety contract..."
 if ! grep -q 'proxmox_vlan_operator_selection' "${ROOT}/ansible/proxmox/vlan.yml"; then
@@ -118,7 +126,15 @@ if ! grep -q 'hardware.nics.tsv' "${ROOT}/ansible/proxmox/helper/hardware.yml"; 
   echo "[validate.runtime][error] helper/hardware.yml must write hardware.nics.tsv"
   exit 1
 fi
-echo "[validate.runtime][ok] helper/hardware.yml avoids unsafe bridge-member parsing and feature facts stay under /etc/ansible/proxmox/facts"
+if ! grep -q 'pci_label' "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] helper/hardware.yml must export pci_label for the VLAN UI"
+  exit 1
+fi
+if ! grep -q '/sys/class/net/{{ item }}/device' "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] helper/hardware.yml must filter candidate NICs to physical interfaces"
+  exit 1
+fi
+echo "[validate.runtime][ok] helper/hardware.yml avoids unsafe bridge-member parsing, exports NIC identity, and keeps facts under /etc/ansible/proxmox/facts"
 
 echo "[validate.runtime] checking publish wiring contract..."
 if grep -qE '(^|[[:space:]])proxmox/' "${ROOT}/ansible/debian/install.playbooks.txt"; then
