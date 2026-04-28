@@ -8,6 +8,7 @@ on:
     paths:
       - 'bootstrap/**'
       - 'ansible/**'
+      - 'setup/**'
       - 'docs/**'
       - 'www/**'
       - 'actions/www.pages.sh'
