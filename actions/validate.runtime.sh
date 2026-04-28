@@ -97,6 +97,29 @@ if ! grep -q 'interfaces.bak.proxmox-vlan' "${ROOT}/ansible/proxmox/vlan.yml"; t
 fi
 echo "[validate.runtime][ok] ansible/proxmox/vlan.yml includes selection/oob/rollback safeguards"
 
+echo "[validate.runtime] checking hardware helper regression guards..."
+if grep -q "regex_search(' master (\\\\S+)', '\\\\1')" "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] helper/hardware.yml uses unsafe regex_search capture for bridge_member"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] helper/hardware.yml must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] vlan.yml must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! grep -q 'hardware.nics.tsv' "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] helper/hardware.yml must write hardware.nics.tsv"
+  exit 1
+fi
+echo "[validate.runtime][ok] helper/hardware.yml avoids unsafe bridge-member parsing and feature facts stay under /etc/ansible/proxmox/facts"
+
 echo "[validate.runtime] checking publish wiring contract..."
 if grep -qE '(^|[[:space:]])proxmox/' "${ROOT}/ansible/debian/install.playbooks.txt"; then
   echo "[validate.runtime][error] ansible/debian/install.playbooks.txt must remain Debian-only (found proxmox entry)"
