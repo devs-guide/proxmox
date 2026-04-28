@@ -335,6 +335,36 @@ build.management.snapshot() {
   fi
 }
 
+load.management.from.hardware.facts() {
+  local py="${PYTHON_BOOTSTRAP_BIN:-python3}"
+  local parsed=""
+
+  [[ -f "${HARDWARE_FACTS_PATH}" ]] || return 0
+  command -v "${py}" >/dev/null 2>&1 || return 0
+
+  parsed="$("${py}" - <<PY
+import yaml
+from pathlib import Path
+
+p = Path("${HARDWARE_FACTS_PATH}")
+data = yaml.safe_load(p.read_text()) or {}
+mgmt = (data.get("proxmox_hardware_discovered") or {}).get("management") or {}
+
+print(mgmt.get("bridge") or "")
+print(mgmt.get("nic") or "")
+print(mgmt.get("ip_cidr") or "")
+print(mgmt.get("gateway") or "")
+print(mgmt.get("gui_port") or "8006")
+PY
+)" || return 0
+
+  MGMT_BRIDGE="$(printf '%s\n' "${parsed}" | sed -n '1p')"
+  MGMT_NIC="$(printf '%s\n' "${parsed}" | sed -n '2p')"
+  MGMT_IP_CIDR="$(printf '%s\n' "${parsed}" | sed -n '3p')"
+  MGMT_GATEWAY="$(printf '%s\n' "${parsed}" | sed -n '4p')"
+  MGMT_GUI_PORT="$(printf '%s\n' "${parsed}" | sed -n '5p')"
+}
+
 load.nic.summary() {
   local row field_count
   local iface role score speed driver pci pci_label mac ip_cidr bridge_member operstate carrier reason
@@ -603,6 +633,7 @@ collect.operator.selection() {
 
   load.nic.summary
   build.management.snapshot
+  load.management.from.hardware.facts
   SELECTED_DATA_BRIDGE="${DEFAULT_DATA_BRIDGE}"
   SELECTED_DATA_BRIDGE_VIDS="${DEFAULT_BRIDGE_VIDS}"
 

@@ -125,6 +125,27 @@ if grep -q "regex_search(' master (\\\\S+)', '\\\\1')" "${ROOT}/ansible/proxmox/
   echo "[validate.runtime][error] helper/hardware.yml uses unsafe regex_search capture for bridge_member"
   exit 1
 fi
+if grep -q "select('search', ' master ' ~ proxmox_management_bridge ~ ' ')" "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] hardware.yml uses fragile bridge-link search for management ports"
+  exit 1
+fi
+if ! grep -q '/sys/class/net/.*/brif' "${ROOT}/ansible/proxmox/helper/hardware.yml" \
+   && ! grep -q '/sys/class/net/.*brif' "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] hardware.yml should derive bridge ports from /sys/class/net/<bridge>/brif"
+  exit 1
+fi
+if ! grep -q 'bridge_ports' "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
+  echo "[validate.runtime][error] hardware.yml should persist management.bridge_ports"
+  exit 1
+fi
+if ! grep -q 'discovered.bridge_ports' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] vlan.yml should include bridge_ports in management-path mismatch diagnostics"
+  exit 1
+fi
+if grep -R --exclude='validate.runtime.sh' '/etc/devsguide/proxmox' "${ROOT}/setup" "${ROOT}/ansible" "${ROOT}/actions" >/dev/null 2>&1; then
+  echo "[validate.runtime][error] /etc/devsguide/proxmox paths are not allowed; use /etc/ansible/proxmox"
+  exit 1
+fi
 if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh must use /etc/ansible/proxmox/facts"
   exit 1
@@ -150,6 +171,7 @@ if ! grep -q '/sys/class/net/{{ item }}/device' "${ROOT}/ansible/proxmox/helper/
   exit 1
 fi
 echo "[validate.runtime][ok] helper/hardware.yml avoids unsafe bridge-member parsing, exports NIC identity, and keeps facts under /etc/ansible/proxmox/facts"
+echo "[validate.runtime][ok] management bridge/uplink discovery contract is valid"
 
 echo "[validate.runtime] checking publish wiring contract..."
 if grep -qE '(^|[[:space:]])proxmox/' "${ROOT}/ansible/debian/install.playbooks.txt"; then

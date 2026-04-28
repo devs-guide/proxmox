@@ -66,8 +66,8 @@
         that:
           - proxmox_feature_defaults_effective.vlan.enabled | bool
         fail_msg: >-
-          VLAN feature execution is disabled. Re-run with
-          -e proxmox_feature_defaults.vlan.enabled=true.
+          VLAN feature execution is disabled. Use setup/vlan.sh or pass a YAML extra-vars
+          file with proxmox_feature_defaults.vlan.enabled set as a nested YAML value.
 
     - name: Assert VLAN mode is valid
       assert:
@@ -86,8 +86,8 @@
           - proxmox_hardware_facts_stat.stat.exists
         fail_msg: >-
           Persisted hardware facts were not found at {{ proxmox_hardware_facts_path }}.
-          Run ansible/proxmox/helper/hardware.yml first or override
-          proxmox_feature_defaults.vlan.use_discovered_hardware=false.
+          Run ansible/proxmox/helper/hardware.yml first or pass a YAML extra-vars file
+          that sets proxmox_feature_defaults.vlan.use_discovered_hardware=false.
       when: proxmox_feature_defaults_effective.vlan.use_discovered_hardware | bool
 
     - name: Load persisted hardware facts
@@ -108,8 +108,8 @@
           - proxmox_vlan_selection_stat.stat.exists
         fail_msg: >-
           Operator selection file is required at {{ proxmox_vlan_selection_path }}.
-          Run setup/vlan.sh or set
-          -e proxmox_feature_defaults.vlan.require_operator_selection=false.
+          Run setup/vlan.sh or pass a YAML extra-vars file that sets
+          proxmox_feature_defaults.vlan.require_operator_selection=false.
       when: proxmox_feature_defaults_effective.vlan.require_operator_selection | bool
 
     - name: Load operator selection file
@@ -295,11 +295,27 @@
     - name: Assert operator selection maps to discovered management path
       assert:
         that:
-          - proxmox_vlan_selection.management.bridge | default('') == proxmox_hardware_discovered_effective.management.bridge
-          - proxmox_vlan_selection.management.nic | default('') == proxmox_hardware_discovered_effective.management.nic
+          - proxmox_vlan_selection.management.bridge | default('') == proxmox_hardware_discovered_effective.management.bridge | default('')
+          - >-
+            (
+              proxmox_vlan_selection.management.nic | default('')
+            ) == (
+              proxmox_hardware_discovered_effective.management.nic | default('')
+            )
+            or
+            (
+              proxmox_hardware_discovered_effective.management.bridge_ports is defined
+              and
+              (proxmox_vlan_selection.management.nic | default('')) in proxmox_hardware_discovered_effective.management.bridge_ports
+            )
         fail_msg: >-
-          Operator selection management path does not match discovered management
-          path. Refusing to continue.
+          Operator selection management path does not match discovered management path.
+          selection.bridge={{ proxmox_vlan_selection.management.bridge | default('') }},
+          discovered.bridge={{ proxmox_hardware_discovered_effective.management.bridge | default('') }},
+          selection.nic={{ proxmox_vlan_selection.management.nic | default('') }},
+          discovered.nic={{ proxmox_hardware_discovered_effective.management.nic | default('') }},
+          discovered.bridge_ports={{ proxmox_hardware_discovered_effective.management.bridge_ports | default([]) }}.
+          Refusing to continue.
       when:
         - proxmox_vlan_require_operator_selection
         - proxmox_vlan_discovery_enabled

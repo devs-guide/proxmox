@@ -91,20 +91,70 @@
             else 'vmbr0'
           }}
 
-    - name: Derive interfaces that belong to the management bridge
+    - name: Derive physical interfaces that belong to the management bridge
+      shell: |
+        set -eu
+        bridge_name="{{ proxmox_management_bridge }}"
+
+        if [ -d "/sys/class/net/${bridge_name}/brif" ]; then
+          for p in /sys/class/net/"${bridge_name}"/brif/*; do
+            [ -e "${p}" ] || continue
+            iface="$(basename "${p}")"
+            case "${iface}" in
+              veth*|tap*|fwpr*|fwln*|fwbr*|lo|vmbr*|br-*|docker*|virbr*|dummy*|*.*)
+                continue
+                ;;
+            esac
+            if [ -e "/sys/class/net/${iface}/device" ]; then
+              printf '%s\n' "${iface}"
+            fi
+          done
+          exit 0
+        fi
+
+        bridge link 2>/dev/null \
+          | awk -v bridge="${bridge_name}" '
+              {
+                for (i = 1; i <= NF; i++) {
+                  if ($i == "master" && (i + 1) <= NF && $(i + 1) == bridge) {
+                    nic=$2
+                    sub(/@.*/, "", nic)
+                    sub(/:/, "", nic)
+                    if (nic !~ /^(veth|tap|fwpr|fwln|fwbr|lo|vmbr|br-|docker|virbr|dummy)/ && nic !~ /\./) {
+                      print nic
+                    }
+                  }
+                }
+              }
+            '
+      args:
+        executable: /bin/bash
+      register: proxmox_management_bridge_ports_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Normalize management bridge port list
       set_fact:
-        proxmox_management_bridge_ports: >-
-          {{
-            proxmox_bridge_link.stdout_lines
-            | default([])
-            | select('search', ' master ' ~ proxmox_management_bridge ~ ' ')
-            | map('regex_replace', '^\\d+:\\s+([^:@]+)(?:@[^:]+)?:.*$', '\\1')
-            | list
-          }}
+        proxmox_management_bridge_ports: "{{ proxmox_management_bridge_ports_cmd.stdout_lines | default([]) }}"
 
     - name: Derive management NIC
       set_fact:
-        proxmox_management_nic: "{{ (proxmox_management_bridge_ports | first) | default(proxmox_default_route_device.stdout | default('')) }}"
+        proxmox_management_nic: >-
+          {{
+            (
+              proxmox_management_bridge_ports | first
+            )
+            if ((proxmox_management_bridge_ports | length) > 0)
+            else
+            (
+              proxmox_default_route_device.stdout
+              if (
+                (proxmox_default_route_device.stdout | default('')) | length > 0
+                and not ((proxmox_default_route_device.stdout | default('')) is match('^vmbr[0-9]+$'))
+              )
+              else ''
+            )
+          }}
 
     - name: Build candidate physical NIC list
       set_fact:
@@ -338,6 +388,7 @@
           management:
             bridge: "{{ proxmox_management_bridge }}"
             nic: "{{ proxmox_management_nic if (proxmox_management_nic | length > 0) else none }}"
+            bridge_ports: "{{ proxmox_management_bridge_ports }}"
             ip_cidr: >-
               {{
                 (
