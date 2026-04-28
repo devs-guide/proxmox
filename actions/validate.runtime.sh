@@ -68,7 +68,7 @@ if ! grep -q '/dev/tty' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh is missing TTY input handling (/dev/tty)"
   exit 1
 fi
-if ! grep -q "row=\"\${row//\\\\t/\\\$'\\\\t'}\"" "${ROOT}/setup/vlan.sh"; then
+if ! grep -Fq "row=\"\${row//\\\\t/\$'\t'}\"" "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh does not normalize literal \\t rows from hardware.nics.tsv"
   exit 1
 fi
@@ -81,14 +81,29 @@ if ! grep -q 'vlan.selection.yml' "${ROOT}/setup/vlan.sh"; then
   exit 1
 fi
 if ! grep -q 'proxmox_feature_defaults.vlan.enabled=true' "${ROOT}/setup/vlan.sh"; then
-  echo "[validate.runtime][error] setup/vlan.sh does not explicitly enable the VLAN feature"
+  true
+fi
+if grep -q 'proxmox_feature_defaults\.vlan\.' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh must not use dotted nested Ansible extra-vars for proxmox_feature_defaults.vlan.*"
+  exit 1
+fi
+if ! grep -q 'VLAN_EXTRA_VARS_PATH=' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh is missing VLAN_EXTRA_VARS_PATH for generated YAML extra-vars"
+  exit 1
+fi
+if ! grep -q 'write.vlan.extra.vars.file()' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh is missing write.vlan.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${VLAN_EXTRA_VARS_PATH}"' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh must pass generated YAML extra-vars with -e @file"
   exit 1
 fi
 if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh is missing the readable VLAN NIC selection UI"
   exit 1
 fi
-echo "[validate.runtime][ok] setup/vlan.sh references the expected Proxmox feature flow and readable NIC UI"
+echo "[validate.runtime][ok] setup/vlan.sh uses generated YAML extra-vars and exposes the readable NIC UI"
 
 echo "[validate.runtime] checking VLAN playbook safety contract..."
 if ! grep -q 'proxmox_vlan_operator_selection' "${ROOT}/ansible/proxmox/vlan.yml"; then

@@ -31,6 +31,7 @@ HARDWARE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${HARDWARE_PLAYBOOK_REL}"
 HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${HARDWARE_PLAYBOOK_REL}"
 VLAN_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${VLAN_PLAYBOOK_REL}"
 VLAN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${VLAN_PLAYBOOK_REL}"
+VLAN_EXTRA_VARS_PATH="${TMP_DIR}/vlan.extra-vars.yml"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
 ANSIBLE_CORE_VERSION="2.20.5"
@@ -241,6 +242,14 @@ yaml.scalar.or.null() {
     printf 'null'
   else
     yaml.quote "${value}"
+  fi
+}
+
+bool.yaml() {
+  if is.true "${1:-false}"; then
+    printf 'true'
+  else
+    printf 'false'
   fi
 }
 
@@ -713,6 +722,30 @@ run.feature.playbook() {
   "${ANSIBLE_VENV_BIN}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "$@" "${playbook_path}"
 }
 
+write.vlan.extra.vars.file() {
+  local discovery_enabled_yaml
+
+  discovery_enabled_yaml="$(bool.yaml "${FEATURE_USE_DISCOVERY}")"
+  mkdir -p "${TMP_DIR}"
+
+  cat > "${VLAN_EXTRA_VARS_PATH}" <<EOF
+---
+proxmox_feature_defaults:
+  vlan:
+    enabled: true
+    mode: $(yaml.quote "${FEATURE_MODE}")
+    use_discovered_hardware: ${discovery_enabled_yaml}
+    require_operator_selection: true
+
+proxmox_feature_facts_dir: $(yaml.quote "${FACTS_DIR}")
+proxmox_hardware_facts_path: $(yaml.quote "${HARDWARE_FACTS_PATH}")
+proxmox_hardware_nics_tsv_path: $(yaml.quote "${HARDWARE_NICS_TSV}")
+proxmox_vlan_selection_path: $(yaml.quote "${VLAN_SELECTION_PATH}")
+EOF
+
+  log "Prepared VLAN extra-vars: ${VLAN_EXTRA_VARS_PATH}"
+}
+
 run.vlan.feature() {
   log "Running Proxmox hardware discovery helper..."
   run.feature.playbook "${HARDWARE_PLAYBOOK_PATH}"
@@ -720,12 +753,10 @@ run.vlan.feature() {
   require.oob.ack
 
   log "Running Proxmox VLAN feature in mode=${FEATURE_MODE}..."
+  write.vlan.extra.vars.file
   run.feature.playbook \
     "${VLAN_PLAYBOOK_PATH}" \
-    -e "proxmox_feature_defaults.vlan.enabled=true" \
-    -e "proxmox_feature_defaults.vlan.mode=${FEATURE_MODE}" \
-    -e "proxmox_feature_defaults.vlan.use_discovered_hardware=${FEATURE_USE_DISCOVERY}" \
-    -e "proxmox_vlan_selection_path=${VLAN_SELECTION_PATH}"
+    -e "@${VLAN_EXTRA_VARS_PATH}"
 }
 
 main() {
