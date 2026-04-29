@@ -645,11 +645,70 @@
               ifreload stderr={{ proxmox_ifreload_dry_run.stderr | default('') }}
           when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
 
+        - name: Report write mode completion (staged config only)
+          debug:
+            msg:
+              - "Write mode completed: VLAN bridge configuration was staged in /etc/network/interfaces."
+              - "No live reload was applied in write mode. Run mode=apply to activate {{ proxmox_vlan_effective.data.bridge }}."
+          when: proxmox_vlan_mode == 'write'
+
         - name: Apply interface reload
           command:
             argv:
               - ifreload
               - -a
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Capture bridge link state after apply
+          command:
+            argv:
+              - bridge
+              - link
+          register: proxmox_bridge_link_after_apply
+          changed_when: false
+          failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Assert selected data NIC is attached to selected bridge after apply
+          assert:
+            that:
+              - proxmox_bridge_link_after_apply.rc == 0
+              - >-
+                (
+                  proxmox_bridge_link_after_apply.stdout | default('')
+                  | regex_search(
+                      '(^|\\n)[0-9]+:\\s+'
+                      ~ proxmox_vlan_effective.data.nic
+                      ~ '(@|:).* master '
+                      ~ proxmox_vlan_effective.data.bridge
+                      ~ '(\\s|$)',
+                      multiline=True
+                    )
+                ) is not none
+            fail_msg: >-
+              Apply completed but selected NIC {{ proxmox_vlan_effective.data.nic }} is not attached
+              to bridge {{ proxmox_vlan_effective.data.bridge }}.
+              bridge link output={{ proxmox_bridge_link_after_apply.stdout | default('') }}
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Capture link brief for data NIC and bridge after apply
+          shell: |
+            set -eu
+            ip -br link show dev "{{ proxmox_vlan_effective.data.nic }}" || true
+            ip -br link show dev "{{ proxmox_vlan_effective.data.bridge }}" || true
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_post_apply_links
+          changed_when: false
+          failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Report post-apply attachment summary
+          debug:
+            msg:
+              - "Apply mode completed: {{ proxmox_vlan_effective.data.nic }} attached to {{ proxmox_vlan_effective.data.bridge }}."
+              - "Post-apply link state:"
+              - "{{ proxmox_vlan_post_apply_links.stdout_lines | default([]) }}"
           when: proxmox_vlan_mode == 'apply'
       rescue:
         - name: Restore previous /etc/network/interfaces

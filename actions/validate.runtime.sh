@@ -130,6 +130,14 @@ if ! grep -q 'Baseline ifreload syntax check before VLAN write' "${ROOT}/ansible
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must run baseline ifreload syntax check before writing vmbr1"
   exit 1
 fi
+if ! grep -q 'Report write mode completion (staged config only)' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must report that write mode stages config without live apply"
+  exit 1
+fi
+if ! grep -q 'Assert selected data NIC is attached to selected bridge after apply' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after apply"
+  exit 1
+fi
 echo "[validate.runtime][ok] ansible/proxmox/vlan.yml includes selection/oob/rollback safeguards"
 
 echo "[validate.runtime] checking hardware helper regression guards..."
