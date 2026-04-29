@@ -430,10 +430,10 @@
     - name: Assert data NIC is not already bridge-managed elsewhere
       assert:
         that:
-          - (proxmox_vlan_data_nic_record.bridge_member | default('')) | length == 0
+          - (proxmox_vlan_data_nic_record.bridge_member | default('', true)) | length == 0
         fail_msg: >-
           Data NIC {{ proxmox_vlan_effective.data.nic }} is already enslaved to
-          {{ proxmox_vlan_data_nic_record.bridge_member }}.
+          {{ proxmox_vlan_data_nic_record.bridge_member | default('unknown', true) }}.
       when: proxmox_vlan_effective.safety.require_data_nic_unused | bool
 
     - name: Assert data NIC does not have a host IP
