@@ -118,6 +118,18 @@ if ! grep -q 'interfaces.bak.proxmox-vlan' "${ROOT}/ansible/proxmox/vlan.yml"; t
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml is missing rollback backup marker"
   exit 1
 fi
+if grep -Eq '^[[:space:]]+bridge-fd[[:space:]]+0([[:space:]]|$)' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must not generate bridge-fd 0"
+  exit 1
+fi
+if ! grep -q 'proxmox_vlan_data_nic_iface_manual_exists' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must avoid duplicate selected data NIC iface stanzas"
+  exit 1
+fi
+if ! grep -q 'Baseline ifreload syntax check before VLAN write' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must run baseline ifreload syntax check before writing vmbr1"
+  exit 1
+fi
 echo "[validate.runtime][ok] ansible/proxmox/vlan.yml includes selection/oob/rollback safeguards"
 
 echo "[validate.runtime] checking hardware helper regression guards..."

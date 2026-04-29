@@ -38,6 +38,7 @@ proxmox_vlan:
     expected_driver: null
     expected_pci: null
     bridge_vlan_aware: true
+    bridge_fd: 2
     bridge_vids: "10 20 30 40"
     host_ip: null
 
@@ -47,6 +48,7 @@ proxmox_vlan:
     require_data_nic_unused: true
     require_data_nic_no_ip: true
     require_ifreload_dry_run: true
+    normalize_legacy_bridge_fd_zero: true
 
   workloads:
     migrate: false

@@ -28,6 +28,7 @@
         expected_driver: null
         expected_pci: null
         bridge_vlan_aware: true
+        bridge_fd: 2
         bridge_vids: "10 20 30 40"
         host_ip: null
       safety:
@@ -36,6 +37,7 @@
         require_data_nic_unused: true
         require_data_nic_no_ip: true
         require_ifreload_dry_run: true
+        normalize_legacy_bridge_fd_zero: true
         oob_console_ack: false
       workloads:
         migrate: false
@@ -255,6 +257,15 @@
                 | default(
                     proxmox_vlan_selection.data.bridge_vlan_aware
                     | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vlan_aware),
+                    true
+                  )
+              }}
+            bridge_fd: >-
+              {{
+                proxmox_vlan.data.bridge_fd
+                | default(
+                    proxmox_vlan_selection.data.bridge_fd
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_fd),
                     true
                   )
               }}
@@ -491,16 +502,45 @@
             ) is none
           }}
 
+    - name: Detect existing selected data NIC iface stanzas
+      set_fact:
+        proxmox_vlan_data_nic_iface_manual_exists: >-
+          {{
+            (
+              proxmox_interfaces_text
+              | regex_search('(^|\\n)[ \\t]*iface\\s+' ~ proxmox_vlan_effective.data.nic ~ '\\s+inet\\s+manual(\\s|\\n)', multiline=True)
+            ) is not none
+          }}
+        proxmox_vlan_data_nic_iface_any_exists: >-
+          {{
+            (
+              proxmox_interfaces_text
+              | regex_search('(^|\\n)[ \\t]*iface\\s+' ~ proxmox_vlan_effective.data.nic ~ '\\s+inet\\s+\\S+(\\s|\\n)', multiline=True)
+            ) is not none
+          }}
+      vars:
+        proxmox_interfaces_text: "{{ proxmox_interfaces_file.content | b64decode }}"
+
+    - name: Require selected data NIC iface stanza to be manual when already defined
+      assert:
+        that:
+          - not proxmox_vlan_data_nic_iface_any_exists or proxmox_vlan_data_nic_iface_manual_exists
+        fail_msg: >-
+          /etc/network/interfaces already defines iface {{ proxmox_vlan_effective.data.nic }}
+          with a non-manual inet method. Set it to manual or select a different data NIC.
+
     - name: Build managed vmbr1 block
       set_fact:
         proxmox_vlan_managed_block: |-
+          {% if not proxmox_vlan_data_nic_iface_manual_exists %}
           iface {{ proxmox_vlan_effective.data.nic }} inet manual
 
+          {% endif %}
           auto {{ proxmox_vlan_effective.data.bridge }}
           iface {{ proxmox_vlan_effective.data.bridge }} inet {% if proxmox_vlan_effective.data.host_ip %}static{% else %}manual{% endif %}
               bridge-ports {{ proxmox_vlan_effective.data.nic }}
               bridge-stp off
-              bridge-fd 0
+              bridge-fd {{ proxmox_vlan_effective.data.bridge_fd | int }}
           {% if proxmox_vlan_effective.data.bridge_vlan_aware %}
               bridge-vlan-aware yes
               bridge-vids {{ proxmox_vlan_effective.data.bridge_vids }}
@@ -545,10 +585,37 @@
         - name: Backup /etc/network/interfaces
           copy:
             src: /etc/network/interfaces
-            dest: "/etc/network/interfaces.bak.proxmox-vlan.{{ ansible_date_time.iso8601_basic_short }}"
+            dest: "/etc/network/interfaces.bak.proxmox-vlan.{{ ansible_facts.date_time.iso8601_basic_short }}"
             remote_src: true
             mode: "0644"
           register: proxmox_vlan_interfaces_backup
+
+        - name: Normalize legacy bridge-fd 0 values when enabled
+          replace:
+            path: /etc/network/interfaces
+            regexp: '^(?P<prefix>[ \t]*bridge-fd[ \t]+)0(?P<suffix>[ \t]*(?:#.*)?)$'
+            replace: '\g<prefix>2\g<suffix>'
+          when: proxmox_vlan_effective.safety.normalize_legacy_bridge_fd_zero | default(true) | bool
+
+        - name: Baseline ifreload syntax check before VLAN write
+          command:
+            argv:
+              - ifreload
+              - -a
+              - -s
+          register: proxmox_ifreload_baseline
+          changed_when: false
+          failed_when: false
+          when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
+
+        - name: Assert baseline ifreload syntax check passed before VLAN write
+          assert:
+            that:
+              - proxmox_ifreload_baseline.rc == 0
+            fail_msg: >-
+              Baseline /etc/network/interfaces validation failed before VLAN write.
+              ifreload stderr={{ proxmox_ifreload_baseline.stderr | default('') }}
+          when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
 
         - name: Write managed vmbr1 block
           blockinfile:
@@ -566,6 +633,16 @@
               - -s
           register: proxmox_ifreload_dry_run
           changed_when: false
+          failed_when: false
+          when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
+
+        - name: Assert post-write ifreload dry-run passed
+          assert:
+            that:
+              - proxmox_ifreload_dry_run.rc == 0
+            fail_msg: >-
+              Post-write ifreload dry-run failed.
+              ifreload stderr={{ proxmox_ifreload_dry_run.stderr | default('') }}
           when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
 
         - name: Apply interface reload
