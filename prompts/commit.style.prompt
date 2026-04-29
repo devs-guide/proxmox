@@ -1,0 +1,40 @@
+#STYLE git commits (proxmox repo)
+
+- Goal: match the repo’s current commit style, not only its older 6.4-era
+  examples.
+- Preferred formats:
+  - `<scope> - <concise action/result>`
+  - `<scope>: <concise action/result>`
+- Use the format that best matches the active area of the repo.
+
+Current live examples from history:
+
+- `fix:ansible:proxmox:vlan: nic not attaching to vlan during apply stage`
+- `fix:ansible:proxmox:vlan: NIC not attached to VLAN`
+- `fix:ansible:proxmox: vlan management discovery conflict`
+- `fix(pages): publish setup runner changes`
+- `feat(proxmox): add interactive VLAN feature flow and publish contract`
+- `fix:pxmx:shared - freeze managed ansible to core 2.20.5`
+
+Recommendations:
+
+- Pick the narrowest scope that still describes the user-visible change.
+- Prefer `fix:ansible:proxmox:<area>:` for Ansible/feature fixes under
+  `ansible/proxmox/` and `setup/`.
+- Prefer `feat(proxmox):` for new Proxmox capabilities.
+- Prefer `fix(pages):` for publish/workflow-only changes.
+- Prefer `release:<version> - ...` when the change is primarily release notes,
+  release prompts, tagging flow, or GitHub release metadata.
+- Keep the subject compact, declarative, and under ~72 chars when practical.
+- Use present-tense verbs such as `add`, `align`, `fix`, `harden`, `publish`,
+  `stabilize`, `update`.
+- Avoid trailing periods, ticket IDs, and extra metadata.
+
+Decision hints:
+
+- If the diff is mostly code paths and validators for one feature, use the
+  feature/fix scope.
+- If the diff is mostly notes, prompts, or release artifacts, use a release or
+  docs scope.
+- If both exist, prefer the scope that best represents what the user would care
+  about in `git log --oneline`.

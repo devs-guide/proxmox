@@ -1,0 +1,130 @@
+1. Establish CLI readiness and authentication.
+   - Confirm required tools exist:
+     - `git --version`
+     - `gh --version`
+   - Confirm GitHub CLI authentication is valid:
+     - `gh auth status`
+   - If authentication is invalid, stop before push/release operations and
+     require the user to re-authenticate with:
+     - `gh auth login`
+
+2. Enter the target repository and verify branch context.
+   - Move into the repo root:
+     - `cd /path/to/repo`
+   - Confirm current branch:
+     - `git branch --show-current`
+   - Confirm remote:
+     - `git remote -v`
+
+3. Review worktree state before release work begins.
+   - Check for tracked or staged changes:
+     - `git status --short`
+   - If unrelated tracked changes exist, stop unless the user explicitly wants a
+     dirty-tree release.
+   - Ignore unrelated untracked files by default.
+   - If the only intended local additions are release-note or prompt files under
+     `prompts/`, that is acceptable when the user explicitly wants them included.
+
+4. Sync local state with the release target branch.
+   - Fetch all refs and tags:
+     - `git fetch --all --tags --prune`
+   - Switch to the intended release branch:
+     - `git checkout main`
+   - Pull latest changes:
+     - `git pull origin main`
+
+5. Discover repository context before writing release notes.
+   - Read high-signal files if present:
+     - `README.md`
+     - `.github/workflows/www.pages.yml`
+     - prior release payloads under `prompts/release.*.md`
+     - `prompts/release.style.prompt`
+   - Inspect recent tags:
+     - `git tag --sort=-creatordate | head -n 10`
+   - Resolve the most recent tag if one exists:
+     - `PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)`
+
+6. Collect change context.
+   - Prefer the previous tag-to-HEAD range:
+     - `git log "${PREV_TAG}..HEAD" --decorate --stat --oneline`
+     - `git log "${PREV_TAG}..HEAD" --name-only --pretty=format:'COMMIT:%H%nSUBJECT:%s%nBODY:%b%n'`
+     - `git diff --stat "${PREV_TAG}..HEAD"`
+   - If no previous tag exists, fall back to the last 10 commits:
+     - `git log -10 --decorate --stat --oneline`
+     - `git log -10 --name-only --pretty=format:'COMMIT:%H%nSUBJECT:%s%nBODY:%b%n'`
+
+7. Infer the next version conservatively.
+   - This repo currently uses bare tags such as `0.0.1` and `0.0.2`.
+   - Do not prepend `v` unless the repo’s tag convention changes.
+   - Default policy:
+     - `feat` or shipped capability expansion in the current `0.0.x` line may
+       still remain a patch bump when the project is intentionally iterating
+       through early `0.0.x` releases.
+     - `fix` => patch bump
+     - `BREAKING CHANGE` or explicit major policy shift => stop and confirm
+   - If the version choice is ambiguous, propose the next version and reason
+     before tagging.
+
+8. Generate the release notes markdown document.
+   - Follow `prompts/release.style.prompt`.
+   - Write the long-form GitHub release body to:
+     - `prompts/release.<version>.md`
+   - Include:
+     - summary paragraphs
+     - scope
+     - highlights
+     - added / changed / fixed
+     - chosen `#COMMIT`
+     - commit-range summary
+     - assets
+
+9. Decide the commit message for release metadata updates.
+   - Follow `prompts/commit.command.prompt` and `prompts/commit.style.prompt`.
+   - If the changes are mostly release notes and release-prompt maintenance,
+     prefer a release-scoped message such as:
+     - `release:0.0.3 - add vlan release notes and prompt conventions`
+
+10. Stage release-note and prompt files explicitly.
+   - Because `prompts/` is gitignored in this repo, use force-add only for the
+     specific files the user wants committed:
+     - `git add -f prompts/<file>`
+
+11. Commit only after the release notes and version are finalized.
+   - Example:
+     - `git commit -m "release:X.Y.Z - ..."`
+
+12. Create the tag locally only after the commit exists.
+   - Annotated tag:
+     - `git tag -a "X.Y.Z" -m "X.Y.Z"`
+
+13. Push commit and tag only after authentication is valid.
+   - Push branch:
+     - `git push origin main`
+   - Push tag:
+     - `git push origin "X.Y.Z"`
+
+14. Create the GitHub release as a draft first unless explicitly told to publish immediately.
+   - Use the markdown document as the release body:
+     - `gh release create "X.Y.Z" --target main --title "X.Y.Z" --notes-file "prompts/release.X.Y.Z.md" --draft`
+
+15. Perform a final verification pass before publish.
+   - Confirm:
+     - tag points at correct commit:
+       - `git rev-list -n 1 "X.Y.Z"`
+     - release exists:
+       - `gh release view "X.Y.Z"`
+     - notes are accurate and not duplicated
+
+16. Publish only after final confirmation.
+   - If the draft is approved:
+     - `gh release edit "X.Y.Z" --draft=false`
+
+17. Output policy for the LLM.
+   - Return:
+     - proposed version
+     - proposed commit message
+     - path to the generated markdown notes
+     - exact git/tag/release commands
+     - any auth or push blockers
+   - If auth is invalid, complete local note creation and local git work first,
+     then stop before the remote release operations.
