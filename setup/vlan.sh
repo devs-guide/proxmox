@@ -336,11 +336,12 @@ build.management.snapshot() {
 }
 
 load.management.from.hardware.facts() {
-  local py="${PYTHON_BOOTSTRAP_BIN:-python3}"
+  local py=""
   local parsed=""
 
   [[ -f "${HARDWARE_FACTS_PATH}" ]] || return 0
-  command -v "${py}" >/dev/null 2>&1 || return 0
+  py="$(select.yaml.python || true)"
+  [[ -n "${py}" ]] || return 0
 
   parsed="$("${py}" - <<PY
 import yaml
@@ -363,6 +364,32 @@ PY
   MGMT_IP_CIDR="$(printf '%s\n' "${parsed}" | sed -n '3p')"
   MGMT_GATEWAY="$(printf '%s\n' "${parsed}" | sed -n '4p')"
   MGMT_GUI_PORT="$(printf '%s\n' "${parsed}" | sed -n '5p')"
+}
+
+select.yaml.python() {
+  local candidate=""
+  local -a candidates=(
+    "${ANSIBLE_VENV}/bin/python"
+    "${MANAGED_TARGET_PYTHON_PATH}"
+    "${PYTHON_BOOTSTRAP_BIN:-}"
+    "python3"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ ! -x "${candidate}" ]] && ! command -v "${candidate}" >/dev/null 2>&1; then
+      continue
+    fi
+    if "${candidate}" - <<'PY' >/dev/null 2>&1
+import yaml
+PY
+    then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 load.nic.summary() {
