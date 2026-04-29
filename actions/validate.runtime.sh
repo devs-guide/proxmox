@@ -134,8 +134,16 @@ if ! grep -q 'Report write mode completion (staged config only)' "${ROOT}/ansibl
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must report that write mode stages config without live apply"
   exit 1
 fi
-if ! grep -q 'Assert selected data NIC is attached to selected bridge after apply' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after apply"
+if ! grep -q 'Attempt runtime bridge attachment remediation when selected NIC is missing from selected bridge' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must attempt runtime attachment remediation when apply leaves the NIC detached"
+  exit 1
+fi
+if ! grep -q 'Assert selected data NIC is attached to selected bridge after apply/remediation' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after apply/remediation"
+  exit 1
+fi
+if ! grep -q 'Capture selected bridge port list after apply' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must collect bridge port diagnostics after apply"
   exit 1
 fi
 echo "[validate.runtime][ok] ansible/proxmox/vlan.yml includes selection/oob/rollback safeguards"

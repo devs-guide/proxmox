@@ -669,26 +669,16 @@
           failed_when: false
           when: proxmox_vlan_mode == 'apply'
 
-        - name: Assert selected data NIC is attached to selected bridge after apply
-          assert:
-            that:
-              - proxmox_bridge_link_after_apply.rc == 0
-              - >-
-                (
-                  proxmox_bridge_link_after_apply.stdout | default('')
-                  | regex_search(
-                      '(^|\\n)[0-9]+:\\s+'
-                      ~ proxmox_vlan_effective.data.nic
-                      ~ '(@|:).* master '
-                      ~ proxmox_vlan_effective.data.bridge
-                      ~ '(\\s|$)',
-                      multiline=True
-                    )
-                ) is not none
-            fail_msg: >-
-              Apply completed but selected NIC {{ proxmox_vlan_effective.data.nic }} is not attached
-              to bridge {{ proxmox_vlan_effective.data.bridge }}.
-              bridge link output={{ proxmox_bridge_link_after_apply.stdout | default('') }}
+        - name: Stat selected data bridge after apply
+          stat:
+            path: "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}"
+          register: proxmox_vlan_bridge_after_apply
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Stat selected NIC membership under selected bridge after apply
+          stat:
+            path: "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}/brif/{{ proxmox_vlan_effective.data.nic }}"
+          register: proxmox_vlan_bridge_member_after_apply
           when: proxmox_vlan_mode == 'apply'
 
         - name: Capture link brief for data NIC and bridge after apply
@@ -698,17 +688,204 @@
             ip -br link show dev "{{ proxmox_vlan_effective.data.bridge }}" || true
           args:
             executable: /bin/bash
-          register: proxmox_vlan_post_apply_links
+          register: proxmox_vlan_post_apply_links_after_apply
           changed_when: false
           failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Capture selected bridge port list after apply
+          shell: |
+            set -eu
+            if [ -d "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}/brif" ]; then
+              ls -1 "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}/brif"
+            fi
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_bridge_ports_after_apply
+          changed_when: false
+          failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Capture ifquery interface list after apply
+          shell: |
+            set -eu
+            if command -v ifquery >/dev/null 2>&1; then
+              ifquery --list
+            fi
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_ifquery_after_apply
+          changed_when: false
+          failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Derive selected data NIC attachment status after apply
+          set_fact:
+            proxmox_vlan_data_nic_attached_after_apply: >-
+              {{
+                (
+                  proxmox_bridge_link_after_apply.rc == 0
+                )
+                and
+                (
+                  (
+                    proxmox_bridge_link_after_apply.stdout | default('')
+                    | regex_search(
+                        '(^|\\n)[0-9]+:\\s+'
+                        ~ proxmox_vlan_effective.data.nic
+                        ~ '(@|:).* master '
+                        ~ proxmox_vlan_effective.data.bridge
+                        ~ '(\\s|$)',
+                        multiline=True
+                      )
+                  ) is not none
+                  or
+                  (proxmox_vlan_bridge_member_after_apply.stat.exists | default(false))
+                )
+              }}
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Attempt runtime bridge attachment remediation when selected NIC is missing from selected bridge
+          shell: |
+            set -eu
+            nic="{{ proxmox_vlan_effective.data.nic }}"
+            bridge_name="{{ proxmox_vlan_effective.data.bridge }}"
+
+            [ -e "/sys/class/net/${nic}" ]
+
+            if [ ! -e "/sys/class/net/${bridge_name}" ] && command -v ifup >/dev/null 2>&1; then
+              ifup "${bridge_name}"
+            fi
+
+            [ -e "/sys/class/net/${bridge_name}" ]
+
+            ip link set dev "${nic}" up
+            ip link set dev "${bridge_name}" up
+            ip link set dev "${nic}" master "${bridge_name}"
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_attachment_remediation
+          changed_when: proxmox_vlan_attachment_remediation.rc == 0
+          failed_when: false
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - not (proxmox_vlan_data_nic_attached_after_apply | default(false) | bool)
+
+        - name: Refresh bridge link state after attachment remediation
+          command:
+            argv:
+              - bridge
+              - link
+          register: proxmox_bridge_link_after_remediation
+          changed_when: false
+          failed_when: false
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - proxmox_vlan_attachment_remediation is defined
+
+        - name: Refresh selected NIC membership under selected bridge after attachment remediation
+          stat:
+            path: "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}/brif/{{ proxmox_vlan_effective.data.nic }}"
+          register: proxmox_vlan_bridge_member_after_remediation
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - proxmox_vlan_attachment_remediation is defined
+
+        - name: Refresh link brief for data NIC and bridge after attachment remediation
+          shell: |
+            set -eu
+            ip -br link show dev "{{ proxmox_vlan_effective.data.nic }}" || true
+            ip -br link show dev "{{ proxmox_vlan_effective.data.bridge }}" || true
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_post_apply_links_after_remediation
+          changed_when: false
+          failed_when: false
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - proxmox_vlan_attachment_remediation is defined
+
+        - name: Refresh selected bridge port list after attachment remediation
+          shell: |
+            set -eu
+            if [ -d "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}/brif" ]; then
+              ls -1 "/sys/class/net/{{ proxmox_vlan_effective.data.bridge }}/brif"
+            fi
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_bridge_ports_after_remediation
+          changed_when: false
+          failed_when: false
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - proxmox_vlan_attachment_remediation is defined
+
+        - name: Refresh ifquery interface list after attachment remediation
+          shell: |
+            set -eu
+            if command -v ifquery >/dev/null 2>&1; then
+              ifquery --list
+            fi
+          args:
+            executable: /bin/bash
+          register: proxmox_vlan_ifquery_after_remediation
+          changed_when: false
+          failed_when: false
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - proxmox_vlan_attachment_remediation is defined
+
+        - name: Derive final selected data NIC attachment status after apply/remediation
+          set_fact:
+            proxmox_vlan_data_nic_attached_final: >-
+              {{
+                (
+                  (
+                    proxmox_bridge_link_after_remediation.stdout | default('')
+                    | regex_search(
+                        '(^|\\n)[0-9]+:\\s+'
+                        ~ proxmox_vlan_effective.data.nic
+                        ~ '(@|:).* master '
+                        ~ proxmox_vlan_effective.data.bridge
+                        ~ '(\\s|$)',
+                        multiline=True
+                      )
+                  ) is not none
+                  or
+                  (proxmox_vlan_bridge_member_after_remediation.stat.exists | default(false))
+                )
+                if (proxmox_vlan_attachment_remediation is defined)
+                else
+                (proxmox_vlan_data_nic_attached_after_apply | default(false) | bool)
+              }}
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Assert selected data NIC is attached to selected bridge after apply/remediation
+          assert:
+            that:
+              - proxmox_vlan_data_nic_attached_final | default(false) | bool
+            fail_msg: >-
+              Apply completed but selected NIC {{ proxmox_vlan_effective.data.nic }} is not attached
+              to bridge {{ proxmox_vlan_effective.data.bridge }} after remediation.
+              bridge_exists={{ proxmox_vlan_bridge_after_apply.stat.exists | default(false) }};
+              initial_bridge_link={{ proxmox_bridge_link_after_apply.stdout | default('') }};
+              final_bridge_link={{ proxmox_bridge_link_after_remediation.stdout | default(proxmox_bridge_link_after_apply.stdout | default('')) }};
+              initial_bridge_ports={{ proxmox_vlan_bridge_ports_after_apply.stdout_lines | default([]) }};
+              final_bridge_ports={{ proxmox_vlan_bridge_ports_after_remediation.stdout_lines | default(proxmox_vlan_bridge_ports_after_apply.stdout_lines | default([])) }};
+              link_state={{ proxmox_vlan_post_apply_links_after_remediation.stdout_lines | default(proxmox_vlan_post_apply_links_after_apply.stdout_lines | default([])) }};
+              ifquery_list={{ proxmox_vlan_ifquery_after_remediation.stdout_lines | default(proxmox_vlan_ifquery_after_apply.stdout_lines | default([])) }};
+              remediation_rc={{ proxmox_vlan_attachment_remediation.rc | default('not-run') }};
+              remediation_stdout={{ proxmox_vlan_attachment_remediation.stdout | default('') }};
+              remediation_stderr={{ proxmox_vlan_attachment_remediation.stderr | default('') }}.
           when: proxmox_vlan_mode == 'apply'
 
         - name: Report post-apply attachment summary
           debug:
             msg:
               - "Apply mode completed: {{ proxmox_vlan_effective.data.nic }} attached to {{ proxmox_vlan_effective.data.bridge }}."
+              - "Attachment remediation attempted: {{ (proxmox_vlan_attachment_remediation is defined) | ternary('yes', 'no') }}."
               - "Post-apply link state:"
-              - "{{ proxmox_vlan_post_apply_links.stdout_lines | default([]) }}"
+              - "{{ proxmox_vlan_post_apply_links_after_remediation.stdout_lines | default(proxmox_vlan_post_apply_links_after_apply.stdout_lines | default([])) }}"
           when: proxmox_vlan_mode == 'apply'
       rescue:
         - name: Restore previous /etc/network/interfaces
