@@ -1,0 +1,365 @@
+---
+- name: "[proxmox]: apply light Debian base profile inside selected LXC"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
+    proxmox_feature_facts_dir: "{{ proxmox_feature_facts_dir | default('/etc/ansible/proxmox/facts') }}"
+    proxmox_lxc_debian_selection_path: "{{ proxmox_lxc_debian.selection_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.selection.yml') }}"
+    proxmox_lxc_debian_runtime_facts_path: "{{ proxmox_lxc_debian.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.yml') }}"
+    proxmox_lxc_debian_defaults_safe:
+      feature:
+        enabled: false
+        mode: "apply"
+        require_proxmox_host: true
+        require_operator_selection: true
+      profiles:
+        minimal:
+          - sudo
+          - ca-certificates
+          - gnupg
+          - curl
+          - wget
+          - openssh-server
+          - python3
+          - python3-apt
+          - net-tools
+          - iproute2
+          - rsync
+          - tmux
+          - less
+          - nano
+        monitoring:
+          - htop
+          - nmon
+          - lsof
+          - pciutils
+          - usbutils
+          - lshw
+          - nvme-cli
+          - smartmontools
+          - lm-sensors
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+
+    - name: Normalize Debian LXC base defaults
+      set_fact:
+        proxmox_lxc_debian_feature_defaults: >-
+          {{
+            proxmox_lxc_debian_defaults_safe.feature
+            | combine(proxmox_feature_defaults.debian_lxc | default({}), recursive=true)
+          }}
+        proxmox_lxc_debian_profile_defaults: >-
+          {{
+            proxmox_lxc_debian_defaults_safe.profiles
+            | combine(proxmox_lxc_debian.package_profiles | default({}), recursive=true)
+          }}
+
+    - name: Assert Debian LXC feature was explicitly enabled
+      assert:
+        that:
+          - proxmox_lxc_debian_feature_defaults.enabled | bool
+        fail_msg: "Debian LXC feature execution is disabled."
+
+    - name: Stat operator selection file
+      stat:
+        path: "{{ proxmox_lxc_debian_selection_path }}"
+      register: proxmox_lxc_debian_selection_stat
+
+    - name: Require operator selection file when selection policy is enabled
+      assert:
+        that:
+          - proxmox_lxc_debian_selection_stat.stat.exists
+        fail_msg: "Operator selection file is required at {{ proxmox_lxc_debian_selection_path }}"
+      when: proxmox_lxc_debian_feature_defaults.require_operator_selection | bool
+
+    - name: Load operator selection file
+      include_vars:
+        file: "{{ proxmox_lxc_debian_selection_path }}"
+      when: proxmox_lxc_debian_selection_stat.stat.exists
+
+  tasks:
+    - name: Check for Proxmox host marker
+      stat:
+        path: /etc/pve
+      register: proxmox_lxc_debian_base_host_marker
+
+    - name: Check for pveversion command
+      command:
+        argv:
+          - sh
+          - -c
+          - command -v pveversion
+      register: proxmox_lxc_debian_base_pveversion
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when not running on a Proxmox host
+      assert:
+        that:
+          - proxmox_lxc_debian_base_host_marker.stat.exists
+          - proxmox_lxc_debian_base_pveversion.rc == 0
+        fail_msg: "This Debian LXC base feature must run on the Proxmox host."
+      when: proxmox_lxc_debian_feature_defaults.require_proxmox_host | bool
+
+    - name: Normalize Debian LXC base operator selection
+      set_fact:
+        proxmox_lxc_debian_selection: "{{ proxmox_lxc_debian_operator_selection | default({}) }}"
+
+    - name: Build Debian LXC base effective model
+      set_fact:
+        proxmox_lxc_debian_base_effective:
+          ctid: "{{ proxmox_lxc_debian_selection.ctid | string }}"
+          hostname: "{{ proxmox_lxc_debian_selection.hostname | default(None) }}"
+          profile: "{{ proxmox_lxc_debian_selection.hardening.profile | default('minimal') }}"
+          enable_ufw: "{{ proxmox_lxc_debian_selection.hardening.enable_ufw | default(false) | bool }}"
+          allow_subnets: "{{ proxmox_lxc_debian_selection.hardening.allow_subnets | default(['10.0.0.0/24']) }}"
+
+    - name: Skip base profile when operator selected skip
+      debug:
+        msg: "Hardening profile is skip; no in-container base actions will run."
+      when: proxmox_lxc_debian_base_effective.profile == 'skip'
+
+    - name: Ensure selected container is running before base profile
+      command:
+        argv:
+          - pct
+          - start
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+      register: proxmox_lxc_debian_base_start
+      changed_when: proxmox_lxc_debian_base_start.rc == 0
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Assert selected container is Debian-family
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - ". /etc/os-release && test \"${ID}\" = debian -o \"${ID_LIKE:-}\" = debian -o \"${ID_LIKE:-}\" = \"debian ubuntu\""
+      changed_when: false
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Build effective Debian package list
+      set_fact:
+        proxmox_lxc_debian_packages_effective: >-
+          {{
+            proxmox_lxc_debian_profile_defaults.minimal
+            + (
+              proxmox_lxc_debian_profile_defaults.monitoring
+              if proxmox_lxc_debian_base_effective.profile == 'minimal_monitoring'
+              else []
+            )
+            + (
+              ['ufw']
+              if proxmox_lxc_debian_base_effective.enable_ufw
+              else []
+            )
+          }}
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Update apt metadata inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - env
+          - DEBIAN_FRONTEND=noninteractive
+          - apt-get
+          - update
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Install light Debian base packages inside the container
+      command:
+        argv: >-
+          {{
+            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-y', 'install']
+            + proxmox_lxc_debian_packages_effective
+          }}
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Ensure sshd include directory exists inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - mkdir
+          - -p
+          - /etc/ssh/sshd_config.d
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Write managed SSH include file inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - |
+            cat > /etc/ssh/sshd_config.d/90-proxmox-debian-base.conf <<'EOF'
+            Port 22
+            PermitRootLogin yes
+            EOF
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Set hostname inside the container when provided
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - hostnamectl
+          - set-hostname
+          - "{{ proxmox_lxc_debian_base_effective.hostname }}"
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.hostname is not none
+        - proxmox_lxc_debian_base_effective.hostname | length > 0
+
+    - name: Validate SSH configuration inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - sshd
+          - -t
+      changed_when: false
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Resolve SSH service name inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - |
+            if systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service'; then
+              echo ssh
+            elif systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service'; then
+              echo sshd
+            else
+              echo ssh
+            fi
+      register: proxmox_lxc_debian_ssh_service_name
+      changed_when: false
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Reload SSH service inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - systemctl
+          - reload-or-restart
+          - "{{ proxmox_lxc_debian_ssh_service_name.stdout | trim }}"
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Disable IPv6 in UFW defaults inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "if [ -f /etc/default/ufw ]; then sed -i 's/^IPV6=.*/IPV6=no/' /etc/default/ufw; fi"
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ufw
+
+    - name: Allow SSH from trusted subnets with UFW inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "ufw allow from {{ item }} to any port 22 proto tcp"
+      loop: "{{ proxmox_lxc_debian_base_effective.allow_subnets }}"
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ufw
+
+    - name: Enable UFW inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - ufw
+          - --force
+          - enable
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ufw
+
+    - name: Capture final IPv4 summary from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - ip
+          - -o
+          - -4
+          - addr
+          - show
+          - scope
+          - global
+      register: proxmox_lxc_debian_base_ipv4
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Persist Debian LXC base runtime facts
+      copy:
+        dest: "{{ proxmox_lxc_debian_runtime_facts_path }}"
+        mode: "0644"
+        content: |
+          ---
+          proxmox_lxc_debian_runtime:
+            ctid: "{{ proxmox_lxc_debian_base_effective.ctid }}"
+            hostname: "{{ proxmox_lxc_debian_base_effective.hostname | default('') }}"
+            profile: "{{ proxmox_lxc_debian_base_effective.profile }}"
+            enable_ufw: {{ proxmox_lxc_debian_base_effective.enable_ufw | bool | lower }}
+            ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+
+    - name: Report Debian LXC base completion summary
+      debug:
+        msg:
+          ctid: "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          profile: "{{ proxmox_lxc_debian_base_effective.profile }}"
+          enable_ufw: "{{ proxmox_lxc_debian_base_effective.enable_ufw }}"
+          ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
+      when: proxmox_lxc_debian_base_effective.profile != 'skip'

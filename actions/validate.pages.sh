@@ -10,7 +10,13 @@ FILES=(
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
   "setup.vlan.sh:setup/vlan.sh"
+  "setup/lxc/debian.sh:setup/lxc/debian.sh"
+  "setup/lxc/samba.sh:setup/lxc/samba.sh"
+  "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
+  "ansible/proxmox/container/debian.base.yml:ansible/proxmox/container/debian.base.yml"
+  "ansible/proxmox/container/samba.file.share.yml:ansible/proxmox/container/samba.file.share.yml"
   "ansible/debian/install.packages.yml:ansible/debian/install.packages.yml"
+  "ansible/debian/netboot.yml:ansible/debian/netboot.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
@@ -46,7 +52,8 @@ for entry in "${FILES[@]}"; do
 done
 
 check_setup_feature_refs() {
-  local runner_path="${WORKDIR}/setup/vlan.sh"
+  local runner_rel="$1"
+  local runner_path="${WORKDIR}/${runner_rel}"
   local feature_ref
   local -a _setup_feature_refs=()
 
@@ -66,7 +73,7 @@ check_setup_feature_refs() {
   )
 
   if ((${#_setup_feature_refs[@]} == 0)); then
-    echo "[validate.pages][error] setup/vlan.sh has empty or missing FEATURE_PLAYBOOKS array"
+    echo "[validate.pages][error] ${runner_rel} has empty or missing FEATURE_PLAYBOOKS array"
     rc=1
     return
   fi
@@ -78,7 +85,7 @@ check_setup_feature_refs() {
     local playbook_url="${BASE_URL}/${remote_playbook}"
 
     if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
-      echo "[validate.pages][error] setup/vlan.sh references missing local playbook: ${local_playbook}"
+      echo "[validate.pages][error] ${runner_rel} references missing local playbook: ${local_playbook}"
       rc=1
       continue
     fi
@@ -86,7 +93,7 @@ check_setup_feature_refs() {
     mkdir -p "$(dirname "${tmp_playbook}")"
     echo "[validate.pages] fetch ${playbook_url}"
     if ! curl -fsSL "${playbook_url}" -o "${tmp_playbook}"; then
-      echo "[validate.pages][error] failed to fetch setup.vlan dependency ${playbook_url}"
+      echo "[validate.pages][error] failed to fetch setup dependency ${playbook_url}"
       rc=1
       continue
     fi
@@ -153,7 +160,9 @@ check_playlist_refs() {
 
 check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
 check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
-check_setup_feature_refs
+check_setup_feature_refs "setup/vlan.sh"
+check_setup_feature_refs "setup/lxc/debian.sh"
+check_setup_feature_refs "setup/lxc/samba.sh"
 
 rm -rf "${TMPDIR}"
 exit "${rc}"

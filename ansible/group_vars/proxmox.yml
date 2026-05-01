@@ -4,10 +4,20 @@
 # setup runners under setup/. It is not part of the Debian baseline bootstrap.
 
 proxmox_feature_defaults:
+  debian_lxc:
+    enabled: false
+    mode: "apply"  # preflight | create | harden | apply
+    require_proxmox_host: true
+    require_operator_selection: true
   vlan:
     enabled: false
     mode: "preflight"  # preflight | write | apply
     use_discovered_hardware: true
+    require_operator_selection: true
+  samba:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
     require_operator_selection: true
 
 proxmox_vlan_ui:
@@ -54,3 +64,162 @@ proxmox_vlan:
     migrate: false
     vm_vlan_map: {}
     ct_vlan_map: {}
+
+proxmox_samba:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  container_facts_path: "/etc/ansible/proxmox/facts/container.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/samba.yml"
+  mounts_tsv_path: "/etc/ansible/proxmox/facts/samba.mounts.tsv"
+  selection_path: "/etc/ansible/proxmox/facts/samba.selection.yml"
+
+  packages:
+    - samba
+    - samba-common-bin
+    - smbclient
+    - openssh-server
+    - avahi-daemon
+    - acl
+    - attr
+    - ufw
+    - iproute2
+    - util-linux
+    - ca-certificates
+
+  identity:
+    workgroup: "WORKGROUP"
+    netbios_name: null
+    server_string: "Proxmox Samba NAS"
+    fruit_model: "Xserve"
+
+  network:
+    allow_subnets:
+      - "10.0.0.0/24"
+      - "192.168.0.0/16"
+    smb_ports:
+      - 445
+    ssh_port: 22
+    bind_interfaces_only: true
+    include_discovered_ipv4_networks: true
+
+  ssh:
+    enabled: true
+    include_path: "/etc/ssh/sshd_config.d/90-proxmox-samba.conf"
+    permit_root_login: "yes"
+    password_authentication: null
+    allow_users:
+      - root
+      - proxmox
+      - agent
+
+  firewall:
+    enabled: true
+
+  samba:
+    guest_mode: true
+    map_to_guest: "Bad User"
+    force_user: "root"
+    force_group: "storage"
+    create_mask: "0760"
+    directory_mask: "0760"
+    allocation_roundup_size: 4096
+    min_protocol: "SMB3_02"
+    max_protocol: "SMB3_11"
+    disable_netbios: true
+    load_printers: false
+    macos_vfs_objects:
+      - catia
+      - fruit
+      - streams_xattr
+    fruit_aapl: true
+    fruit_time_machine: true
+    fruit_resource: "xattr"
+    fruit_nfs_aces: false
+
+  shares:
+    auto_discover: true
+    include_paths:
+      - "/media"
+      - "/mnt"
+      - "/srv/storage"
+      - "/storage"
+    exclude_paths:
+      - "/"
+      - "/boot"
+      - "/dev"
+      - "/etc"
+      - "/proc"
+      - "/run"
+      - "/sys"
+      - "/tmp"
+      - "/var"
+    explicit: []
+
+proxmox_lxc_debian:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  containers_tsv_path: "/etc/ansible/proxmox/facts/lxc.debian.containers.tsv"
+  templates_tsv_path: "/etc/ansible/proxmox/facts/lxc.debian.templates.tsv"
+  isos_tsv_path: "/etc/ansible/proxmox/facts/lxc.debian.isos.tsv"
+  selection_path: "/etc/ansible/proxmox/facts/lxc.debian.selection.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.debian.yml"
+
+  defaults:
+    rootfs_storage: "local-lvm"
+    rootfs_size_gb: 8
+    cores: 2
+    memory_mb: 2048
+    swap_mb: 512
+    bridge: "vmbr0"
+    ipv4_mode: "dhcp"
+    unprivileged: true
+    nesting: false
+    fuse: false
+
+  package_profiles:
+    minimal:
+      - sudo
+      - ca-certificates
+      - gnupg
+      - curl
+      - wget
+      - openssh-server
+      - python3
+      - python3-apt
+      - net-tools
+      - iproute2
+      - rsync
+      - tmux
+      - less
+      - nano
+    monitoring:
+      - htop
+      - nmon
+      - lsof
+      - pciutils
+      - usbutils
+      - lshw
+      - nvme-cli
+      - smartmontools
+      - lm-sensors
+
+  hardening:
+    allow_subnets:
+      - "10.0.0.0/24"
+      - "192.168.0.0/16"
+    enable_ufw: false
+
+  mounts:
+    include_paths:
+      - "/media"
+      - "/mnt"
+      - "/srv/storage"
+      - "/storage"
+    exclude_paths:
+      - "/"
+      - "/boot"
+      - "/dev"
+      - "/etc"
+      - "/proc"
+      - "/run"
+      - "/sys"
+      - "/tmp"
+      - "/var"

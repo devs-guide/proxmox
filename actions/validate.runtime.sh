@@ -16,15 +16,21 @@ files=(
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
   "setup/vlan.sh"
+  "setup/lxc/debian.sh"
+  "setup/lxc/samba.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
   "ansible/debian/install.packages.yml"
+  "ansible/debian/netboot.yml"
   "ansible/debian/packages.yml"
   "ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml"
   "ansible/proxmox/helper/hardware.yml"
   "ansible/proxmox/vlan.yml"
+  "ansible/proxmox/container/debian.lxc.yml"
+  "ansible/proxmox/container/debian.base.yml"
+  "ansible/proxmox/container/samba.file.share.yml"
   "ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml"
 )
@@ -105,6 +111,96 @@ if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
 fi
 echo "[validate.runtime][ok] setup/vlan.sh uses generated YAML extra-vars and exposes the readable NIC UI"
 
+echo "[validate.runtime] checking Proxmox LXC Samba runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"proxmox/container/samba.file.share.yml"' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh FEATURE_PLAYBOOKS is missing proxmox/container/samba.file.share.yml"
+  exit 1
+fi
+if ! grep -q '/dev/tty' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh is missing TTY input handling (/dev/tty)"
+  exit 1
+fi
+if ! grep -q 'samba.selection.yml' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh is missing samba.selection.yml usage"
+  exit 1
+fi
+if ! grep -q 'SAMBA_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh is missing SAMBA_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'write.samba.extra.vars.file()' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh is missing write.samba.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${SAMBA_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'This Samba feature must be run inside the NAS LXC container, not on the Proxmox host.' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must reject Proxmox host execution by default"
+  exit 1
+fi
+if grep -q 'require.proxmox()' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must not require proxmox host execution"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/lxc/samba.sh exposes the structured Samba runner contract"
+
+echo "[validate.runtime] checking Proxmox Debian LXC runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"proxmox/container/debian.lxc.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_PLAYBOOKS is missing proxmox/container/debian.lxc.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/container/debian.base.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_PLAYBOOKS is missing proxmox/container/debian.base.yml"
+  exit 1
+fi
+if ! grep -q '/dev/tty' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh is missing TTY input handling (/dev/tty)"
+  exit 1
+fi
+if ! grep -q 'lxc.debian.selection.yml' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh is missing lxc.debian.selection.yml usage"
+  exit 1
+fi
+if ! grep -q 'DEBIAN_LXC_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh is missing DEBIAN_LXC_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'write.debian.extra.vars.file()' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh is missing write.debian.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'ansible/debian/netboot.yml' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must reference ansible/debian/netboot.yml for Debian web references"
+  exit 1
+fi
+if ! grep -q 'This Debian LXC feature must be run on a Proxmox host, not inside a container.' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must reject container execution by default"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/lxc/debian.sh exposes the structured Debian LXC runner contract"
+
 echo "[validate.runtime] checking VLAN playbook safety contract..."
 if ! grep -q 'proxmox_vlan_operator_selection' "${ROOT}/ansible/proxmox/vlan.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml does not consume proxmox_vlan_operator_selection"
@@ -147,6 +243,82 @@ if ! grep -q 'Capture selected bridge port list after apply' "${ROOT}/ansible/pr
   exit 1
 fi
 echo "[validate.runtime][ok] ansible/proxmox/vlan.yml includes selection/oob/rollback safeguards"
+
+echo "[validate.runtime] checking Samba playbook safety contract..."
+if ! grep -q 'This Samba feature must run inside a Debian LXC container, not on the Proxmox host.' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must fail when run on a Proxmox host"
+  exit 1
+fi
+if ! grep -q 'testparm' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must validate generated config with testparm"
+  exit 1
+fi
+if ! grep -q '/etc/samba/smb.conf' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must manage /etc/samba/smb.conf"
+  exit 1
+fi
+if ! grep -q 'openssh-server' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must install openssh-server"
+  exit 1
+fi
+if ! grep -q 'avahi-daemon' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must install avahi-daemon"
+  exit 1
+fi
+if ! grep -q 'catia' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'fruit' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'streams_xattr' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must configure macOS vfs objects"
+  exit 1
+fi
+if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must configure UFW subnet rules"
+  exit 1
+fi
+echo "[validate.runtime][ok] samba.file.share.yml includes container/Samba/SSH/firewall safeguards"
+
+echo "[validate.runtime] checking Debian LXC playbook safety contract..."
+if ! grep -q 'This Debian LXC feature must run on the Proxmox host.' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must fail when not run on the Proxmox host"
+  exit 1
+fi
+if ! grep -q 'pct' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must manage containers with pct"
+  exit 1
+fi
+if ! grep -q 'pveam' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must handle Debian template download/update flow"
+  exit 1
+fi
+if ! grep -q 'lxc.debian.selection.yml' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must consume lxc.debian.selection.yml"
+  exit 1
+fi
+if ! grep -q 'rootfs_storage' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must validate rootfs storage inputs"
+  exit 1
+fi
+if ! grep -q 'pct' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must configure the container through pct exec"
+  exit 1
+fi
+if ! grep -q 'openssh-server' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must install openssh-server"
+  exit 1
+fi
+if grep -q 'node' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must stay light and must not install Node tooling"
+  exit 1
+fi
+if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must support container UFW subnet rules"
+  exit 1
+fi
+if ! grep -q 'sshd' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must validate SSH configuration"
+  exit 1
+fi
+echo "[validate.runtime][ok] Debian LXC host/base playbooks include template, pct, SSH, and light-hardening safeguards"
 
 echo "[validate.runtime] checking hardware helper regression guards..."
 if grep -q "regex_search(' master (\\\\S+)', '\\\\1')" "${ROOT}/ansible/proxmox/helper/hardware.yml"; then
@@ -210,8 +382,24 @@ if ! grep -q 'load.setup.vlan.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/vlan.sh feature playbook refs"
   exit 1
 fi
+if ! grep -q 'load.setup.samba.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/samba.sh feature playbook refs"
+  exit 1
+fi
+if ! grep -q 'load.setup.debian_lxc.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/debian.sh feature playbook refs"
+  exit 1
+fi
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh FEATURE_PLAYBOOKS array not found for publish parsing"
+  exit 1
+fi
+if ! grep -q 'setup/lxc/samba.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Samba runner path"
+  exit 1
+fi
+if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Debian LXC runner path"
   exit 1
 fi
 if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
@@ -225,6 +413,8 @@ bash -n "${ROOT}/bootstrap/release.6.4.sh"
 bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
+bash -n "${ROOT}/setup/lxc/debian.sh"
+bash -n "${ROOT}/setup/lxc/samba.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
@@ -284,6 +474,14 @@ run_proxmox_feature_check() {
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/vlan.yml"
+
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/debian.lxc.yml"
+
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/debian.base.yml"
 }
 
 run_proxmox_feature_check "proxmox feature playbooks" -e @${ROOT}/ansible/group_vars/proxmox.yml

@@ -14,6 +14,8 @@ declare -A PKGS
 # --- Playlist (Of Playbooks) File Name:
 PLAYBOOKS="debian/install.playbooks.txt"
 SETUP_VLAN_RUNNER="setup/vlan.sh"
+SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
+SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -154,6 +156,50 @@ load.setup.vlan.playbooks() {
   PKGS[setup_vlan]="${_setup_vlan_items[*]}"
 }
 
+load.setup.samba.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_SAMBA_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_SAMBA_RUNNER} not found; skipping setup-samba playbook refs"
+    PKGS[setup_samba]=""
+    return 0
+  }
+
+  mapfile -t _setup_samba_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_samba_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_SAMBA_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_samba]="${_setup_samba_items[*]}"
+}
+
+load.setup.debian_lxc.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_DEBIAN_LXC_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_DEBIAN_LXC_RUNNER} not found; skipping setup-debian-lxc playbook refs"
+    PKGS[setup_debian_lxc]=""
+    return 0
+  }
+
+  mapfile -t _setup_debian_lxc_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_debian_lxc_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_DEBIAN_LXC_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_debian_lxc]="${_setup_debian_lxc_items[*]}"
+}
+
 load.release.playbook.refs() {
   local release_dir="$1"
   local playlist_file="${PATH_TO[root]}/ansible/release/${release_dir}/install.playbooks.txt"
@@ -246,6 +292,22 @@ publish.setup.features() {
   else
     log.warn "[www.pages] setup/vlan.sh not found; skipping setup.vlan.sh publish"
   fi
+
+  if [[ -f "${SETUP_SAMBA_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_SAMBA_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/lxc"
+    install -m 0755 "${SETUP_SAMBA_RUNNER}" "${PATH_TO[publish]}/${SETUP_SAMBA_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_SAMBA_RUNNER} not found; skipping structured Samba runner publish"
+  fi
+
+  if [[ -f "${SETUP_DEBIAN_LXC_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_DEBIAN_LXC_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/lxc"
+    install -m 0755 "${SETUP_DEBIAN_LXC_RUNNER}" "${PATH_TO[publish]}/${SETUP_DEBIAN_LXC_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_DEBIAN_LXC_RUNNER} not found; skipping structured Debian LXC runner publish"
+  fi
 }
 
 publish.ansible() {
@@ -265,6 +327,7 @@ publish.ansible() {
     "--include=group_vars/proxmox.yml" # manual Proxmox feature defaults
     "--include=debian.packages.yml"   # package catalog (legacy path, used by 6.4 RC)
     "--include=debian/packages.yml"   # package catalog (current path under debian/)
+    "--include=debian/netboot.yml"    # Debian web-reference catalog for container feature UI
     "--include=debian/sources.trixie.yml" # Trixie sources play for 9.1+
   )
   local playbook_to_run
@@ -279,6 +342,16 @@ publish.ansible() {
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
   done
 
+  load.setup.samba.playbooks
+  for playbook_to_run in ${PKGS[setup_samba]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
+  load.setup.debian_lxc.playbooks
+  for playbook_to_run in ${PKGS[setup_debian_lxc]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
   for playbook_to_run in "${!shared_playbooks[@]}"; do
     rsync_includes+=( "--include=${playbook_to_run}" )
   done
@@ -288,6 +361,12 @@ publish.ansible() {
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
   if [[ -n "${PKGS[setup_vlan]:-}" ]]; then
     log.info "[www.pages] setup vlan entries: ${PKGS[setup_vlan]}"
+  fi
+  if [[ -n "${PKGS[setup_samba]:-}" ]]; then
+    log.info "[www.pages] setup samba entries: ${PKGS[setup_samba]}"
+  fi
+  if [[ -n "${PKGS[setup_debian_lxc]:-}" ]]; then
+    log.info "[www.pages] setup debian lxc entries: ${PKGS[setup_debian_lxc]}"
   fi
 
   rsync -av \
