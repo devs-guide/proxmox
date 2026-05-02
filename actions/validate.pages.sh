@@ -164,5 +164,31 @@ check_setup_feature_refs "setup/vlan.sh"
 check_setup_feature_refs "setup/lxc/debian.sh"
 check_setup_feature_refs "setup/lxc/samba.sh"
 
+check_published_debian_lxc_policy() {
+  local published_runner="${TMPDIR}/setup/lxc/debian.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/lxc/debian.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'debian-10-standard_10.7-1_amd64.tar.gz' \
+    'debian-11-standard_11.7-1_amd64.tar.zst' \
+    'debian-12-standard_12.12-1_amd64.tar.zst' \
+    'debian-13-standard_13.1-2_amd64.tar.zst' \
+    'DEBIAN_LXC_TEMPLATE_BASE_URL' \
+    'official URL fallback'; do
+    if ! grep -q "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup/lxc/debian.sh is stale or missing Debian LXC policy marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
+check_published_debian_lxc_policy
+
 rm -rf "${TMPDIR}"
 exit "${rc}"

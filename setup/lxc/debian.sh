@@ -26,6 +26,7 @@ NETBOOT_FILE="netboot.yml"
 NETBOOT_URL="${PAGES_BASE_URL}/ansible/debian/${NETBOOT_FILE}"
 NETBOOT_PATH="${PLAYBOOK_DEBIAN_DIR}/${NETBOOT_FILE}"
 DEBIAN_LXC_TEMPLATE_POLICY_VERSION="2026-05-02"
+DEBIAN_LXC_TEMPLATE_BASE_URL="${PROXMOX_LXC_DEBIAN_TEMPLATE_BASE_URL:-https://download.proxmox.com/images/system}"
 DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)
 DEBIAN_LXC_TEMPLATE_CODENAME=(buster bullseye bookworm trixie)
 DEBIAN_LXC_TEMPLATE_NAME=(
@@ -132,6 +133,8 @@ SELECTED_EXISTING_CTID=""
 SELECTED_HOSTNAME=""
 SELECTED_TEMPLATE_NAME=""
 SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
+SELECTED_TEMPLATE_DOWNLOAD_METHOD="none"
+SELECTED_TEMPLATE_URL=""
 SELECTED_ROOTFS_STORAGE=""
 SELECTED_ROOTFS_SIZE_GB=""
 SELECTED_CORES=""
@@ -511,6 +514,23 @@ template.policy.name.from.major() {
   printf '%s\n' "${DEBIAN_LXC_TEMPLATE_NAME[$idx]}"
 }
 
+template.policy.index.from.name() {
+  local name="${1:-}" i
+  for i in "${!DEBIAN_LXC_TEMPLATE_NAME[@]}"; do
+    if [[ "${DEBIAN_LXC_TEMPLATE_NAME[$i]}" == "${name}" ]]; then
+      printf '%s\n' "${i}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+template.policy.url.from.name() {
+  local name="${1:-}"
+  [[ -n "${name}" ]] || return 1
+  printf '%s/%s\n' "${DEBIAN_LXC_TEMPLATE_BASE_URL%/}" "${name}"
+}
+
 template.remote.advertises.name() {
   local needle="${1:-}" item
   for item in "${TEMPLATE_REMOTE_RAW[@]:-}"; do
@@ -795,16 +815,27 @@ select.template.interactive() {
     SELECTED_TEMPLATE_NAME="${DEFAULT_TEMPLATE}"
     if printf '%s\n' "${TEMPLATE_LOCAL[@]:-}" | grep -Fxq "${DEFAULT_TEMPLATE}"; then
       SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="local"
+      SELECTED_TEMPLATE_URL=""
       return 0
     fi
 
     discover.remote.templates
     if template.remote.advertises.name "${DEFAULT_TEMPLATE}"; then
       SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="pveam"
+      SELECTED_TEMPLATE_URL=""
       return 0
     fi
 
-    log.error "Template ${DEFAULT_TEMPLATE} is not in local cache and is not currently advertised by pveam."
+    if template.policy.index.from.name "${DEFAULT_TEMPLATE}" >/dev/null 2>&1; then
+      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="url"
+      SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${DEFAULT_TEMPLATE}")"
+      return 0
+    fi
+
+    log.error "Template ${DEFAULT_TEMPLATE} is not in local cache, is not currently advertised by pveam, and is not in the Debian LXC policy fallback list."
     exit 1
   fi
 
@@ -816,17 +847,23 @@ select.template.interactive() {
 
     if printf '%s\n' "${TEMPLATE_LOCAL[@]:-}" | grep -Fxq "${SELECTED_TEMPLATE_NAME}"; then
       SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="local"
+      SELECTED_TEMPLATE_URL=""
       return 0
     fi
 
     discover.remote.templates
     if template.remote.advertises.name "${SELECTED_TEMPLATE_NAME}"; then
       SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="pveam"
+      SELECTED_TEMPLATE_URL=""
       return 0
     fi
 
-    log.error "Template ${SELECTED_TEMPLATE_NAME} (major ${DEFAULT_TEMPLATE_MAJOR}) is not in local cache and is not currently advertised by pveam."
-    exit 1
+    SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
+    SELECTED_TEMPLATE_DOWNLOAD_METHOD="url"
+    SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${SELECTED_TEMPLATE_NAME}")"
+    return 0
   fi
 
   if ((${#TEMPLATE_LOCAL[@]} > 0)); then
@@ -856,6 +893,8 @@ select.template.interactive() {
     idx=$((choice - 1))
     SELECTED_TEMPLATE_NAME="${TEMPLATE_LOCAL[$idx]}"
     SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
+    SELECTED_TEMPLATE_DOWNLOAD_METHOD="local"
+    SELECTED_TEMPLATE_URL=""
     return 0
   fi
 
@@ -873,12 +912,12 @@ select.template.interactive() {
       policy_available="${TEMPLATE_POLICY_AVAILABLE[$idx]}"
       policy_status="${TEMPLATE_POLICY_STATUS[$idx]}"
       if [[ "${policy_available}" == "true" ]]; then
-        policy_desc="remote download"
+        policy_desc="remote download via pveam"
         if [[ "${policy_status}" == "legacy" ]]; then
-          policy_desc="remote download / legacy"
+          policy_desc="remote download via pveam / legacy"
         fi
       else
-        policy_desc="not currently advertised by pveam"
+        policy_desc="official URL fallback (not currently advertised by pveam)"
       fi
       options+=("${TEMPLATE_POLICY_LABEL[$idx]} | ${policy_name} | ${policy_desc}")
     done
@@ -897,12 +936,15 @@ select.template.interactive() {
 
     idx=$((choice - 1))
     SELECTED_TEMPLATE_NAME="${TEMPLATE_POLICY_NAME[$idx]}"
+    SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
     if [[ "${TEMPLATE_POLICY_AVAILABLE[$idx]}" == "true" ]]; then
-      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
-      return 0
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="pveam"
+      SELECTED_TEMPLATE_URL=""
+    else
+      SELECTED_TEMPLATE_DOWNLOAD_METHOD="url"
+      SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${SELECTED_TEMPLATE_NAME}")"
     fi
-
-    log.error "Selected template ${SELECTED_TEMPLATE_NAME} is not currently advertised by pveam. Use a local cached template or choose an advertised entry."
+    return 0
   done
 }
 
@@ -1058,6 +1100,10 @@ confirm.selection() {
   printf '  ctid:             %s\n' "${SELECTED_CTID}" >&3
   printf '  hostname:         %s\n' "${SELECTED_HOSTNAME:-unchanged}" >&3
   printf '  template:         %s\n' "${SELECTED_TEMPLATE_NAME:-existing}" >&3
+  printf '  template method:  %s\n' "${SELECTED_TEMPLATE_DOWNLOAD_METHOD:-none}" >&3
+  if [[ -n "${SELECTED_TEMPLATE_URL:-}" ]]; then
+    printf '  template url:     %s\n' "${SELECTED_TEMPLATE_URL}" >&3
+  fi
   printf '  rootfs:           %s:%sG\n' "${SELECTED_ROOTFS_STORAGE:-n/a}" "${SELECTED_ROOTFS_SIZE_GB:-n/a}" >&3
   printf '  cores/mem/swap:   %s / %sMB / %sMB\n' "${SELECTED_CORES:-n/a}" "${SELECTED_MEMORY_MB:-n/a}" "${SELECTED_SWAP_MB:-n/a}" >&3
   printf '  bridge:           %s\n' "${SELECTED_BRIDGE:-n/a}" >&3
@@ -1169,6 +1215,9 @@ proxmox_lxc_debian_operator_selection:
   template:
     name: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_NAME}")
     download_if_missing: $(bool.yaml "${SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING}")
+    download_method: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_DOWNLOAD_METHOD}")
+    url: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_URL}")
+    storage: "local"
   resources:
     rootfs_storage: $(yaml.scalar.or.null "${SELECTED_ROOTFS_STORAGE}")
     rootfs_size_gb: ${SELECTED_ROOTFS_SIZE_GB:-0}

@@ -197,6 +197,8 @@ proxmox_lxc_debian:
   template_policy:
     prefer_pveam_live_catalog: true
     allow_last_known_fallback: true
+    base_url: "https://download.proxmox.com/images/system"
+    fallback_download_method: "url"
     storage: "local"
     releases:
       - major: 10

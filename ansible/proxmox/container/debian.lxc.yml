@@ -183,7 +183,38 @@
         - proxmox_lxc_debian_effective.template.name is defined
         - proxmox_lxc_debian_effective.template.name | length > 0
 
-    - name: Refresh template catalog when download is requested
+    - name: Normalize selected template download method
+      set_fact:
+        proxmox_lxc_debian_template_download_method: >-
+          {{ proxmox_lxc_debian_effective.template.download_method | default('pveam') }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+
+    - name: Require URL when official URL fallback is selected
+      assert:
+        that:
+          - proxmox_lxc_debian_effective.template.url is defined
+          - proxmox_lxc_debian_effective.template.url | length > 0
+          - proxmox_lxc_debian_effective.template.url is match('^https://download\.proxmox\.com/images/system/debian-[0-9]+-standard_')
+        fail_msg: "Template URL fallback requires an official Proxmox images/system Debian template URL."
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'url'
+
+    - name: Ensure local template cache directory exists for URL fallback
+      file:
+        path: /var/lib/vz/template/cache
+        state: directory
+        mode: "0755"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'url'
+
+    - name: Refresh template catalog when pveam download is requested
       command:
         argv:
           - pveam
@@ -193,18 +224,34 @@
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
         - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'pveam'
 
-    - name: Download selected Debian template when missing
+    - name: Download selected Debian template through pveam when missing
       command:
         argv:
           - pveam
           - download
-          - local
+          - "{{ proxmox_lxc_debian_effective.template.storage | default('local') }}"
           - "{{ proxmox_lxc_debian_effective.template.name }}"
       when:
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
         - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'pveam'
+
+    - name: Download selected Debian template from official Proxmox URL fallback when missing
+      get_url:
+        url: "{{ proxmox_lxc_debian_effective.template.url }}"
+        dest: "/var/lib/vz/template/cache/{{ proxmox_lxc_debian_effective.template.name }}"
+        mode: "0644"
+        timeout: 120
+        force: false
+        validate_certs: true
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'url'
 
     - name: Assert template exists for create flow
       stat:
