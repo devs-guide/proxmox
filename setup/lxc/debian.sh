@@ -49,15 +49,15 @@ FEATURE_OPERATION="${PROXMOX_LXC_DEBIAN_OPERATION:-}"
 FEATURE_INTERACTIVE="${PROXMOX_LXC_DEBIAN_INTERACTIVE:-1}"
 FEATURE_ALLOW_CONTAINER="${PROXMOX_LXC_DEBIAN_ALLOW_CONTAINER:-0}"
 FEATURE_ENABLE_UFW="${PROXMOX_LXC_DEBIAN_ENABLE_UFW:-0}"
-DEFAULT_HOSTNAME="${PROXMOX_LXC_DEBIAN_HOSTNAME:-samba-test}"
+DEFAULT_HOSTNAME="${PROXMOX_LXC_DEBIAN_HOSTNAME:-samba}"
 DEFAULT_CTID="${PROXMOX_LXC_DEBIAN_CTID:-}"
 DEFAULT_TEMPLATE="${PROXMOX_LXC_DEBIAN_TEMPLATE:-}"
 DEFAULT_ROOTFS_STORAGE="${PROXMOX_LXC_DEBIAN_STORAGE:-local-lvm}"
-DEFAULT_ROOTFS_SIZE_GB="${PROXMOX_LXC_DEBIAN_ROOTFS_GB:-8}"
-DEFAULT_CORES="${PROXMOX_LXC_DEBIAN_CORES:-2}"
-DEFAULT_MEMORY_MB="${PROXMOX_LXC_DEBIAN_MEMORY_MB:-2048}"
-DEFAULT_SWAP_MB="${PROXMOX_LXC_DEBIAN_SWAP_MB:-512}"
-DEFAULT_BRIDGE="${PROXMOX_LXC_DEBIAN_BRIDGE:-vmbr0}"
+DEFAULT_ROOTFS_SIZE_GB="${PROXMOX_LXC_DEBIAN_ROOTFS_GB:-10}"
+DEFAULT_CORES="${PROXMOX_LXC_DEBIAN_CORES:-1}"
+DEFAULT_MEMORY_MB="${PROXMOX_LXC_DEBIAN_MEMORY_MB:-512}"
+DEFAULT_SWAP_MB="${PROXMOX_LXC_DEBIAN_SWAP_MB:-256}"
+DEFAULT_BRIDGE="${PROXMOX_LXC_DEBIAN_BRIDGE:-vmbr1}"
 DEFAULT_VLAN_TAG="${PROXMOX_LXC_DEBIAN_VLAN_TAG:-}"
 DEFAULT_IPV4_MODE="${PROXMOX_LXC_DEBIAN_IPV4_MODE:-dhcp}"
 DEFAULT_IPV4_CIDR="${PROXMOX_LXC_DEBIAN_IPV4_CIDR:-}"
@@ -65,7 +65,7 @@ DEFAULT_GATEWAY="${PROXMOX_LXC_DEBIAN_GATEWAY:-}"
 DEFAULT_UNPRIVILEGED="${PROXMOX_LXC_DEBIAN_UNPRIVILEGED:-1}"
 DEFAULT_NESTING="${PROXMOX_LXC_DEBIAN_NESTING:-0}"
 DEFAULT_FUSE="${PROXMOX_LXC_DEBIAN_FUSE:-0}"
-DEFAULT_HARDENING_PROFILE="${PROXMOX_LXC_DEBIAN_PROFILE:-minimal}"
+DEFAULT_HARDENING_PROFILE="${PROXMOX_LXC_DEBIAN_PROFILE:-ultra_lean}"
 DEFAULT_ALLOW_SUBNETS="${PROXMOX_LXC_DEBIAN_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 DEFAULT_MOUNTS="${PROXMOX_LXC_DEBIAN_MOUNTS:-}"
 
@@ -521,7 +521,7 @@ discover.isos() {
 }
 
 discover.mountpoints() {
-  local path source fstype options
+  local path source fstype options container_path
   MOUNT_HOST_PATH=()
   MOUNT_SOURCE=()
   MOUNT_FSTYPE=()
@@ -533,10 +533,11 @@ discover.mountpoints() {
     path.is.included_root "${path}" || continue
     fstype.is.excluded "${fstype}" && continue
     [[ -d "${path}" ]] || continue
+    container_path="/srv/samba/$(basename "${path}")"
     MOUNT_HOST_PATH+=("${path}")
     MOUNT_SOURCE+=("${source:-unknown}")
     MOUNT_FSTYPE+=("${fstype:-unknown}")
-    MOUNT_CONTAINER_PATH+=("${path}")
+    MOUNT_CONTAINER_PATH+=("${container_path}")
   done < <(findmnt -R -n -o TARGET,SOURCE,FSTYPE,OPTIONS 2>/dev/null | awk '{target=$1; source=$2; fstype=$3; $1=$2=$3=""; sub(/^ +/,""); print target "|" source "|" fstype "|" $0}')
 }
 
@@ -774,12 +775,12 @@ select.mountpoints.interactive() {
 
   if [[ -n "${DEFAULT_MOUNTS}" ]]; then
     local host_path
-    for host_path in ${DEFAULT_MOUNTS}; do
-      SELECTED_MOUNT_HOST_PATHS+=("${host_path}")
-      SELECTED_MOUNT_CONTAINER_PATHS+=("${host_path}")
-    done
-    return 0
-  fi
+      for host_path in ${DEFAULT_MOUNTS}; do
+        SELECTED_MOUNT_HOST_PATHS+=("${host_path}")
+        SELECTED_MOUNT_CONTAINER_PATHS+=("/srv/samba/$(basename "${host_path}")")
+      done
+      return 0
+    fi
 
   ((${#MOUNT_HOST_PATH[@]} > 0)) || return 0
 
@@ -846,12 +847,12 @@ collect.create.settings() {
 collect.hardening.selection() {
   local choice enable_ufw_choice
   choice="$(menu.tty "Select hardening profile:" \
-    "minimal" \
-    "minimal + monitoring" \
+    "ultra-lean samba-only" \
+    "ultra-lean + monitoring" \
     "skip hardening")"
   case "${choice}" in
-    1) SELECTED_HARDENING_PROFILE="minimal" ;;
-    2) SELECTED_HARDENING_PROFILE="minimal_monitoring" ;;
+    1) SELECTED_HARDENING_PROFILE="ultra_lean" ;;
+    2) SELECTED_HARDENING_PROFILE="ultra_lean_monitoring" ;;
     3) SELECTED_HARDENING_PROFILE="skip" ;;
   esac
   if [[ "${SELECTED_HARDENING_PROFILE}" != "skip" ]]; then
@@ -939,7 +940,7 @@ collect.operator.selection() {
       local host_path
       for host_path in ${DEFAULT_MOUNTS}; do
         SELECTED_MOUNT_HOST_PATHS+=("${host_path}")
-        SELECTED_MOUNT_CONTAINER_PATHS+=("${host_path}")
+        SELECTED_MOUNT_CONTAINER_PATHS+=("/srv/samba/$(basename "${host_path}")")
       done
     fi
     return 0

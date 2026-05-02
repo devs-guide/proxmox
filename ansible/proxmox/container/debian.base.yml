@@ -18,31 +18,23 @@
         require_proxmox_host: true
         require_operator_selection: true
       profiles:
-        minimal:
-          - sudo
+        ultra_lean:
           - ca-certificates
-          - gnupg
-          - curl
           - wget
-          - openssh-server
           - python3
           - python3-apt
-          - net-tools
           - iproute2
-          - rsync
-          - tmux
-          - less
-          - nano
-        monitoring:
+          - util-linux
+        ultra_lean_monitoring:
           - htop
           - nmon
           - lsof
-          - pciutils
-          - usbutils
-          - lshw
-          - nvme-cli
           - smartmontools
-          - lm-sensors
+      optional_packages:
+        ssh:
+          - openssh-server
+        ufw:
+          - ufw
 
   pre_tasks:
     - name: Load manual Proxmox feature defaults
@@ -118,9 +110,10 @@
         proxmox_lxc_debian_base_effective:
           ctid: "{{ proxmox_lxc_debian_selection.ctid | string }}"
           hostname: "{{ proxmox_lxc_debian_selection.hostname | default(None) }}"
-          profile: "{{ proxmox_lxc_debian_selection.hardening.profile | default('minimal') }}"
+          profile: "{{ proxmox_lxc_debian_selection.hardening.profile | default('ultra_lean') }}"
           enable_ufw: "{{ proxmox_lxc_debian_selection.hardening.enable_ufw | default(false) | bool }}"
           allow_subnets: "{{ proxmox_lxc_debian_selection.hardening.allow_subnets | default(['10.0.0.0/24']) }}"
+          enable_ssh: "{{ proxmox_lxc_debian.hardening.enable_ssh | default(false) | bool }}"
 
     - name: Skip base profile when operator selected skip
       debug:
@@ -155,14 +148,19 @@
       set_fact:
         proxmox_lxc_debian_packages_effective: >-
           {{
-            proxmox_lxc_debian_profile_defaults.minimal
+            proxmox_lxc_debian_profile_defaults.ultra_lean
             + (
-              proxmox_lxc_debian_profile_defaults.monitoring
-              if proxmox_lxc_debian_base_effective.profile == 'minimal_monitoring'
+              proxmox_lxc_debian_profile_defaults.ultra_lean_monitoring
+              if proxmox_lxc_debian_base_effective.profile == 'ultra_lean_monitoring'
               else []
             )
             + (
-              ['ufw']
+              proxmox_lxc_debian_defaults_safe.optional_packages.ssh
+              if proxmox_lxc_debian_base_effective.enable_ssh
+              else []
+            )
+            + (
+              proxmox_lxc_debian_defaults_safe.optional_packages.ufw
               if proxmox_lxc_debian_base_effective.enable_ufw
               else []
             )
@@ -201,7 +199,9 @@
           - mkdir
           - -p
           - /etc/ssh/sshd_config.d
-      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Write managed SSH include file inside the container
       command:
@@ -217,7 +217,9 @@
             Port 22
             PermitRootLogin yes
             EOF
-      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Set hostname inside the container when provided
       command:
@@ -244,7 +246,9 @@
           - sshd
           - -t
       changed_when: false
-      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Resolve SSH service name inside the container
       command:
@@ -265,7 +269,9 @@
             fi
       register: proxmox_lxc_debian_ssh_service_name
       changed_when: false
-      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Reload SSH service inside the container
       command:
@@ -277,7 +283,9 @@
           - systemctl
           - reload-or-restart
           - "{{ proxmox_lxc_debian_ssh_service_name.stdout | trim }}"
-      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Disable IPv6 in UFW defaults inside the container
       command:
@@ -339,7 +347,9 @@
       register: proxmox_lxc_debian_base_ipv4
       changed_when: false
       failed_when: false
-      when: proxmox_lxc_debian_base_effective.profile != 'skip'
+      when:
+        - proxmox_lxc_debian_base_effective.profile != 'skip'
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Persist Debian LXC base runtime facts
       copy:
@@ -352,6 +362,7 @@
             hostname: "{{ proxmox_lxc_debian_base_effective.hostname | default('') }}"
             profile: "{{ proxmox_lxc_debian_base_effective.profile }}"
             enable_ufw: {{ proxmox_lxc_debian_base_effective.enable_ufw | bool | lower }}
+            enable_ssh: {{ proxmox_lxc_debian_base_effective.enable_ssh | bool | lower }}
             ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
       when: proxmox_lxc_debian_base_effective.profile != 'skip'
 
@@ -361,5 +372,6 @@
           ctid: "{{ proxmox_lxc_debian_base_effective.ctid }}"
           profile: "{{ proxmox_lxc_debian_base_effective.profile }}"
           enable_ufw: "{{ proxmox_lxc_debian_base_effective.enable_ufw }}"
+          enable_ssh: "{{ proxmox_lxc_debian_base_effective.enable_ssh }}"
           ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
       when: proxmox_lxc_debian_base_effective.profile != 'skip'

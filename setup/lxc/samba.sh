@@ -40,13 +40,15 @@ FEATURE_INTERACTIVE="${PROXMOX_SAMBA_INTERACTIVE:-1}"
 FEATURE_REQUIRE_CONTAINER="${PROXMOX_SAMBA_REQUIRE_CONTAINER:-1}"
 FEATURE_ALLOW_HOST="${PROXMOX_SAMBA_ALLOW_HOST:-0}"
 FEATURE_ASSUME_CONTAINER="${PROXMOX_SAMBA_ASSUME_CONTAINER:-0}"
-PROXMOX_SAMBA_ENABLE_UFW="${PROXMOX_SAMBA_ENABLE_UFW:-1}"
+PROXMOX_SAMBA_ENABLE_UFW="${PROXMOX_SAMBA_ENABLE_UFW:-0}"
+PROXMOX_SAMBA_ENABLE_SSH="${PROXMOX_SAMBA_ENABLE_SSH:-0}"
+PROXMOX_SAMBA_ENABLE_AVAHI="${PROXMOX_SAMBA_ENABLE_AVAHI:-1}"
 PROXMOX_SAMBA_REQUIRE_XATTR="${PROXMOX_SAMBA_REQUIRE_XATTR:-0}"
 PROXMOX_SAMBA_WORKGROUP="${PROXMOX_SAMBA_WORKGROUP:-WORKGROUP}"
 PROXMOX_SAMBA_NETBIOS_NAME="${PROXMOX_SAMBA_NETBIOS_NAME:-}"
-PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-root}"
+PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-}"
 PROXMOX_SAMBA_FORCE_GROUP="${PROXMOX_SAMBA_FORCE_GROUP:-storage}"
-PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-1}"
+PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-0}"
 PROXMOX_SAMBA_PROFILE="${PROXMOX_SAMBA_PROFILE:-modern_mac}"
 PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
@@ -462,7 +464,7 @@ proxmox_samba_operator_selection:
 $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
     bind_interfaces_only: true
   shares:
-$(for path in "${SELECTED_SHARES[@]}"; do printf '    - path: %s\n      guest_ok: true\n      writable: true\n' "$(yaml.quote "${path}")"; done)
+$(for path in "${SELECTED_SHARES[@]}"; do printf '    - path: %s\n      guest_ok: false\n      writable: true\n' "$(yaml.quote "${path}")"; done)
 EOF
 }
 
@@ -567,16 +569,23 @@ proxmox_samba:
     allow_subnets:
 $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
   ssh:
-    enabled: true
+    enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_SSH}")
+  optional_packages:
+    avahi:
+      enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_AVAHI}")
+    ssh:
+      enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_SSH}")
+    ufw:
+      enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_UFW}")
   firewall:
     enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_UFW}")
   samba:
-    force_user: $(yaml.quote "${PROXMOX_SAMBA_FORCE_USER}")
+    force_user: $(yaml.scalar.or.null "${PROXMOX_SAMBA_FORCE_USER}")
     force_group: $(yaml.quote "${PROXMOX_SAMBA_FORCE_GROUP}")
     guest_mode: $(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")
   shares:
     explicit:
-$(for path in "${SELECTED_SHARES[@]}"; do printf '      - path: %s\n        guest_ok: true\n        writable: true\n' "$(yaml.quote "${path}")"; done)
+$(for path in "${SELECTED_SHARES[@]}"; do printf '      - path: %s\n        guest_ok: false\n        writable: true\n' "$(yaml.quote "${path}")"; done)
 EOF
   log "Prepared Samba extra-vars: ${SAMBA_EXTRA_VARS_PATH}"
 }

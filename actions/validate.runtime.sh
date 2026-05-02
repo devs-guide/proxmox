@@ -28,6 +28,7 @@ files=(
   "ansible/group_vars/proxmox.yml"
   "ansible/proxmox/helper/hardware.yml"
   "ansible/proxmox/vlan.yml"
+  "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.base.yml"
   "ansible/proxmox/container/samba.file.share.yml"
@@ -319,6 +320,29 @@ if ! grep -q 'sshd' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   exit 1
 fi
 echo "[validate.runtime][ok] Debian LXC host/base playbooks include template, pct, SSH, and light-hardening safeguards"
+
+echo "[validate.runtime] checking Debian LXC bootstrap reference playbook..."
+if ! grep -q 'pct create' "${ROOT}/ansible/proxmox/container/bootstrap/debian.create.yml"; then
+  echo "[validate.runtime][error] bootstrap/debian.create.yml must capture canonical pct create usage"
+  exit 1
+fi
+if ! grep -q 'proxmox_lxc' "${ROOT}/ansible/proxmox/container/bootstrap/debian.create.yml"; then
+  echo "[validate.runtime][error] bootstrap/debian.create.yml must define a proxmox_lxc variable model"
+  exit 1
+fi
+if ! grep -q 'ssh_public_keys_file' "${ROOT}/ansible/proxmox/container/bootstrap/debian.create.yml"; then
+  echo "[validate.runtime][error] bootstrap/debian.create.yml must retain SSH key bootstrap inputs"
+  exit 1
+fi
+if ! grep -q 'nameserver' "${ROOT}/ansible/proxmox/container/bootstrap/debian.create.yml"; then
+  echo "[validate.runtime][error] bootstrap/debian.create.yml must retain DNS bootstrap inputs"
+  exit 1
+fi
+if ! grep -q 'tags' "${ROOT}/ansible/proxmox/container/bootstrap/debian.create.yml"; then
+  echo "[validate.runtime][error] bootstrap/debian.create.yml must retain tag/bootstrap metadata inputs"
+  exit 1
+fi
+echo "[validate.runtime][ok] Debian LXC bootstrap reference playbook captures the broader create model"
 
 echo "[validate.runtime] checking hardware helper regression guards..."
 if grep -q "regex_search(' master (\\\\S+)', '\\\\1')" "${ROOT}/ansible/proxmox/helper/hardware.yml"; then

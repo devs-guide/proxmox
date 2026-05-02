@@ -19,12 +19,14 @@
         require_operator_selection: true
       defaults:
         rootfs_storage: "local-lvm"
-        rootfs_size_gb: 8
-        cores: 2
-        memory_mb: 2048
-        swap_mb: 512
-        bridge: "vmbr0"
+        rootfs_size_gb: 10
+        cores: 1
+        memory_mb: 512
+        swap_mb: 256
+        bridge: "vmbr1"
         ipv4_mode: "dhcp"
+        ipv4_cidr: null
+        gateway: null
         unprivileged: true
         nesting: false
         fuse: false
@@ -123,8 +125,8 @@
                 'bridge': proxmox_lxc_debian_defaults_effective.bridge,
                 'vlan_tag': None,
                 'ipv4_mode': proxmox_lxc_debian_defaults_effective.ipv4_mode,
-                'ipv4_cidr': None,
-                'gateway': None
+                'ipv4_cidr': proxmox_lxc_debian_defaults_effective.ipv4_cidr | default(None),
+                'gateway': proxmox_lxc_debian_defaults_effective.gateway | default(None)
               } | combine(proxmox_lxc_debian_selection.network | default({}), recursive=true)
             }}
           hardening: "{{ proxmox_lxc_debian_selection.hardening | default({}) }}"
@@ -236,11 +238,25 @@
         fail_msg: "Selected existing CTID {{ proxmox_lxc_debian_effective.ctid }} was not found."
       when: proxmox_lxc_debian_effective.operation == 'use_existing'
 
+    - name: Require static IPv4 details when static mode is selected
+      assert:
+        that:
+          - proxmox_lxc_debian_effective.network.ipv4_cidr is not none
+          - proxmox_lxc_debian_effective.network.ipv4_cidr | string | length > 0
+          - proxmox_lxc_debian_effective.network.gateway is not none
+          - proxmox_lxc_debian_effective.network.gateway | string | length > 0
+        fail_msg: "Static IPv4 mode requires both ipv4_cidr and gateway."
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
     - name: Build pct network string
       set_fact:
         proxmox_lxc_debian_net0: >-
           {{
             'name=eth0,bridge=' ~ proxmox_lxc_debian_effective.network.bridge
+            ~ ',type=veth'
+            ~ ',firewall=1'
             ~ (',tag=' ~ proxmox_lxc_debian_effective.network.vlan_tag
                if (proxmox_lxc_debian_effective.network.vlan_tag is not none
                    and proxmox_lxc_debian_effective.network.vlan_tag | string | length > 0)
@@ -289,6 +305,8 @@
           - "{{ '1' if proxmox_lxc_debian_effective.resources.unprivileged | bool else '0' }}"
           - -net0
           - "{{ proxmox_lxc_debian_net0 }}"
+          - -onboot
+          - "1"
       when: proxmox_lxc_debian_effective.operation == 'create'
 
     - name: Apply optional pct features

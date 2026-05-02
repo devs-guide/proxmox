@@ -23,15 +23,30 @@
         packages:
           - samba
           - samba-common-bin
-          - smbclient
-          - openssh-server
-          - avahi-daemon
           - acl
           - attr
-          - ufw
           - iproute2
           - util-linux
           - ca-certificates
+        preflight_packages:
+          - smbclient
+        optional_packages:
+          avahi:
+            enabled: true
+            packages:
+              - avahi-daemon
+          ssh:
+            enabled: false
+            packages:
+              - openssh-server
+          ufw:
+            enabled: false
+            packages:
+              - ufw
+          wsdd:
+            enabled: false
+            packages:
+              - wsdd2
         identity:
           workgroup: "WORKGROUP"
           netbios_name: null
@@ -45,8 +60,11 @@
             - 445
           ssh_port: 22
           bind_interfaces_only: true
+          interfaces:
+            - "lo"
+            - "eth0"
         ssh:
-          enabled: true
+          enabled: false
           include_path: "/etc/ssh/sshd_config.d/90-proxmox-samba.conf"
           permit_root_login: "yes"
           password_authentication: null
@@ -55,14 +73,14 @@
             - proxmox
             - agent
         firewall:
-          enabled: true
+          enabled: false
         samba:
-          guest_mode: true
-          map_to_guest: "Bad User"
-          force_user: "root"
+          guest_mode: false
+          map_to_guest: "Never"
+          force_user: null
           force_group: "storage"
-          create_mask: "0760"
-          directory_mask: "0760"
+          create_mask: "0660"
+          directory_mask: "0770"
           allocation_roundup_size: 4096
           min_protocol: "SMB3_02"
           max_protocol: "SMB3_11"
@@ -73,7 +91,7 @@
             - fruit
             - streams_xattr
           fruit_aapl: true
-          fruit_time_machine: true
+          fruit_time_machine: false
           fruit_resource: "xattr"
           fruit_nfs_aces: false
         shares:
@@ -188,6 +206,31 @@
               proxmox_samba_defaults_effective.shares
               | combine({'explicit': proxmox_samba_selection.shares | default([])}, recursive=true)
             }}
+        proxmox_samba_packages_effective: >-
+          {{
+            proxmox_samba_defaults_effective.packages
+            + proxmox_samba_defaults_effective.preflight_packages
+            + (
+              proxmox_samba_defaults_effective.optional_packages.avahi.packages
+              if proxmox_samba_defaults_effective.optional_packages.avahi.enabled | default(false) | bool
+              else []
+            )
+            + (
+              proxmox_samba_defaults_effective.optional_packages.ssh.packages
+              if proxmox_samba_effective.ssh.enabled | bool
+              else []
+            )
+            + (
+              proxmox_samba_defaults_effective.optional_packages.ufw.packages
+              if proxmox_samba_effective.firewall.enabled | bool
+              else []
+            )
+            + (
+              proxmox_samba_defaults_effective.optional_packages.wsdd.packages
+              if proxmox_samba_defaults_effective.optional_packages.wsdd.enabled | default(false) | bool
+              else []
+            )
+          }}
 
     - name: Assert at least one Samba share was selected
       assert:
@@ -214,7 +257,7 @@
 
         - name: Install Samba workload packages
           package:
-            name: "{{ proxmox_samba_defaults_effective.packages }}"
+            name: "{{ proxmox_samba_packages_effective }}"
             state: present
 
         - name: Ensure Samba force group exists
@@ -243,7 +286,6 @@
                   map to guest = {{ proxmox_samba_effective.samba.map_to_guest | lower }}
                   create mask = {{ proxmox_samba_effective.samba.create_mask }}
                   directory mask = {{ proxmox_samba_effective.samba.directory_mask }}
-                  force user = {{ proxmox_samba_effective.samba.force_user }}
                   force group = {{ proxmox_samba_effective.samba.force_group }}
                   allocation roundup size = {{ proxmox_samba_effective.samba.allocation_roundup_size }}
                   vfs objects = {{ proxmox_samba_effective.samba.macos_vfs_objects | join(' ') }}
@@ -258,18 +300,22 @@
                   disable netbios = {{ 'yes' if proxmox_samba_effective.samba.disable_netbios else 'no' }}
                   load printers = {{ 'yes' if proxmox_samba_effective.samba.load_printers else 'no' }}
                   bind interfaces only = {{ 'yes' if proxmox_samba_effective.network.bind_interfaces_only else 'no' }}
+                  interfaces = {{ proxmox_samba_effective.network.interfaces | join(' ') }}
                   log file = /var/log/samba/log.%m
                   logging = file
                   max log size = 1000
+              {% if proxmox_samba_effective.samba.force_user is not none and proxmox_samba_effective.samba.force_user | string | length > 0 %}
+                  force user = {{ proxmox_samba_effective.samba.force_user }}
+              {% endif %}
               {% for share in proxmox_samba_effective.shares.explicit %}
 
               [{{ (share.name | default((share.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}]
                   path = {{ share.path }}
                   browsable = yes
-                  guest ok = {{ 'yes' if share.guest_ok | default(true) else 'no' }}
+                  guest ok = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
                   writable = {{ 'yes' if share.writable | default(true) else 'no' }}
                   read only = {{ 'no' if share.writable | default(true) else 'yes' }}
-                  public = {{ 'yes' if share.guest_ok | default(true) else 'no' }}
+                  public = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
               {% endfor %}
 
         - name: Write Avahi SMB service advertisement
@@ -286,6 +332,7 @@
                   <port>{{ proxmox_samba_effective.network.smb_ports | first }}</port>
                 </service>
               </service-group>
+          when: proxmox_samba_defaults_effective.optional_packages.avahi.enabled | default(false) | bool
 
         - name: Write SSH include file
           copy:
@@ -338,7 +385,9 @@
         - name: Enable UFW rules for trusted subnets
           shell: |
             set -eu
+            {% if proxmox_samba_effective.ssh.enabled | bool %}
             ufw allow from "{{ item }}" to any port "{{ proxmox_samba_effective.network.ssh_port }}" proto tcp
+            {% endif %}
             ufw allow from "{{ item }}" to any port "{{ proxmox_samba_effective.network.smb_ports | first }}" proto tcp
           args:
             executable: /bin/bash
@@ -372,6 +421,7 @@
             name: avahi-daemon
             enabled: true
             state: restarted
+          when: proxmox_samba_defaults_effective.optional_packages.avahi.enabled | default(false) | bool
 
         - name: Capture listener state
           shell: |

@@ -1,0 +1,307 @@
+---
+- name: "[proxmox bootstrap]: canonical Debian LXC create model"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_lxc_bootstrap_apply: false
+    proxmox_lxc_bootstrap_node: "{{ ansible_facts.hostname }}"
+    proxmox_lxc_bootstrap_defaults:
+      vmid: 120
+      hostname: "samba"
+      pool: ""
+      ostemplate: "local:vztmpl/debian-13-standard_<exact-pveam-version>_amd64.tar.zst"
+      ostype: "debian"
+      arch: "amd64"
+      auth:
+        password: null
+        ssh_public_keys_file: null
+      security:
+        unprivileged: true
+        features:
+          nesting: false
+          fuse: false
+          keyctl: false
+          mknod: false
+          mount: []
+      rootfs:
+        storage: "local-lvm"
+        size_gb: 10
+        mountoptions: null
+        acl: true
+        quota: false
+        read_only: false
+        replicate: false
+        shared: false
+      cpu:
+        cores: 1
+        cpulimit: 0
+        cpuunits: 1024
+      memory:
+        memory_mb: 512
+        swap_mb: 256
+      network:
+        net0:
+          name: "eth0"
+          bridge: "vmbr1"
+          type: "veth"
+          hwaddr: null
+          ipv4: "dhcp"
+          gateway: null
+          ipv6: null
+          gateway6: null
+          firewall: true
+          vlan_tag: null
+          vlan_trunks: []
+          mtu: null
+          rate: null
+          link_down: false
+        additional: []
+      dns:
+        searchdomain: null
+        nameserver: null
+      startup:
+        start_after_created: true
+        onboot: true
+        order: null
+        up_delay: null
+        down_delay: null
+        protection: false
+      advanced:
+        console: true
+        cmode: "shell"
+        tty: 2
+        timezone: "host"
+        description: "Debian LXC bootstrap container"
+        hookscript: null
+        tags: []
+        template_flag: false
+        force_create: false
+        ignore_unpack_errors: false
+        debug: false
+      mountpoints: []
+      devices: []
+
+  pre_tasks:
+    - name: Check for Proxmox host marker
+      stat:
+        path: /etc/pve
+      register: proxmox_lxc_bootstrap_host_marker
+
+    - name: Check for pveversion command
+      command:
+        argv:
+          - sh
+          - -c
+          - command -v pveversion
+      register: proxmox_lxc_bootstrap_pveversion
+      changed_when: false
+      failed_when: false
+
+    - name: Require Proxmox host execution
+      assert:
+        that:
+          - proxmox_lxc_bootstrap_host_marker.stat.exists
+          - proxmox_lxc_bootstrap_pveversion.rc == 0
+        fail_msg: "This bootstrap playbook must run on a Proxmox host."
+
+    - name: Merge effective bootstrap model
+      set_fact:
+        proxmox_lxc_effective: >-
+          {{
+            proxmox_lxc_bootstrap_defaults
+            | combine(proxmox_lxc | default({}), recursive=true)
+          }}
+
+    - name: Require core bootstrap inputs
+      assert:
+        that:
+          - proxmox_lxc_effective.vmid | string | length > 0
+          - proxmox_lxc_effective.hostname | string | length > 0
+          - proxmox_lxc_effective.ostemplate | string | length > 0
+          - proxmox_lxc_effective.rootfs.storage | string | length > 0
+          - proxmox_lxc_effective.rootfs.size_gb | int > 0
+          - proxmox_lxc_effective.cpu.cores | int > 0
+          - proxmox_lxc_effective.memory.memory_mb | int > 0
+          - proxmox_lxc_effective.network.net0.bridge | string | length > 0
+        fail_msg: "The proxmox_lxc model is missing required create inputs."
+
+  tasks:
+    - name: Build rootfs option string
+      set_fact:
+        proxmox_lxc_rootfs_option: >-
+          {{
+            proxmox_lxc_effective.rootfs.storage ~ ':' ~ (proxmox_lxc_effective.rootfs.size_gb | string)
+            ~ (',mountoptions=' ~ proxmox_lxc_effective.rootfs.mountoptions
+               if (proxmox_lxc_effective.rootfs.mountoptions is not none and proxmox_lxc_effective.rootfs.mountoptions | string | length > 0)
+               else '')
+            ~ (',acl=1' if proxmox_lxc_effective.rootfs.acl | bool else '')
+            ~ (',quota=1' if proxmox_lxc_effective.rootfs.quota | bool else '')
+            ~ (',ro=1' if proxmox_lxc_effective.rootfs.read_only | bool else '')
+            ~ (',replicate=1' if proxmox_lxc_effective.rootfs.replicate | bool else '')
+            ~ (',shared=1' if proxmox_lxc_effective.rootfs.shared | bool else '')
+          }}
+
+    - name: Build feature flag string
+      set_fact:
+        proxmox_lxc_feature_string: >-
+          {{
+            [
+              'nesting=1' if proxmox_lxc_effective.security.features.nesting | bool else '',
+              'fuse=1' if proxmox_lxc_effective.security.features.fuse | bool else '',
+              'keyctl=1' if proxmox_lxc_effective.security.features.keyctl | bool else '',
+              'mknod=1' if proxmox_lxc_effective.security.features.mknod | bool else '',
+              (
+                'mount=' ~ (proxmox_lxc_effective.security.features.mount | join(';'))
+                if (proxmox_lxc_effective.security.features.mount | default([]) | length > 0)
+                else ''
+              )
+            ] | reject('equalto', '') | join(',')
+          }}
+
+    - name: Build net0 string
+      set_fact:
+        proxmox_lxc_net0_string: >-
+          {{
+            'name=' ~ proxmox_lxc_effective.network.net0.name
+            ~ ',bridge=' ~ proxmox_lxc_effective.network.net0.bridge
+            ~ ',type=' ~ proxmox_lxc_effective.network.net0.type
+            ~ (',hwaddr=' ~ proxmox_lxc_effective.network.net0.hwaddr
+               if (proxmox_lxc_effective.network.net0.hwaddr is not none and proxmox_lxc_effective.network.net0.hwaddr | string | length > 0)
+               else '')
+            ~ ',ip=' ~ proxmox_lxc_effective.network.net0.ipv4
+            ~ (',gw=' ~ proxmox_lxc_effective.network.net0.gateway
+               if (proxmox_lxc_effective.network.net0.gateway is not none and proxmox_lxc_effective.network.net0.gateway | string | length > 0)
+               else '')
+            ~ (',ip6=' ~ proxmox_lxc_effective.network.net0.ipv6
+               if (proxmox_lxc_effective.network.net0.ipv6 is not none and proxmox_lxc_effective.network.net0.ipv6 | string | length > 0)
+               else '')
+            ~ (',gw6=' ~ proxmox_lxc_effective.network.net0.gateway6
+               if (proxmox_lxc_effective.network.net0.gateway6 is not none and proxmox_lxc_effective.network.net0.gateway6 | string | length > 0)
+               else '')
+            ~ ',firewall=' ~ ('1' if proxmox_lxc_effective.network.net0.firewall | bool else '0')
+            ~ (',tag=' ~ proxmox_lxc_effective.network.net0.vlan_tag
+               if (proxmox_lxc_effective.network.net0.vlan_tag is not none and proxmox_lxc_effective.network.net0.vlan_tag | string | length > 0)
+               else '')
+            ~ (
+              ',trunks=' ~ (proxmox_lxc_effective.network.net0.vlan_trunks | join(';'))
+              if (proxmox_lxc_effective.network.net0.vlan_trunks | default([]) | length > 0)
+              else ''
+            )
+            ~ (',mtu=' ~ (proxmox_lxc_effective.network.net0.mtu | string)
+               if proxmox_lxc_effective.network.net0.mtu is not none
+               else '')
+            ~ (',rate=' ~ (proxmox_lxc_effective.network.net0.rate | string)
+               if proxmox_lxc_effective.network.net0.rate is not none
+               else '')
+            ~ ',link_down=' ~ ('1' if proxmox_lxc_effective.network.net0.link_down | bool else '0')
+          }}
+
+    - name: Build startup string
+      set_fact:
+        proxmox_lxc_startup_string: >-
+          {{
+            [
+              'order=' ~ (proxmox_lxc_effective.startup.order | string)
+              if proxmox_lxc_effective.startup.order is not none else '',
+              'up=' ~ (proxmox_lxc_effective.startup.up_delay | string)
+              if proxmox_lxc_effective.startup.up_delay is not none else '',
+              'down=' ~ (proxmox_lxc_effective.startup.down_delay | string)
+              if proxmox_lxc_effective.startup.down_delay is not none else ''
+            ] | reject('equalto', '') | join(',')
+          }}
+
+    - name: Build canonical pct create argv preview
+      set_fact:
+        proxmox_lxc_pct_create_argv: >-
+          {{
+            [
+              'pct', 'create',
+              (proxmox_lxc_effective.vmid | string),
+              proxmox_lxc_effective.ostemplate,
+              '--hostname', proxmox_lxc_effective.hostname,
+              '--ostype', proxmox_lxc_effective.ostype,
+              '--arch', proxmox_lxc_effective.arch,
+              '--rootfs', proxmox_lxc_rootfs_option,
+              '--cores', (proxmox_lxc_effective.cpu.cores | string),
+              '--cpulimit', (proxmox_lxc_effective.cpu.cpulimit | string),
+              '--cpuunits', (proxmox_lxc_effective.cpu.cpuunits | string),
+              '--memory', (proxmox_lxc_effective.memory.memory_mb | string),
+              '--swap', (proxmox_lxc_effective.memory.swap_mb | string),
+              '--unprivileged', ('1' if proxmox_lxc_effective.security.unprivileged | bool else '0'),
+              '--net0', proxmox_lxc_net0_string,
+              '--start', ('1' if proxmox_lxc_effective.startup.start_after_created | bool else '0'),
+              '--onboot', ('1' if proxmox_lxc_effective.startup.onboot | bool else '0'),
+              '--console', ('1' if proxmox_lxc_effective.advanced.console | bool else '0'),
+              '--cmode', proxmox_lxc_effective.advanced.cmode,
+              '--tty', (proxmox_lxc_effective.advanced.tty | string),
+              '--timezone', proxmox_lxc_effective.advanced.timezone,
+              '--description', proxmox_lxc_effective.advanced.description
+            ]
+            + (['--pool', proxmox_lxc_effective.pool] if (proxmox_lxc_effective.pool | string | length > 0) else [])
+            + (['--password', proxmox_lxc_effective.auth.password] if (proxmox_lxc_effective.auth.password is not none and proxmox_lxc_effective.auth.password | string | length > 0) else [])
+            + (['--ssh-public-keys', proxmox_lxc_effective.auth.ssh_public_keys_file] if (proxmox_lxc_effective.auth.ssh_public_keys_file is not none and proxmox_lxc_effective.auth.ssh_public_keys_file | string | length > 0) else [])
+            + (['--features', proxmox_lxc_feature_string] if (proxmox_lxc_feature_string | length > 0) else [])
+            + (['--nameserver', proxmox_lxc_effective.dns.nameserver] if (proxmox_lxc_effective.dns.nameserver is not none and proxmox_lxc_effective.dns.nameserver | string | length > 0) else [])
+            + (['--searchdomain', proxmox_lxc_effective.dns.searchdomain] if (proxmox_lxc_effective.dns.searchdomain is not none and proxmox_lxc_effective.dns.searchdomain | string | length > 0) else [])
+            + (['--startup', proxmox_lxc_startup_string] if (proxmox_lxc_startup_string | length > 0) else [])
+            + (['--protection', '1'] if proxmox_lxc_effective.startup.protection | bool else [])
+            + (['--hookscript', proxmox_lxc_effective.advanced.hookscript] if (proxmox_lxc_effective.advanced.hookscript is not none and proxmox_lxc_effective.advanced.hookscript | string | length > 0) else [])
+            + (['--tags', proxmox_lxc_effective.advanced.tags | join(',')] if (proxmox_lxc_effective.advanced.tags | default([]) | length > 0) else [])
+            + (['--template', '1'] if proxmox_lxc_effective.advanced.template_flag | bool else [])
+            + (['--force', '1'] if proxmox_lxc_effective.advanced.force_create | bool else [])
+            + (['--ignore-unpack-errors', '1'] if proxmox_lxc_effective.advanced.ignore_unpack_errors | bool else [])
+            + (['--debug', '1'] if proxmox_lxc_effective.advanced.debug | bool else [])
+          }}
+
+    - name: Show canonical bootstrap model
+      debug:
+        msg:
+          node: "{{ proxmox_lxc_bootstrap_node }}"
+          vmid: "{{ proxmox_lxc_effective.vmid }}"
+          hostname: "{{ proxmox_lxc_effective.hostname }}"
+          ostemplate: "{{ proxmox_lxc_effective.ostemplate }}"
+          rootfs: "{{ proxmox_lxc_rootfs_option }}"
+          net0: "{{ proxmox_lxc_net0_string }}"
+          startup: "{{ proxmox_lxc_startup_string }}"
+          mountpoints: "{{ proxmox_lxc_effective.mountpoints }}"
+          devices: "{{ proxmox_lxc_effective.devices }}"
+          pct_create_argv: "{{ proxmox_lxc_pct_create_argv }}"
+
+    - name: Execute pct create from canonical bootstrap model
+      command:
+        argv: "{{ proxmox_lxc_pct_create_argv }}"
+      when: proxmox_lxc_bootstrap_apply | bool
+
+    - name: Apply post-create mountpoints
+      command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_lxc_effective.vmid | string }}"
+          - "--mp{{ ansible_loop.index0 }}"
+          - "{{ item.host_path }},mp={{ item.container_path }},backup={{ '1' if item.backup | default(false) | bool else '0' }}"
+      loop: "{{ proxmox_lxc_effective.mountpoints | default([]) }}"
+      loop_control:
+        extended: true
+      when:
+        - proxmox_lxc_bootstrap_apply | bool
+        - (proxmox_lxc_effective.mountpoints | default([]) | length) > 0
+
+    - name: Apply post-create devices
+      command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_lxc_effective.vmid | string }}"
+          - "--dev{{ ansible_loop.index0 }}"
+          - "{{ item }}"
+      loop: "{{ proxmox_lxc_effective.devices | default([]) }}"
+      loop_control:
+        extended: true
+      when:
+        - proxmox_lxc_bootstrap_apply | bool
+        - (proxmox_lxc_effective.devices | default([]) | length) > 0

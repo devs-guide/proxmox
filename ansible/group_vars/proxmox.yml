@@ -75,15 +75,30 @@ proxmox_samba:
   packages:
     - samba
     - samba-common-bin
-    - smbclient
-    - openssh-server
-    - avahi-daemon
     - acl
     - attr
-    - ufw
     - iproute2
     - util-linux
     - ca-certificates
+  preflight_packages:
+    - smbclient
+  optional_packages:
+    avahi:
+      enabled: true
+      packages:
+        - avahi-daemon
+    ssh:
+      enabled: false
+      packages:
+        - openssh-server
+    ufw:
+      enabled: false
+      packages:
+        - ufw
+    wsdd:
+      enabled: false
+      packages:
+        - wsdd2
 
   identity:
     workgroup: "WORKGROUP"
@@ -99,10 +114,13 @@ proxmox_samba:
       - 445
     ssh_port: 22
     bind_interfaces_only: true
+    interfaces:
+      - "lo"
+      - "eth0"
     include_discovered_ipv4_networks: true
 
   ssh:
-    enabled: true
+    enabled: false
     include_path: "/etc/ssh/sshd_config.d/90-proxmox-samba.conf"
     permit_root_login: "yes"
     password_authentication: null
@@ -112,15 +130,15 @@ proxmox_samba:
       - agent
 
   firewall:
-    enabled: true
+    enabled: false
 
   samba:
-    guest_mode: true
-    map_to_guest: "Bad User"
-    force_user: "root"
+    guest_mode: false
+    map_to_guest: "Never"
+    force_user: null
     force_group: "storage"
-    create_mask: "0760"
-    directory_mask: "0760"
+    create_mask: "0660"
+    directory_mask: "0770"
     allocation_roundup_size: 4096
     min_protocol: "SMB3_02"
     max_protocol: "SMB3_11"
@@ -131,7 +149,7 @@ proxmox_samba:
       - fruit
       - streams_xattr
     fruit_aapl: true
-    fruit_time_machine: true
+    fruit_time_machine: false
     fruit_resource: "xattr"
     fruit_nfs_aces: false
 
@@ -164,48 +182,38 @@ proxmox_lxc_debian:
 
   defaults:
     rootfs_storage: "local-lvm"
-    rootfs_size_gb: 8
-    cores: 2
-    memory_mb: 2048
-    swap_mb: 512
-    bridge: "vmbr0"
+    rootfs_size_gb: 10
+    cores: 1
+    memory_mb: 512
+    swap_mb: 256
+    bridge: "vmbr1"
     ipv4_mode: "dhcp"
+    ipv4_cidr: null
+    gateway: null
     unprivileged: true
     nesting: false
     fuse: false
 
   package_profiles:
-    minimal:
-      - sudo
+    ultra_lean:
       - ca-certificates
-      - gnupg
-      - curl
       - wget
-      - openssh-server
       - python3
       - python3-apt
-      - net-tools
       - iproute2
-      - rsync
-      - tmux
-      - less
-      - nano
-    monitoring:
+      - util-linux
+    ultra_lean_monitoring:
       - htop
       - nmon
       - lsof
-      - pciutils
-      - usbutils
-      - lshw
-      - nvme-cli
       - smartmontools
-      - lm-sensors
 
   hardening:
     allow_subnets:
       - "10.0.0.0/24"
       - "192.168.0.0/16"
     enable_ufw: false
+    enable_ssh: false
 
   mounts:
     include_paths:
