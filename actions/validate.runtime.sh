@@ -208,6 +208,18 @@ if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must use /etc/ansible/proxmox/facts"
   exit 1
 fi
+if ! grep -q 'minimal: debian only' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must present the minimal Debian-only profile option"
+  exit 1
+fi
+if ! grep -q 'tools + debian' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must present the Debian tools profile option"
+  exit 1
+fi
+if grep -q 'ultra-lean samba-only' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must not present Samba-specific hardening labels"
+  exit 1
+fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
@@ -325,6 +337,10 @@ if ! grep -q 'openssh-server' "${ROOT}/ansible/proxmox/container/debian.base.yml
 fi
 if grep -q 'node' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must stay light and must not install Node tooling"
+  exit 1
+fi
+if ! grep -q 'profile in \['"'"'minimal'"'"', '"'"'tools'"'"'\]' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must expose the minimal/tools profile model"
   exit 1
 fi
 if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then

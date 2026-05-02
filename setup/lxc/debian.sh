@@ -62,7 +62,7 @@ FEATURE_OPERATION="${PROXMOX_LXC_DEBIAN_OPERATION:-}"
 FEATURE_INTERACTIVE="${PROXMOX_LXC_DEBIAN_INTERACTIVE:-1}"
 FEATURE_ALLOW_CONTAINER="${PROXMOX_LXC_DEBIAN_ALLOW_CONTAINER:-0}"
 FEATURE_ENABLE_UFW="${PROXMOX_LXC_DEBIAN_ENABLE_UFW:-0}"
-DEFAULT_HOSTNAME="${PROXMOX_LXC_DEBIAN_HOSTNAME:-samba}"
+DEFAULT_HOSTNAME="${PROXMOX_LXC_DEBIAN_HOSTNAME:-debian}"
 DEFAULT_CTID="${PROXMOX_LXC_DEBIAN_CTID:-}"
 DEFAULT_TEMPLATE="${PROXMOX_LXC_DEBIAN_TEMPLATE:-}"
 DEFAULT_ROOTFS_STORAGE="${PROXMOX_LXC_DEBIAN_STORAGE:-local-lvm}"
@@ -78,7 +78,7 @@ DEFAULT_GATEWAY="${PROXMOX_LXC_DEBIAN_GATEWAY:-}"
 DEFAULT_UNPRIVILEGED="${PROXMOX_LXC_DEBIAN_UNPRIVILEGED:-1}"
 DEFAULT_NESTING="${PROXMOX_LXC_DEBIAN_NESTING:-0}"
 DEFAULT_FUSE="${PROXMOX_LXC_DEBIAN_FUSE:-0}"
-DEFAULT_HARDENING_PROFILE="${PROXMOX_LXC_DEBIAN_PROFILE:-ultra_lean}"
+DEFAULT_HARDENING_PROFILE="${PROXMOX_LXC_DEBIAN_PROFILE:-minimal}"
 DEFAULT_ALLOW_SUBNETS="${PROXMOX_LXC_DEBIAN_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 DEFAULT_MOUNTS="${PROXMOX_LXC_DEBIAN_MOUNTS:-}"
 
@@ -857,24 +857,29 @@ collect.create.settings() {
   select.mountpoints.interactive
 }
 
+normalize.hardening.profile() {
+  case "${1:-}" in
+    ultra_lean) printf 'minimal\n' ;;
+    ultra_lean_monitoring|ultra_lean_tools) printf 'tools\n' ;;
+    minimal|tools) printf '%s\n' "${1}" ;;
+    *) printf '%s\n' "${1:-minimal}" ;;
+  esac
+}
+
 collect.hardening.selection() {
   local choice enable_ufw_choice
   choice="$(menu.tty "Select hardening profile:" \
-    "ultra-lean samba-only" \
-    "ultra-lean + monitoring" \
-    "skip hardening")"
+    "minimal: debian only" \
+    "tools + debian")"
   case "${choice}" in
-    1) SELECTED_HARDENING_PROFILE="ultra_lean" ;;
-    2) SELECTED_HARDENING_PROFILE="ultra_lean_monitoring" ;;
-    3) SELECTED_HARDENING_PROFILE="skip" ;;
+    1) SELECTED_HARDENING_PROFILE="minimal" ;;
+    2) SELECTED_HARDENING_PROFILE="tools" ;;
   esac
-  if [[ "${SELECTED_HARDENING_PROFILE}" != "skip" ]]; then
-    enable_ufw_choice="$(prompt.tty "Enable UFW inside the container? (yes|no)" "$(is.true "${FEATURE_ENABLE_UFW}" && printf yes || printf no)")"
-    if is.true "${enable_ufw_choice}"; then
-      SELECTED_ENABLE_UFW="true"
-    else
-      SELECTED_ENABLE_UFW="false"
-    fi
+  enable_ufw_choice="$(prompt.tty "Enable UFW inside the container? (yes|no)" "$(is.true "${FEATURE_ENABLE_UFW}" && printf yes || printf no)")"
+  if is.true "${enable_ufw_choice}"; then
+    SELECTED_ENABLE_UFW="true"
+  else
+    SELECTED_ENABLE_UFW="false"
   fi
 }
 
@@ -895,7 +900,7 @@ confirm.selection() {
   fi
   printf '  unprivileged:     %s\n' "${SELECTED_UNPRIVILEGED}" >&3
   printf '  nesting/fuse:     %s / %s\n' "${SELECTED_NESTING}" "${SELECTED_FUSE}" >&3
-  printf '  hardening:        %s\n' "${SELECTED_HARDENING_PROFILE:-skip}" >&3
+  printf '  hardening:        %s\n' "${SELECTED_HARDENING_PROFILE:-minimal}" >&3
   printf '  enable ufw:       %s\n' "${SELECTED_ENABLE_UFW}" >&3
   if ((${#SELECTED_MOUNT_HOST_PATHS[@]} > 0)); then
     local i
@@ -935,7 +940,7 @@ collect.operator.selection() {
     SELECTED_UNPRIVILEGED="$(bool.yaml "${DEFAULT_UNPRIVILEGED}")"
     SELECTED_NESTING="$(bool.yaml "${DEFAULT_NESTING}")"
     SELECTED_FUSE="$(bool.yaml "${DEFAULT_FUSE}")"
-    SELECTED_HARDENING_PROFILE="${DEFAULT_HARDENING_PROFILE}"
+    SELECTED_HARDENING_PROFILE="$(normalize.hardening.profile "${DEFAULT_HARDENING_PROFILE}")"
     SELECTED_ENABLE_UFW="$(bool.yaml "${FEATURE_ENABLE_UFW}")"
     [[ -n "${SELECTED_OPERATION}" ]] || {
       log.error "Interactive UI unavailable. Set PROXMOX_LXC_DEBIAN_OPERATION and related env vars."
@@ -1081,13 +1086,7 @@ run.debian.feature() {
   log "Running Proxmox Debian LXC feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${DEBIAN_LXC_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
 
-  if [[ "${SELECTED_HARDENING_PROFILE}" != "skip" ]]; then
-    run.feature.playbook "${DEBIAN_BASE_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
-  fi
-
-  if [[ "${SELECTED_HARDENING_PROFILE}" == "skip" ]]; then
-    log "Base hardening skipped per operator selection."
-  fi
+  run.feature.playbook "${DEBIAN_BASE_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
 
   log "Suggested next step:"
   log "pct exec ${SELECTED_CTID} -- bash -lc 'wget -qO- https://devs-guide.github.io/proxmox/setup/lxc/samba.sh | bash'"
