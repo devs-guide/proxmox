@@ -13,7 +13,8 @@
       vmid: 120
       hostname: "samba"
       pool: ""
-      ostemplate: "local:vztmpl/debian-13-standard_<exact-pveam-version>_amd64.tar.zst"
+      # Example only. Validate with `pveam available --section system` at runtime.
+      ostemplate: "local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst"
       ostype: "debian"
       arch: "amd64"
       auth:

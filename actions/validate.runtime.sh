@@ -200,6 +200,10 @@ if ! grep -q 'ansible/debian/netboot.yml' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must reference ansible/debian/netboot.yml for Debian web references"
   exit 1
 fi
+if ! grep -q 'LXC uses templates, not ISOs' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must keep ISO inventory informational only"
+  exit 1
+fi
 if ! grep -q 'This Debian LXC feature must be run on a Proxmox host, not inside a container.' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must reject container execution by default"
   exit 1
@@ -218,6 +222,26 @@ if ! grep -q 'tools + debian' "${ROOT}/setup/lxc/debian.sh"; then
 fi
 if grep -q 'ultra-lean samba-only' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must not present Samba-specific hardening labels"
+  exit 1
+fi
+if ! grep -q 'debian-10-standard_' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 10 policy template"
+  exit 1
+fi
+if ! grep -q 'debian-11-standard_' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 11 policy template"
+  exit 1
+fi
+if ! grep -q 'debian-12-standard_' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 12 policy template"
+  exit 1
+fi
+if ! grep -q 'debian-13-standard_' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 13 policy template"
+  exit 1
+fi
+if ! grep -q 'pveam available --section system' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must query live templates via pveam available --section system"
   exit 1
 fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
@@ -327,6 +351,10 @@ if ! grep -q 'rootfs_storage' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"
   echo "[validate.runtime][error] debian.lxc.yml must validate rootfs storage inputs"
   exit 1
 fi
+if ! grep -q 'full-upgrade' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must run full Debian system update before package profile install"
+  exit 1
+fi
 if ! grep -q 'pct' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must configure the container through pct exec"
   exit 1
@@ -349,6 +377,26 @@ if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/debian.base.yml
 fi
 if ! grep -q 'sshd' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must validate SSH configuration"
+  exit 1
+fi
+if ! grep -q 'template_policy:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] ansible/group_vars/proxmox.yml must define proxmox_lxc_debian.template_policy"
+  exit 1
+fi
+if ! grep -q 'debian-10-standard_10.7-1_amd64.tar.gz' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy missing Debian 10/Buster template"
+  exit 1
+fi
+if ! grep -q 'debian-11-standard_11.7-1_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy missing Debian 11/Bullseye template"
+  exit 1
+fi
+if ! grep -q 'debian-12-standard_12.12-1_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy missing Debian 12/Bookworm template"
+  exit 1
+fi
+if ! grep -q 'debian-13-standard_13.1-2_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy missing Debian 13/Trixie template"
   exit 1
 fi
 echo "[validate.runtime][ok] Debian LXC host/base playbooks include template, pct, SSH, and light-hardening safeguards"

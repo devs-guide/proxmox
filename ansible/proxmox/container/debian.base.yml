@@ -200,6 +200,20 @@
           - update
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
+    - name: Run full Debian system upgrade inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - env
+          - DEBIAN_FRONTEND=noninteractive
+          - apt-get
+          - -y
+          - full-upgrade
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
     - name: Install light Debian base packages inside the container
       command:
         argv: >-
