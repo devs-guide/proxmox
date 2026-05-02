@@ -1,5 +1,28 @@
 #!/usr/bin/env bash
 
+# Shared runtime defaults.
+#
+# The release bootstrap scripts define these before sourcing this helper, but
+# feature runners such as setup/lxc/debian.sh and setup/lxc/samba.sh also source
+# this file directly from GitHub Pages. Keep this helper safe under
+# `set -u` by assigning conservative defaults when the caller did not provide
+# them. Caller-provided values remain authoritative.
+: "${PYTHON_VERSION:=3.12.3}"
+: "${PYTHON_MAJOR_MINOR:=3.12}"
+: "${PYTHON_SOURCE_PREFIX:=/usr/local}"
+: "${PYTHON_BIN:=${PYTHON_SOURCE_PREFIX}/bin/python${PYTHON_MAJOR_MINOR}}"
+: "${PYTHON_SRC_DIR:=${PYTHON_SOURCE_PREFIX}/src/Python-${PYTHON_VERSION}}"
+: "${PYTHON_SRC_ARCHIVE:=${PYTHON_SRC_DIR}.tgz}"
+: "${PYTHON_SRC_URL:=https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz}"
+: "${ANSIBLE_VENV:=/opt/ansible-venv}"
+: "${ANSIBLE_VENV_BIN:=${ANSIBLE_VENV}/bin/ansible-playbook}"
+: "${ANSIBLE_CORE_VERSION:=2.20.5}"
+: "${ANSIBLE_CORE_SPEC:=ansible-core==${ANSIBLE_CORE_VERSION}}"
+: "${MANAGED_TARGET_PYTHON_HOME:=/opt/ansible/py312}"
+: "${MANAGED_TARGET_PYTHON_PATH:=${MANAGED_TARGET_PYTHON_HOME}/bin/python}"
+: "${MANAGED_TARGET_HANDOFF_MARKER:=${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready}"
+: "${PYTHON_BOOTSTRAP_BIN:=}"
+
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     log.error "Run as root."

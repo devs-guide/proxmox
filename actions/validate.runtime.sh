@@ -153,6 +153,14 @@ if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must use /etc/ansible/proxmox/facts"
   exit 1
 fi
+if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
+  exit 1
+fi
+if ! grep -q 'MANAGED_TARGET_PYTHON_HOME=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must define MANAGED_TARGET_PYTHON_HOME before sourcing release.common.sh"
+  exit 1
+fi
 echo "[validate.runtime][ok] setup/lxc/samba.sh exposes the structured Samba runner contract"
 
 echo "[validate.runtime] checking Proxmox Debian LXC runner contract..."
@@ -198,6 +206,14 @@ if ! grep -q 'This Debian LXC feature must be run on a Proxmox host, not inside 
 fi
 if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
+  exit 1
+fi
+if ! grep -q 'MANAGED_TARGET_PYTHON_HOME=' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must define MANAGED_TARGET_PYTHON_HOME before sourcing release.common.sh"
   exit 1
 fi
 echo "[validate.runtime][ok] setup/lxc/debian.sh exposes the structured Debian LXC runner contract"
@@ -436,6 +452,7 @@ echo "[validate.runtime] checking shell syntax..."
 bash -n "${ROOT}/bootstrap/release.6.4.sh"
 bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
+bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VERSION:?}" "${ANSIBLE_CORE_SPEC:?}" "${MANAGED_TARGET_PYTHON_HOME:?}" "${MANAGED_TARGET_PYTHON_PATH:?}"' _ "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
 bash -n "${ROOT}/setup/lxc/samba.sh"
