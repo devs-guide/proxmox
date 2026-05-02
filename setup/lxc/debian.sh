@@ -1238,9 +1238,18 @@ proxmox_lxc_debian_operator_selection:
     enable_ufw: $(bool.yaml "${SELECTED_ENABLE_UFW}")
     allow_subnets:
 $(for subnet in "${SELECTED_ALLOW_SUBNETS[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
-  mountpoints:
-$(for i in "${!SELECTED_MOUNT_HOST_PATHS[@]}"; do printf '    - host_path: %s\n      container_path: %s\n      backup: false\n' "$(yaml.quote "${SELECTED_MOUNT_HOST_PATHS[$i]}")" "$(yaml.quote "${SELECTED_MOUNT_CONTAINER_PATHS[$i]}")"; done)
 EOF
+  if ((${#SELECTED_MOUNT_HOST_PATHS[@]} > 0)); then
+    printf '  mountpoints:\n' >> "${SELECTION_PATH}"
+    local i
+    for i in "${!SELECTED_MOUNT_HOST_PATHS[@]}"; do
+      printf '    - host_path: %s\n      container_path: %s\n      backup: false\n' \
+        "$(yaml.quote "${SELECTED_MOUNT_HOST_PATHS[$i]}")" \
+        "$(yaml.quote "${SELECTED_MOUNT_CONTAINER_PATHS[$i]}")" >> "${SELECTION_PATH}"
+    done
+  else
+    printf '  mountpoints: []\n' >> "${SELECTION_PATH}"
+  fi
 }
 
 write.runtime.facts() {

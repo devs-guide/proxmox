@@ -30,6 +30,7 @@
         unprivileged: true
         nesting: false
         fuse: false
+        mountpoints: []
 
   pre_tasks:
     - name: Load manual Proxmox feature defaults
@@ -130,7 +131,11 @@
               } | combine(proxmox_lxc_debian_selection.network | default({}), recursive=true)
             }}
           hardening: "{{ proxmox_lxc_debian_selection.hardening | default({}) }}"
-          mountpoints: "{{ proxmox_lxc_debian_selection.mountpoints | default([]) }}"
+          mountpoints: >-
+            {{
+              proxmox_lxc_debian_selection.mountpoints
+              | default(proxmox_lxc_debian_defaults_effective.mountpoints | default([]), true)
+            }}
 
     - name: Capture current container status
       command:
@@ -376,10 +381,10 @@
           - "{{ proxmox_lxc_debian_effective.ctid }}"
           - "-mp{{ ansible_loop.index0 }}"
           - "{{ item.host_path }},mp={{ item.container_path }},backup={{ '1' if item.backup | default(false) | bool else '0' }}"
-      loop: "{{ proxmox_lxc_debian_effective.mountpoints }}"
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
       loop_control:
         extended: true
-      when: (proxmox_lxc_debian_effective.mountpoints | length) > 0
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
 
     - name: Start selected container
       command:

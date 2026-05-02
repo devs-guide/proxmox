@@ -256,6 +256,10 @@ if ! grep -q 'download_method:' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must persist template.download_method into the operator selection"
   exit 1
 fi
+if ! grep -q 'mountpoints: \[\]' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must write mountpoints: [] when no mountpoints are selected"
+  exit 1
+fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
@@ -265,6 +269,15 @@ if ! grep -q 'MANAGED_TARGET_PYTHON_HOME=' "${ROOT}/setup/lxc/debian.sh"; then
   exit 1
 fi
 echo "[validate.runtime][ok] setup/lxc/debian.sh exposes the structured Debian LXC runner contract"
+
+if ! grep -q 'mountpoints: \[\]' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must carry mountpoints: [] in safe defaults"
+  exit 1
+fi
+if ! grep -Fq 'proxmox_lxc_debian_effective.mountpoints | default([], true)' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml mountpoint loop must default null mountpoints to an empty list"
+  exit 1
+fi
 
 echo "[validate.runtime] checking VLAN playbook safety contract..."
 if ! grep -q 'proxmox_vlan_operator_selection' "${ROOT}/ansible/proxmox/vlan.yml"; then
