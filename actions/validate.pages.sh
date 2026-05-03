@@ -182,6 +182,8 @@ check_published_debian_lxc_policy() {
     'DEBIAN_LXC_TEMPLATE_BASE_URL' \
     'official URL fallback' \
     'show Debian ISO + web reference context' \
+    'Select access mode:' \
+    'test access (SSH + default users/passwords)' \
     'Web-based Debian netinst references from ansible/debian/netboot.yml'; do
     if ! grep -q -- "${needle}" "${published_runner}"; then
       echo "[validate.pages][error] published setup/lxc/debian.sh is stale or missing Debian LXC policy marker: ${needle}"
@@ -210,6 +212,12 @@ check_published_debian_base_bootstrap() {
     'TMPDIR=/tmp' \
     'LC_ALL=C.UTF-8' \
     '/tmp/user/0' \
+    'Ensure access users exist inside the container' \
+    'Capture Debian version details from the container' \
+    'Capture default IPv4 route from the container' \
+    'Capture container resolver nameservers' \
+    'Probe internet IPv4 connectivity from the container' \
+    'default_login_pairs' \
     'dpkg' \
     '--configure' \
     "'-f', 'install'"; do

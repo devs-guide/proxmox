@@ -51,6 +51,16 @@
           - openssh-server
         ufw:
           - ufw
+      access:
+        default_users:
+          - name: "agent"
+            password: "agent"
+          - name: "proxmox"
+            password: "proxmox"
+          - name: "root"
+            password: "root"
+        expected_dns: "10.0.0.1"
+        internet_probe_ipv4: "1.1.1.1"
 
   pre_tasks:
     - name: Load manual Proxmox feature defaults
@@ -138,7 +148,48 @@
             }}
           enable_ufw: "{{ proxmox_lxc_debian_selection.hardening.enable_ufw | default(false) | bool }}"
           allow_subnets: "{{ proxmox_lxc_debian_selection.hardening.allow_subnets | default(['10.0.0.0/24']) }}"
-          enable_ssh: "{{ proxmox_lxc_debian.hardening.enable_ssh | default(false) | bool }}"
+          access_profile: "{{ proxmox_lxc_debian_selection.hardening.access_profile | default(proxmox_lxc_debian.hardening.access_profile | default('local_only')) }}"
+          enable_ssh: "{{ proxmox_lxc_debian_selection.hardening.enable_ssh | default(proxmox_lxc_debian.hardening.enable_ssh | default(false), true) | bool }}"
+          access_users: >-
+            {{
+              proxmox_lxc_debian_selection.hardening.users
+              | default(
+                  proxmox_lxc_debian.hardening.access_users
+                  | default(proxmox_lxc_debian_defaults_safe.access.default_users, true),
+                  true
+                )
+            }}
+          expected_dns: >-
+            {{
+              proxmox_lxc_debian_selection.hardening.expected_dns
+              | default(
+                  proxmox_lxc_debian.hardening.expected_dns
+                  | default(proxmox_lxc_debian_defaults_safe.access.expected_dns, true),
+                  true
+                )
+            }}
+          internet_probe_ipv4: >-
+            {{
+              proxmox_lxc_debian_selection.hardening.internet_probe_ipv4
+              | default(
+                  proxmox_lxc_debian.hardening.internet_probe_ipv4
+                  | default(proxmox_lxc_debian_defaults_safe.access.internet_probe_ipv4, true),
+                  true
+                )
+            }}
+
+    - name: Normalize access-user lists for SSH and reporting
+      set_fact:
+        proxmox_lxc_debian_access_users_effective: "{{ proxmox_lxc_debian_base_effective.access_users | default([], true) }}"
+        proxmox_lxc_debian_ssh_allow_users: >-
+          {{
+            (
+              proxmox_lxc_debian_base_effective.access_users
+              | default([], true)
+              | map(attribute='name')
+              | list
+            ) | union(['root'])
+          }}
 
     - name: Ensure selected container is running before base profile
       command:
@@ -309,6 +360,51 @@
           }}
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
+    - name: Ensure access users exist inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "id -u {{ item.name | quote }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ item.name | quote }}"
+      loop: "{{ proxmox_lxc_debian_access_users_effective }}"
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.access_profile == 'test_access'
+
+    - name: Set access-user passwords inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "printf '%s:%s\\n' {{ item.name | quote }} {{ (item.password | default(item.name, true)) | quote }} | chpasswd"
+      loop: "{{ proxmox_lxc_debian_access_users_effective }}"
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.access_profile == 'test_access'
+
+    - name: Clear password expiry for access users inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "chage -I -1 -m 0 -M 99999 -E -1 -d $(date +%F) {{ item.name | quote }}"
+      loop: "{{ proxmox_lxc_debian_access_users_effective }}"
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.access_profile == 'test_access'
+
     - name: Ensure sshd include directory exists inside the container
       command:
         argv:
@@ -336,6 +432,7 @@
             cat > /etc/ssh/sshd_config.d/90-proxmox-debian-base.conf <<'EOF'
             Port 22
             PermitRootLogin yes
+            AllowUsers {{ proxmox_lxc_debian_ssh_allow_users | join(' ') }}
             EOF
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
@@ -389,6 +486,21 @@
             fi
       register: proxmox_lxc_debian_ssh_service_name
       changed_when: false
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.enable_ssh
+
+    - name: Enable SSH service inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - systemctl
+          - enable
+          - --now
+          - "{{ proxmox_lxc_debian_ssh_service_name.stdout | trim }}"
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
         - proxmox_lxc_debian_base_effective.enable_ssh
@@ -467,9 +579,102 @@
       register: proxmox_lxc_debian_base_ipv4
       changed_when: false
       failed_when: false
-      when:
-        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
-        - proxmox_lxc_debian_base_effective.enable_ssh
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Capture Debian version details from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - ". /etc/os-release && printf '%s %s (%s)\\n' \"${ID:-debian}\" \"${VERSION_ID:-unknown}\" \"${VERSION_CODENAME:-unknown}\""
+      register: proxmox_lxc_debian_base_version
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Capture default IPv4 route from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - ip
+          - route
+          - show
+          - default
+      register: proxmox_lxc_debian_base_route
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Capture container resolver nameservers
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - awk
+          - "/^nameserver[[:space:]]+/ {print $2}"
+          - /etc/resolv.conf
+      register: proxmox_lxc_debian_base_nameservers
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Probe internet IPv4 connectivity from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - ping
+          - -c
+          - "1"
+          - -W
+          - "2"
+          - "{{ proxmox_lxc_debian_base_effective.internet_probe_ipv4 }}"
+      register: proxmox_lxc_debian_base_internet_probe
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Probe DNS resolution from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - getent
+          - hosts
+          - debian.org
+      register: proxmox_lxc_debian_base_dns_probe
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Evaluate expected DNS resolver presence in container
+      set_fact:
+        proxmox_lxc_debian_expected_dns_present: >-
+          {{
+            (
+              proxmox_lxc_debian_base_nameservers.stdout_lines | default([])
+            ) | select('equalto', proxmox_lxc_debian_base_effective.expected_dns) | list | length > 0
+          }}
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Build default access login summary lines
+      set_fact:
+        proxmox_lxc_debian_login_pairs: "{{ (proxmox_lxc_debian_login_pairs | default([])) + [ item.name ~ '/' ~ (item.password | default(item.name, true)) ] }}"
+      loop: "{{ proxmox_lxc_debian_access_users_effective }}"
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
     - name: Persist Debian LXC base runtime facts
       copy:
@@ -481,9 +686,22 @@
             ctid: "{{ proxmox_lxc_debian_base_effective.ctid }}"
             hostname: "{{ proxmox_lxc_debian_base_effective.hostname | default('') }}"
             profile: "{{ proxmox_lxc_debian_base_effective.profile }}"
+            access_profile: "{{ proxmox_lxc_debian_base_effective.access_profile }}"
             enable_ufw: {{ proxmox_lxc_debian_base_effective.enable_ufw | bool | lower }}
             enable_ssh: {{ proxmox_lxc_debian_base_effective.enable_ssh | bool | lower }}
+            access_users: "{{ proxmox_lxc_debian_access_users_effective | map(attribute='name') | list }}"
+            default_login_pairs: "{{ proxmox_lxc_debian_login_pairs | default([]) }}"
+            default_password_rule: "password defaults to username unless explicitly overridden"
+            debian_version: "{{ proxmox_lxc_debian_base_version.stdout | default('') | trim }}"
             ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
+            default_route: "{{ proxmox_lxc_debian_base_route.stdout_lines | default([]) }}"
+            nameservers: "{{ proxmox_lxc_debian_base_nameservers.stdout_lines | default([]) }}"
+            expected_dns: "{{ proxmox_lxc_debian_base_effective.expected_dns }}"
+            expected_dns_present: {{ proxmox_lxc_debian_expected_dns_present | default(false) | bool | lower }}
+            internet_probe_ipv4: "{{ proxmox_lxc_debian_base_effective.internet_probe_ipv4 }}"
+            internet_probe_ok: {{ (proxmox_lxc_debian_base_internet_probe.rc | default(1)) == 0 }}
+            dns_probe_host: "debian.org"
+            dns_probe_ok: {{ (proxmox_lxc_debian_base_dns_probe.rc | default(1)) == 0 }}
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
     - name: Report Debian LXC base completion summary
@@ -491,7 +709,18 @@
         msg:
           ctid: "{{ proxmox_lxc_debian_base_effective.ctid }}"
           profile: "{{ proxmox_lxc_debian_base_effective.profile }}"
+          access_profile: "{{ proxmox_lxc_debian_base_effective.access_profile }}"
+          debian_version: "{{ proxmox_lxc_debian_base_version.stdout | default('') | trim }}"
+          default_logins: "{{ proxmox_lxc_debian_login_pairs | default([]) }}"
           enable_ufw: "{{ proxmox_lxc_debian_base_effective.enable_ufw }}"
           enable_ssh: "{{ proxmox_lxc_debian_base_effective.enable_ssh }}"
           ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
+          default_route: "{{ proxmox_lxc_debian_base_route.stdout_lines | default([]) }}"
+          nameservers: "{{ proxmox_lxc_debian_base_nameservers.stdout_lines | default([]) }}"
+          expected_dns: "{{ proxmox_lxc_debian_base_effective.expected_dns }}"
+          expected_dns_present: "{{ proxmox_lxc_debian_expected_dns_present | default(false) }}"
+          internet_probe_ipv4: "{{ proxmox_lxc_debian_base_effective.internet_probe_ipv4 }}"
+          internet_probe_ok: "{{ (proxmox_lxc_debian_base_internet_probe.rc | default(1)) == 0 }}"
+          dns_probe_host: "debian.org"
+          dns_probe_ok: "{{ (proxmox_lxc_debian_base_dns_probe.rc | default(1)) == 0 }}"
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']

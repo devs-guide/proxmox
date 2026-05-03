@@ -386,6 +386,19 @@
         extended: true
       when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
 
+    - name: Ensure selected container console settings support interactive login
+      command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - -console
+          - "1"
+          - -cmode
+          - shell
+          - -tty
+          - "2"
+
     - name: Start selected container
       command:
         argv:
@@ -407,6 +420,28 @@
       until: "'running' in (proxmox_lxc_debian_status_after.stdout | default(''))"
       retries: 10
       delay: 2
+
+    - name: Wait for DHCP IPv4 assignment on selected container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - --
+          - ip
+          - -o
+          - -4
+          - addr
+          - show
+          - scope
+          - global
+      register: proxmox_lxc_debian_ipv4_wait
+      changed_when: false
+      failed_when: false
+      until: "(proxmox_lxc_debian_ipv4_wait.stdout_lines | default([]) | length) > 0"
+      retries: 15
+      delay: 2
+      when: proxmox_lxc_debian_effective.network.ipv4_mode == 'dhcp'
 
     - name: Capture container IPv4 summary
       command:

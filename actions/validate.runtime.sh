@@ -204,6 +204,26 @@ if ! grep -q 'show Debian ISO + web reference context' "${ROOT}/setup/lxc/debian
   echo "[validate.runtime][error] setup/lxc/debian.sh must expose the combined Debian ISO/web reference context menu label"
   exit 1
 fi
+if ! grep -q 'Select access mode:' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must prompt for explicit access mode selection"
+  exit 1
+fi
+if ! grep -q 'test access (SSH + default users/passwords)' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must expose the SSH test-access mode option"
+  exit 1
+fi
+if ! grep -q 'access_profile:' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must persist hardening.access_profile into selection YAML"
+  exit 1
+fi
+if ! grep -q 'enable_ssh:' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must persist hardening.enable_ssh into selection YAML"
+  exit 1
+fi
+if ! grep -q 'default logins:' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must print default login guidance for test-access mode"
+  exit 1
+fi
 if grep -q 'show Debian web references' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh still contains the stale menu label 'show Debian web references'"
   exit 1
@@ -288,6 +308,14 @@ if ! grep -q 'mountpoints: \[\]' "${ROOT}/ansible/proxmox/container/debian.lxc.y
 fi
 if ! grep -Fq 'proxmox_lxc_debian_effective.mountpoints | default([], true)' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml mountpoint loop must default null mountpoints to an empty list"
+  exit 1
+fi
+if ! grep -q 'Ensure selected container console settings support interactive login' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must apply interactive console settings"
+  exit 1
+fi
+if ! grep -q 'Wait for DHCP IPv4 assignment on selected container' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must wait for DHCP assignment before final IPv4 summary capture"
   exit 1
 fi
 
@@ -440,6 +468,42 @@ if ! grep -q 'sshd' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must validate SSH configuration"
   exit 1
 fi
+if ! grep -q 'Ensure access users exist inside the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must provision access users for test-access mode"
+  exit 1
+fi
+if ! grep -q 'Set access-user passwords inside the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must apply default access credentials for test-access mode"
+  exit 1
+fi
+if ! grep -q 'AllowUsers' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must manage SSH AllowUsers for access users"
+  exit 1
+fi
+if ! grep -q 'Capture Debian version details from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must capture Debian version details"
+  exit 1
+fi
+if ! grep -q 'Capture default IPv4 route from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must capture default-route status"
+  exit 1
+fi
+if ! grep -q 'Capture container resolver nameservers' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must capture resolver nameserver status"
+  exit 1
+fi
+if ! grep -q 'Probe internet IPv4 connectivity from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must probe internet IPv4 connectivity"
+  exit 1
+fi
+if ! grep -q 'Probe DNS resolution from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must probe DNS resolution"
+  exit 1
+fi
+if ! grep -q 'default_login_pairs' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml runtime facts must include default login guidance"
+  exit 1
+fi
 if ! grep -q 'template_policy:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] ansible/group_vars/proxmox.yml must define proxmox_lxc_debian.template_policy"
   exit 1
@@ -466,6 +530,14 @@ if ! grep -q 'base_url: "https://download.proxmox.com/images/system"' "${ROOT}/a
 fi
 if ! grep -q 'fallback_download_method: "url"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] proxmox template policy must declare URL fallback download behavior"
+  exit 1
+fi
+if ! grep -q 'access_profile: "local_only"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox LXC hardening defaults must include access_profile"
+  exit 1
+fi
+if ! grep -q 'expected_dns: "10.0.0.1"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox LXC hardening defaults must include expected_dns"
   exit 1
 fi
 if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then

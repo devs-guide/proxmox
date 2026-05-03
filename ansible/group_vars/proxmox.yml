@@ -253,9 +253,16 @@ proxmox_lxc_debian:
       - tcpdump
 
   hardening:
+    access_profile: "local_only"
+    access_users:
+      - name: "agent"
+      - name: "proxmox"
+      - name: "root"
     allow_subnets:
       - "10.0.0.0/24"
       - "192.168.0.0/16"
+    expected_dns: "10.0.0.1"
+    internet_probe_ipv4: "1.1.1.1"
     enable_ufw: false
     enable_ssh: false
 

@@ -91,7 +91,11 @@ DEFAULT_UNPRIVILEGED="${PROXMOX_LXC_DEBIAN_UNPRIVILEGED:-1}"
 DEFAULT_NESTING="${PROXMOX_LXC_DEBIAN_NESTING:-0}"
 DEFAULT_FUSE="${PROXMOX_LXC_DEBIAN_FUSE:-0}"
 DEFAULT_HARDENING_PROFILE="${PROXMOX_LXC_DEBIAN_PROFILE:-minimal}"
+DEFAULT_ACCESS_PROFILE="${PROXMOX_LXC_DEBIAN_ACCESS_PROFILE:-local_only}"
+DEFAULT_ACCESS_USERS="${PROXMOX_LXC_DEBIAN_ACCESS_USERS:-agent proxmox root}"
 DEFAULT_ALLOW_SUBNETS="${PROXMOX_LXC_DEBIAN_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
+DEFAULT_EXPECTED_DNS="${PROXMOX_LXC_DEBIAN_EXPECTED_DNS:-10.0.0.1}"
+DEFAULT_INTERNET_PROBE_IPV4="${PROXMOX_LXC_DEBIAN_INTERNET_PROBE_IPV4:-1.1.1.1}"
 DEFAULT_MOUNTS="${PROXMOX_LXC_DEBIAN_MOUNTS:-}"
 
 declare -a CT_IDS=()
@@ -123,6 +127,7 @@ declare -a MOUNT_SOURCE=()
 declare -a MOUNT_FSTYPE=()
 declare -a MOUNT_CONTAINER_PATH=()
 declare -a SELECTED_ALLOW_SUBNETS=()
+declare -a SELECTED_ACCESS_USERS=()
 declare -a SELECTED_MOUNT_HOST_PATHS=()
 declare -a SELECTED_MOUNT_CONTAINER_PATHS=()
 
@@ -149,6 +154,8 @@ SELECTED_UNPRIVILEGED="true"
 SELECTED_NESTING="false"
 SELECTED_FUSE="false"
 SELECTED_HARDENING_PROFILE=""
+SELECTED_ACCESS_PROFILE="local_only"
+SELECTED_ENABLE_SSH="false"
 SELECTED_ENABLE_UFW="false"
 
 source.release.common() {
@@ -335,6 +342,18 @@ fstype.is.excluded() {
 
 normalize.allow.subnets() {
   read -r -a SELECTED_ALLOW_SUBNETS <<< "${DEFAULT_ALLOW_SUBNETS}"
+}
+
+normalize.access.users() {
+  local user
+  SELECTED_ACCESS_USERS=()
+  for user in ${DEFAULT_ACCESS_USERS}; do
+    [[ -n "${user}" ]] || continue
+    SELECTED_ACCESS_USERS+=("${user}")
+  done
+  if ((${#SELECTED_ACCESS_USERS[@]} == 0)); then
+    SELECTED_ACCESS_USERS=(agent proxmox root)
+  fi
 }
 
 use.local.feature.files() {
@@ -1087,8 +1106,15 @@ normalize.hardening.profile() {
   esac
 }
 
+normalize.access.profile() {
+  case "${1:-}" in
+    test_access|test|ssh|remote) printf 'test_access\n' ;;
+    *) printf 'local_only\n' ;;
+  esac
+}
+
 collect.hardening.selection() {
-  local choice enable_ufw_choice
+  local choice enable_ufw_choice access_choice
   choice="$(menu.tty "Select hardening profile:" \
     "minimal: debian only" \
     "tools + debian")"
@@ -1096,6 +1122,21 @@ collect.hardening.selection() {
     1) SELECTED_HARDENING_PROFILE="minimal" ;;
     2) SELECTED_HARDENING_PROFILE="tools" ;;
   esac
+
+  access_choice="$(menu.tty "Select access mode:" \
+    "local console only (no SSH user provisioning)" \
+    "test access (SSH + default users/passwords)")"
+  case "${access_choice}" in
+    1)
+      SELECTED_ACCESS_PROFILE="local_only"
+      SELECTED_ENABLE_SSH="false"
+      ;;
+    2)
+      SELECTED_ACCESS_PROFILE="test_access"
+      SELECTED_ENABLE_SSH="true"
+      ;;
+  esac
+
   enable_ufw_choice="$(prompt.tty "Enable UFW inside the container? (yes|no)" "$(is.true "${FEATURE_ENABLE_UFW}" && printf yes || printf no)")"
   if is.true "${enable_ufw_choice}"; then
     SELECTED_ENABLE_UFW="true"
@@ -1126,7 +1167,18 @@ confirm.selection() {
   printf '  unprivileged:     %s\n' "${SELECTED_UNPRIVILEGED}" >&3
   printf '  nesting/fuse:     %s / %s\n' "${SELECTED_NESTING}" "${SELECTED_FUSE}" >&3
   printf '  hardening:        %s\n' "${SELECTED_HARDENING_PROFILE:-minimal}" >&3
+  printf '  access profile:   %s\n' "${SELECTED_ACCESS_PROFILE}" >&3
+  printf '  enable ssh:       %s\n' "${SELECTED_ENABLE_SSH}" >&3
   printf '  enable ufw:       %s\n' "${SELECTED_ENABLE_UFW}" >&3
+  printf '  expected dns:     %s\n' "${DEFAULT_EXPECTED_DNS}" >&3
+  printf '  internet probe:   %s\n' "${DEFAULT_INTERNET_PROBE_IPV4}" >&3
+  if [[ "${SELECTED_ACCESS_PROFILE}" == "test_access" ]]; then
+    local user
+    printf '  default logins:\n' >&3
+    for user in "${SELECTED_ACCESS_USERS[@]}"; do
+      printf '    - %s / %s\n' "${user}" "${user}" >&3
+    done
+  fi
   if ((${#SELECTED_MOUNT_HOST_PATHS[@]} > 0)); then
     local i
     printf '  mountpoints:\n' >&3
@@ -1146,6 +1198,7 @@ confirm.selection() {
 
 collect.operator.selection() {
   normalize.allow.subnets
+  normalize.access.users
 
   if ! is.true "${FEATURE_INTERACTIVE}" || ! open.tty; then
     SELECTED_OPERATION="${FEATURE_OPERATION:-create}"
@@ -1166,6 +1219,12 @@ collect.operator.selection() {
     SELECTED_NESTING="$(bool.yaml "${DEFAULT_NESTING}")"
     SELECTED_FUSE="$(bool.yaml "${DEFAULT_FUSE}")"
     SELECTED_HARDENING_PROFILE="$(normalize.hardening.profile "${DEFAULT_HARDENING_PROFILE}")"
+    SELECTED_ACCESS_PROFILE="$(normalize.access.profile "${DEFAULT_ACCESS_PROFILE}")"
+    if [[ "${SELECTED_ACCESS_PROFILE}" == "test_access" ]]; then
+      SELECTED_ENABLE_SSH="true"
+    else
+      SELECTED_ENABLE_SSH="false"
+    fi
     SELECTED_ENABLE_UFW="$(bool.yaml "${FEATURE_ENABLE_UFW}")"
     [[ -n "${SELECTED_OPERATION}" ]] || {
       log.error "Interactive UI unavailable. Set PROXMOX_LXC_DEBIAN_OPERATION and related env vars."
@@ -1246,9 +1305,15 @@ proxmox_lxc_debian_operator_selection:
     gateway: $(yaml.scalar.or.null "${SELECTED_GATEWAY}")
   hardening:
     profile: $(yaml.scalar.or.null "${SELECTED_HARDENING_PROFILE}")
+    access_profile: $(yaml.scalar.or.null "${SELECTED_ACCESS_PROFILE}")
+    enable_ssh: $(bool.yaml "${SELECTED_ENABLE_SSH}")
     enable_ufw: $(bool.yaml "${SELECTED_ENABLE_UFW}")
     allow_subnets:
 $(for subnet in "${SELECTED_ALLOW_SUBNETS[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
+    users:
+$(for user in "${SELECTED_ACCESS_USERS[@]}"; do printf '      - name: %s\n        password: %s\n' "$(yaml.quote "${user}")" "$(yaml.quote "${user}")"; done)
+    expected_dns: $(yaml.scalar.or.null "${DEFAULT_EXPECTED_DNS}")
+    internet_probe_ipv4: $(yaml.scalar.or.null "${DEFAULT_INTERNET_PROBE_IPV4}")
 EOF
   if ((${#SELECTED_MOUNT_HOST_PATHS[@]} > 0)); then
     printf '  mountpoints:\n' >> "${SELECTION_PATH}"
