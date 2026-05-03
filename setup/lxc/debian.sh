@@ -724,15 +724,21 @@ print.discovery.summary() {
   log "Detected local Debian ISOs:"
   if ((${#ISO_FILE[@]} == 0)); then
     printf '  (no local Debian ISOs)\n' >&2
-    log "Configured Debian web references from ansible/debian/netboot.yml:"
-    local i
-    for i in "${!NETBOOT_LABEL[@]}"; do
-      printf '  %s | %s\n' "${NETBOOT_LABEL[$i]}" "${NETBOOT_URLS[$i]}" >&2
-    done
   else
     local i
     for i in "${!ISO_FILE[@]}"; do
       printf '  %s | %s\n' "${ISO_LABEL[$i]}" "${ISO_FILE[$i]}" >&2
+    done
+  fi
+
+  printf '\n' >&2
+  log "Configured Debian web references from ansible/debian/netboot.yml:"
+  local i
+  if ((${#NETBOOT_LABEL[@]} == 0)); then
+    printf '  (no Debian web references parsed)\n' >&2
+  else
+    for i in "${!NETBOOT_LABEL[@]}"; do
+      printf '  %s | %s\n' "${NETBOOT_LABEL[$i]}" "${NETBOOT_URLS[$i]}" >&2
     done
   fi
 }
@@ -750,7 +756,12 @@ show.iso.context() {
     done
   else
     printf '  No local Debian ISOs found.\n' >&3
-    printf '  Web-based Debian netinst references from ansible/debian/netboot.yml:\n' >&3
+  fi
+
+  printf '  Web-based Debian netinst references from ansible/debian/netboot.yml:\n' >&3
+  if ((${#NETBOOT_LABEL[@]} == 0)); then
+    printf '  (no Debian web references parsed)\n' >&3
+  else
     local i
     for i in "${!NETBOOT_LABEL[@]}"; do
       printf '  %s | %s\n' "${NETBOOT_LABEL[$i]}" "${NETBOOT_URLS[$i]}" >&3
@@ -870,7 +881,7 @@ select.template.interactive() {
     for idx in "${!TEMPLATE_LOCAL[@]}"; do
       options+=("${TEMPLATE_LOCAL[$idx]} | local")
     done
-    options+=("show Debian web references")
+    options+=("show Debian ISO + web reference context")
     options+=("abort")
     choice="$(menu.tty "Select local Debian LXC template:" "${options[@]}")"
     if ((choice == ${#options[@]})); then

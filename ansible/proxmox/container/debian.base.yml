@@ -187,38 +187,124 @@
           }}
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
-    - name: Update apt metadata inside the container
+    - name: Build deterministic apt runtime environment for pct exec
+      set_fact:
+        proxmox_lxc_debian_apt_env_argv:
+          - DEBIAN_FRONTEND=noninteractive
+          - DEBIAN_PRIORITY=critical
+          - APT_LISTCHANGES_FRONTEND=none
+          - LANG=C.UTF-8
+          - LC_ALL=C.UTF-8
+          - LC_CTYPE=C.UTF-8
+          - TMPDIR=/tmp
+          - TMP=/tmp
+          - TEMP=/tmp
+          - NEEDRESTART_MODE=a
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Prepare apt/dpkg runtime paths inside the container
       command:
         argv:
           - pct
           - exec
           - "{{ proxmox_lxc_debian_base_effective.ctid }}"
           - --
-          - env
-          - DEBIAN_FRONTEND=noninteractive
-          - apt-get
-          - update
+          - bash
+          - -lc
+          - |
+            install -d -m 1777 /tmp
+            install -d -m 1777 /var/tmp
+            install -d -m 0755 /run
+            install -d -m 1777 /run/lock
+            install -d -m 1777 /tmp/user
+            install -d -m 0700 /tmp/user/0
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Persist fallback locale inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - |
+            cat > /etc/default/locale <<'EOF'
+            LANG=C.UTF-8
+            EOF
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Disable apt-listchanges prompts during bootstrap apt runs
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - |
+            install -d -m 0755 /etc/apt/listchanges.conf.d
+            cat > /etc/apt/listchanges.conf.d/99-proxmox-lxc-noninteractive.conf <<'EOF'
+            [apt]
+            frontend=none
+            confirm=0
+            EOF
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Update apt metadata inside the container
+      command:
+        argv: >-
+          {{
+            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env']
+            + proxmox_lxc_debian_apt_env_argv
+            + ['apt-get', 'update']
+          }}
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Recover interrupted dpkg state inside the container
+      command:
+        argv: >-
+          {{
+            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env']
+            + proxmox_lxc_debian_apt_env_argv
+            + ['dpkg', '--configure', '-a']
+          }}
+      register: proxmox_lxc_debian_dpkg_recovery
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Recover broken apt dependencies inside the container
+      command:
+        argv: >-
+          {{
+            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env']
+            + proxmox_lxc_debian_apt_env_argv
+            + ['apt-get', '-y', '-f', 'install']
+          }}
+      register: proxmox_lxc_debian_apt_recovery
+      failed_when: false
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
     - name: Run full Debian system upgrade inside the container
       command:
-        argv:
-          - pct
-          - exec
-          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
-          - --
-          - env
-          - DEBIAN_FRONTEND=noninteractive
-          - apt-get
-          - -y
-          - full-upgrade
+        argv: >-
+          {{
+            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env']
+            + proxmox_lxc_debian_apt_env_argv
+            + ['apt-get', '-y', 'full-upgrade']
+          }}
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
     - name: Install light Debian base packages inside the container
       command:
         argv: >-
           {{
-            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-y', 'install']
+            ['pct', 'exec', proxmox_lxc_debian_base_effective.ctid, '--', 'env']
+            + proxmox_lxc_debian_apt_env_argv
+            + ['apt-get', '-y', 'install']
             + proxmox_lxc_debian_packages_effective
           }}
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']

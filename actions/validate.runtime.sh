@@ -200,6 +200,18 @@ if ! grep -q 'ansible/debian/netboot.yml' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must reference ansible/debian/netboot.yml for Debian web references"
   exit 1
 fi
+if ! grep -q 'show Debian ISO + web reference context' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must expose the combined Debian ISO/web reference context menu label"
+  exit 1
+fi
+if grep -q 'show Debian web references' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh still contains the stale menu label 'show Debian web references'"
+  exit 1
+fi
+if ! grep -q 'Web-based Debian netinst references from ansible/debian/netboot.yml' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must print Debian web netinst references in ISO context output"
+  exit 1
+fi
 if ! grep -q 'LXC uses templates, not ISOs' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must keep ISO inventory informational only"
   exit 1
@@ -378,6 +390,30 @@ if ! grep -q 'rootfs_storage' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"
 fi
 if ! grep -q 'full-upgrade' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must run full Debian system update before package profile install"
+  exit 1
+fi
+if ! grep -q 'APT_LISTCHANGES_FRONTEND=none' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must set APT_LISTCHANGES_FRONTEND=none for noninteractive bootstrap upgrades"
+  exit 1
+fi
+if ! grep -q 'TMPDIR=/tmp' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must enforce TMPDIR=/tmp for apt/dpkg bootstrap reliability"
+  exit 1
+fi
+if ! grep -q 'LC_ALL=C.UTF-8' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must enforce LC_ALL=C.UTF-8 for deterministic locale behavior"
+  exit 1
+fi
+if ! grep -q '/tmp/user/0' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must prepare /tmp/user/0 for package postinst helpers"
+  exit 1
+fi
+if ! grep -q 'dpkg.*--configure.*-a' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must attempt dpkg --configure -a recovery before full-upgrade"
+  exit 1
+fi
+if ! grep -q "apt-get', '-y', '-f', 'install" "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must attempt apt-get -y -f install recovery before full-upgrade"
   exit 1
 fi
 if ! grep -q 'pct' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then

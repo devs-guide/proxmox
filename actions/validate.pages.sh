@@ -180,15 +180,48 @@ check_published_debian_lxc_policy() {
     'debian-12-standard_12.12-1_amd64.tar.zst' \
     'debian-13-standard_13.1-2_amd64.tar.zst' \
     'DEBIAN_LXC_TEMPLATE_BASE_URL' \
-    'official URL fallback'; do
-    if ! grep -q "${needle}" "${published_runner}"; then
+    'official URL fallback' \
+    'show Debian ISO + web reference context' \
+    'Web-based Debian netinst references from ansible/debian/netboot.yml'; do
+    if ! grep -q -- "${needle}" "${published_runner}"; then
       echo "[validate.pages][error] published setup/lxc/debian.sh is stale or missing Debian LXC policy marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if grep -q 'show Debian web references' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/debian.sh still has stale menu label: show Debian web references"
+    rc=1
+  fi
+}
+
+check_published_debian_base_bootstrap() {
+  local published_base="${TMPDIR}/ansible/proxmox/container/debian.base.yml"
+  local needle
+
+  if [[ ! -f "${published_base}" ]]; then
+    echo "[validate.pages][error] published ansible/proxmox/container/debian.base.yml was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'APT_LISTCHANGES_FRONTEND=none' \
+    'TMPDIR=/tmp' \
+    'LC_ALL=C.UTF-8' \
+    '/tmp/user/0' \
+    'dpkg' \
+    '--configure' \
+    "'-f', 'install'"; do
+    if ! grep -q -- "${needle}" "${published_base}"; then
+      echo "[validate.pages][error] published debian.base.yml is stale or missing apt/dpkg bootstrap marker: ${needle}"
       rc=1
     fi
   done
 }
 
 check_published_debian_lxc_policy
+check_published_debian_base_bootstrap
 
 rm -rf "${TMPDIR}"
 exit "${rc}"
