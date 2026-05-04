@@ -8,6 +8,7 @@
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
+    proxmox_debian_ssh_defaults_path: "{{ playbook_dir }}/../../debian/ssh.yml"
     proxmox_feature_facts_dir: "{{ proxmox_feature_facts_dir | default('/etc/ansible/proxmox/facts') }}"
     proxmox_lxc_debian_selection_path: "{{ proxmox_lxc_debian.selection_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.selection.yml') }}"
     proxmox_lxc_debian_runtime_facts_path: "{{ proxmox_lxc_debian.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.yml') }}"
@@ -79,6 +80,10 @@
             proxmox_lxc_debian_defaults_safe.profiles
             | combine(proxmox_lxc_debian.package_profiles | default({}), recursive=true)
           }}
+
+    - name: Load shared Debian SSH defaults
+      include_vars:
+        file: "{{ proxmox_debian_ssh_defaults_path }}"
 
     - name: Assert Debian LXC feature was explicitly enabled
       assert:
@@ -177,6 +182,16 @@
                   true
                 )
             }}
+          ssh:
+            port: "{{ proxmox_lxc_debian.hardening.ssh.port | default(debian_ssh_defaults.server.port, true) }}"
+            include_dir: "{{ debian_ssh_defaults.server.include_dir }}"
+            include_path: "{{ proxmox_lxc_debian.hardening.ssh.include_path | default(debian_ssh_defaults.server.include_path, true) }}"
+            permit_root_login: "{{ proxmox_lxc_debian.hardening.ssh.permit_root_login | default(debian_ssh_defaults.server.permit_root_login, true) }}"
+            password_authentication: "{{ proxmox_lxc_debian.hardening.ssh.password_authentication | default(debian_ssh_defaults.server.password_authentication, true) }}"
+            kbd_interactive_authentication: "{{ proxmox_lxc_debian.hardening.ssh.kbd_interactive_authentication | default(debian_ssh_defaults.server.kbd_interactive_authentication, true) }}"
+            use_pam: "{{ proxmox_lxc_debian.hardening.ssh.use_pam | default(debian_ssh_defaults.server.use_pam, true) }}"
+            x11_forwarding: "{{ proxmox_lxc_debian.hardening.ssh.x11_forwarding | default(debian_ssh_defaults.server.x11_forwarding, true) }}"
+            pubkey_authentication: "{{ proxmox_lxc_debian.hardening.ssh.pubkey_authentication | default(debian_ssh_defaults.server.pubkey_authentication, true) }}"
 
     - name: Normalize access-user lists for SSH and reporting
       set_fact:
@@ -189,6 +204,14 @@
               | map(attribute='name')
               | list
             ) | union(['root'])
+          }}
+
+    - name: Build SSH login user summary
+      set_fact:
+        proxmox_lxc_debian_ssh_login_users: >-
+          {{
+            proxmox_lxc_debian_ssh_allow_users
+            | default(debian_ssh_defaults.access.allow_users, true)
           }}
 
     - name: Ensure selected container is running before base profile
@@ -405,6 +428,20 @@
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
         - proxmox_lxc_debian_base_effective.access_profile == 'test_access'
 
+    - name: Ensure sshd_config includes managed include directory
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "grep -q '^Include /etc/ssh/sshd_config\\.d/\\*\\.conf$' /etc/ssh/sshd_config || printf '\\nInclude /etc/ssh/sshd_config.d/*.conf\\n' >> /etc/ssh/sshd_config"
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.enable_ssh
+
     - name: Ensure sshd include directory exists inside the container
       command:
         argv:
@@ -414,7 +451,21 @@
           - --
           - mkdir
           - -p
-          - /etc/ssh/sshd_config.d
+          - "{{ proxmox_lxc_debian_base_effective.ssh.include_dir }}"
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.enable_ssh
+
+    - name: Ensure SSH host keys exist inside the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - ssh-keygen
+          - -A
+      changed_when: false
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
         - proxmox_lxc_debian_base_effective.enable_ssh
@@ -429,10 +480,17 @@
           - bash
           - -lc
           - |
-            cat > /etc/ssh/sshd_config.d/90-proxmox-debian-base.conf <<'EOF'
-            Port 22
-            PermitRootLogin yes
-            AllowUsers {{ proxmox_lxc_debian_ssh_allow_users | join(' ') }}
+            cat > {{ proxmox_lxc_debian_base_effective.ssh.include_path | quote }} <<'EOF'
+            Port {{ proxmox_lxc_debian_base_effective.ssh.port }}
+            PermitRootLogin {{ proxmox_lxc_debian_base_effective.ssh.permit_root_login }}
+            PasswordAuthentication {{ proxmox_lxc_debian_base_effective.ssh.password_authentication }}
+            KbdInteractiveAuthentication {{ proxmox_lxc_debian_base_effective.ssh.kbd_interactive_authentication }}
+            UsePAM {{ proxmox_lxc_debian_base_effective.ssh.use_pam }}
+            X11Forwarding {{ proxmox_lxc_debian_base_effective.ssh.x11_forwarding }}
+            {% if proxmox_lxc_debian_base_effective.ssh.pubkey_authentication is not none %}
+            PubkeyAuthentication {{ proxmox_lxc_debian_base_effective.ssh.pubkey_authentication }}
+            {% endif %}
+            AllowUsers {{ proxmox_lxc_debian_ssh_login_users | join(' ') }}
             EOF
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
@@ -460,8 +518,9 @@
           - exec
           - "{{ proxmox_lxc_debian_base_effective.ctid }}"
           - --
-          - sshd
-          - -t
+          - bash
+          - -lc
+          - "if command -v sshd >/dev/null 2>&1; then sshd -t; else /usr/sbin/sshd -t; fi"
       changed_when: false
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
@@ -505,7 +564,7 @@
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
         - proxmox_lxc_debian_base_effective.enable_ssh
 
-    - name: Reload SSH service inside the container
+    - name: Restart SSH service inside the container
       command:
         argv:
           - pct
@@ -513,7 +572,7 @@
           - "{{ proxmox_lxc_debian_base_effective.ctid }}"
           - --
           - systemctl
-          - reload-or-restart
+          - restart
           - "{{ proxmox_lxc_debian_ssh_service_name.stdout | trim }}"
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
@@ -542,11 +601,45 @@
           - --
           - bash
           - -lc
-          - "ufw allow from {{ item }} to any port 22 proto tcp"
+          - "ufw allow from {{ item }} to any port {{ proxmox_lxc_debian_base_effective.ssh.port }} proto tcp"
       loop: "{{ proxmox_lxc_debian_base_effective.allow_subnets }}"
       when:
         - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
         - proxmox_lxc_debian_base_effective.enable_ufw
+
+    - name: Capture SSH service active state from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - systemctl
+          - is-active
+          - "{{ proxmox_lxc_debian_ssh_service_name.stdout | trim }}"
+      register: proxmox_lxc_debian_ssh_service_active
+      changed_when: false
+      failed_when: false
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.enable_ssh
+
+    - name: Capture SSH listener state from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "ss -lnt | awk 'NR == 1 || /:{{ proxmox_lxc_debian_base_effective.ssh.port }}([[:space:]]|$)/ {print}'"
+      register: proxmox_lxc_debian_ssh_listener_state
+      changed_when: false
+      failed_when: false
+      when:
+        - proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+        - proxmox_lxc_debian_base_effective.enable_ssh
 
     - name: Enable UFW inside the container
       command:
@@ -690,6 +783,11 @@
             enable_ufw: {{ proxmox_lxc_debian_base_effective.enable_ufw | bool | lower }}
             enable_ssh: {{ proxmox_lxc_debian_base_effective.enable_ssh | bool | lower }}
             access_users: "{{ proxmox_lxc_debian_access_users_effective | map(attribute='name') | list }}"
+            ssh_allow_users: "{{ proxmox_lxc_debian_ssh_login_users | default([]) }}"
+            ssh_include_path: "{{ proxmox_lxc_debian_base_effective.ssh.include_path }}"
+            ssh_service_name: "{{ proxmox_lxc_debian_ssh_service_name.stdout | default('') | trim }}"
+            ssh_service_active: "{{ proxmox_lxc_debian_ssh_service_active.stdout | default('') | trim }}"
+            ssh_listener_state: "{{ proxmox_lxc_debian_ssh_listener_state.stdout_lines | default([]) }}"
             default_login_pairs: "{{ proxmox_lxc_debian_login_pairs | default([]) }}"
             default_password_rule: "password defaults to username unless explicitly overridden"
             debian_version: "{{ proxmox_lxc_debian_base_version.stdout | default('') | trim }}"
@@ -714,6 +812,11 @@
           default_logins: "{{ proxmox_lxc_debian_login_pairs | default([]) }}"
           enable_ufw: "{{ proxmox_lxc_debian_base_effective.enable_ufw }}"
           enable_ssh: "{{ proxmox_lxc_debian_base_effective.enable_ssh }}"
+          ssh_allow_users: "{{ proxmox_lxc_debian_ssh_login_users | default([]) }}"
+          ssh_include_path: "{{ proxmox_lxc_debian_base_effective.ssh.include_path }}"
+          ssh_service_name: "{{ proxmox_lxc_debian_ssh_service_name.stdout | default('') | trim }}"
+          ssh_service_active: "{{ proxmox_lxc_debian_ssh_service_active.stdout | default('') | trim }}"
+          ssh_listener_state: "{{ proxmox_lxc_debian_ssh_listener_state.stdout_lines | default([]) }}"
           ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
           default_route: "{{ proxmox_lxc_debian_base_route.stdout_lines | default([]) }}"
           nameservers: "{{ proxmox_lxc_debian_base_nameservers.stdout_lines | default([]) }}"

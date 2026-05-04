@@ -25,6 +25,11 @@ GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 NETBOOT_FILE="netboot.yml"
 NETBOOT_URL="${PAGES_BASE_URL}/ansible/debian/${NETBOOT_FILE}"
 NETBOOT_PATH="${PLAYBOOK_DEBIAN_DIR}/${NETBOOT_FILE}"
+# Shared SSH defaults file consumed by ansible/proxmox/container/debian.base.yml:
+# ansible/debian/ssh.yml
+SSH_POLICY_FILE="ssh.yml"
+SSH_POLICY_URL="${PAGES_BASE_URL}/ansible/debian/${SSH_POLICY_FILE}"
+SSH_POLICY_PATH="${PLAYBOOK_DEBIAN_DIR}/${SSH_POLICY_FILE}"
 DEBIAN_LXC_TEMPLATE_POLICY_VERSION="2026-05-02"
 DEBIAN_LXC_TEMPLATE_BASE_URL="${PROXMOX_LXC_DEBIAN_TEMPLATE_BASE_URL:-https://download.proxmox.com/images/system}"
 DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)
@@ -364,12 +369,14 @@ use.local.feature.files() {
   if [[ -r "${repo_root}/ansible/${DEBIAN_LXC_PLAYBOOK_REL}" \
         && -r "${repo_root}/ansible/${DEBIAN_BASE_PLAYBOOK_REL}" \
         && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" \
-        && -r "${repo_root}/ansible/debian/${NETBOOT_FILE}" ]]; then
+        && -r "${repo_root}/ansible/debian/${NETBOOT_FILE}" \
+        && -r "${repo_root}/ansible/debian/${SSH_POLICY_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
     PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
     NETBOOT_PATH="${PLAYBOOK_DEBIAN_DIR}/${NETBOOT_FILE}"
+    SSH_POLICY_PATH="${PLAYBOOK_DEBIAN_DIR}/${SSH_POLICY_FILE}"
     DEBIAN_LXC_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_LXC_PLAYBOOK_REL}"
     DEBIAN_BASE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_BASE_PLAYBOOK_REL}"
     log "Using local feature files from ${repo_root}."
@@ -401,6 +408,7 @@ prepare.feature.files() {
   mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}" "${PLAYBOOK_DEBIAN_DIR}"
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
   fetch.feature.file "${NETBOOT_URL}" "${NETBOOT_PATH}"
+  fetch.feature.file "${SSH_POLICY_URL}" "${SSH_POLICY_PATH}"
   fetch.feature.file "${DEBIAN_LXC_PLAYBOOK_URL}" "${DEBIAN_LXC_PLAYBOOK_PATH}"
   fetch.feature.file "${DEBIAN_BASE_PLAYBOOK_URL}" "${DEBIAN_BASE_PLAYBOOK_PATH}"
 }

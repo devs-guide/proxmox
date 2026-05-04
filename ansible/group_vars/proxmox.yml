@@ -258,6 +258,15 @@ proxmox_lxc_debian:
       - name: "agent"
       - name: "proxmox"
       - name: "root"
+    ssh:
+      port: 22
+      include_path: "/etc/ssh/sshd_config.d/90-proxmox-debian.conf"
+      permit_root_login: "yes"
+      password_authentication: "yes"
+      kbd_interactive_authentication: "no"
+      use_pam: "yes"
+      x11_forwarding: "no"
+      pubkey_authentication: null
     allow_subnets:
       - "10.0.0.0/24"
       - "192.168.0.0/16"

@@ -1,0 +1,21 @@
+---
+# Shared Debian SSH policy defaults used by host/bootstrap flows and
+# Proxmox-managed LXC hardening.
+debian_ssh_defaults:
+  server:
+    port: 22
+    include_dir: "/etc/ssh/sshd_config.d"
+    include_path: "/etc/ssh/sshd_config.d/90-proxmox-debian.conf"
+    permit_root_login: "yes"
+    password_authentication: "yes"
+    kbd_interactive_authentication: "no"
+    use_pam: "yes"
+    x11_forwarding: "no"
+    pubkey_authentication: null
+  access:
+    allow_users:
+      - root
+      - proxmox
+      - agent
+  firewall:
+    manage_ufw_ssh_rules: true

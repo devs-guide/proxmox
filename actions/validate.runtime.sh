@@ -24,6 +24,7 @@ files=(
   "ansible/debian/install.packages.yml"
   "ansible/debian/netboot.yml"
   "ansible/debian/packages.yml"
+  "ansible/debian/ssh.yml"
   "ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml"
   "ansible/proxmox/helper/hardware.yml"
@@ -198,6 +199,10 @@ if ! grep -q -- '-e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/debian.
 fi
 if ! grep -q 'ansible/debian/netboot.yml' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must reference ansible/debian/netboot.yml for Debian web references"
+  exit 1
+fi
+if ! grep -q 'ansible/debian/ssh.yml' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must reference ansible/debian/ssh.yml for shared SSH policy defaults"
   exit 1
 fi
 if ! grep -q 'show Debian ISO + web reference context' "${ROOT}/setup/lxc/debian.sh"; then
@@ -478,6 +483,26 @@ if ! grep -q 'Set access-user passwords inside the container' "${ROOT}/ansible/p
 fi
 if ! grep -q 'AllowUsers' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must manage SSH AllowUsers for access users"
+  exit 1
+fi
+if ! grep -q 'PasswordAuthentication' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must manage PasswordAuthentication for SSH test access"
+  exit 1
+fi
+if ! grep -q 'Load shared Debian SSH defaults' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must load shared Debian SSH defaults from ansible/debian/ssh.yml"
+  exit 1
+fi
+if ! grep -q 'Ensure SSH host keys exist inside the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must generate SSH host keys for Debian LXC access"
+  exit 1
+fi
+if ! grep -q 'Restart SSH service inside the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must restart SSH after applying managed policy"
+  exit 1
+fi
+if ! grep -q 'ssh_listener_state' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml runtime facts must include SSH listener state"
   exit 1
 fi
 if ! grep -q 'Capture Debian version details from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then

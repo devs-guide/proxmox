@@ -18,6 +18,7 @@ FILES=(
   "ansible/debian/install.packages.yml:ansible/debian/install.packages.yml"
   "ansible/debian/netboot.yml:ansible/debian/netboot.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
+  "ansible/debian/ssh.yml:ansible/debian/ssh.yml"
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
@@ -217,6 +218,11 @@ check_published_debian_base_bootstrap() {
     'Capture default IPv4 route from the container' \
     'Capture container resolver nameservers' \
     'Probe internet IPv4 connectivity from the container' \
+    'Load shared Debian SSH defaults' \
+    'PasswordAuthentication' \
+    'Ensure SSH host keys exist inside the container' \
+    'Restart SSH service inside the container' \
+    'ssh_listener_state' \
     'default_login_pairs' \
     'dpkg' \
     '--configure' \
