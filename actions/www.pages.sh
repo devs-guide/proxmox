@@ -328,6 +328,7 @@ publish.ansible() {
     "--include=debian.packages.yml"   # package catalog (legacy path, used by 6.4 RC)
     "--include=debian/packages.yml"   # package catalog (current path under debian/)
     "--include=debian/netboot.yml"    # Debian web-reference catalog for container feature UI
+    "--include=debian/ssh.yml"        # shared Debian SSH policy for LXC test-access hardening
     "--include=debian/sources.trixie.yml" # Trixie sources play for 9.1+
   )
   local playbook_to_run
