@@ -49,6 +49,10 @@ Content policy:
   publishing changes, and validation/safety improvements.
 - Mention docs-only or prompt-only changes only when they materially affect the
   release workflow.
+- When a release adds or changes published runtime dependencies, explicitly note
+  the publish-contract and validation-script changes in `Changed` or `Fixed`.
+- If a release repaired a missing Pages artifact, describe it as a
+  publish/runtime mismatch rather than only a code-path bug.
 - Mention breaking changes only if they are real and verified.
 
 GitHub release attachment policy:

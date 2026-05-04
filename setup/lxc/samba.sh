@@ -620,7 +620,7 @@ main() {
   require.valid.mode
   require.debian.container
   require.container.not.host
-  ensure.managed.ansible
+  ensure.container.ansible
   prepare.feature.files
   run.samba.feature
 }

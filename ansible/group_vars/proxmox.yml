@@ -230,6 +230,7 @@ proxmox_lxc_debian:
       - curl
       - wget
       - python3
+      - python3-venv
       - python3-apt
       - net-tools
       - iproute2

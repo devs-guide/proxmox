@@ -26,6 +26,7 @@
           - curl
           - wget
           - python3
+          - python3-venv
           - python3-apt
           - net-tools
           - iproute2
@@ -674,6 +675,35 @@
       failed_when: false
       when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
 
+    - name: Capture system Python 3 version from the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - python3
+          - --version
+      register: proxmox_lxc_debian_base_system_python3
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
+    - name: Evaluate Samba runner bootstrap readiness in the container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_base_effective.ctid }}"
+          - --
+          - bash
+          - -lc
+          - "python3 -c 'import apt' && python3 -m venv --help >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v wget >/dev/null 2>&1 && test -r /etc/ssl/certs/ca-certificates.crt"
+      register: proxmox_lxc_debian_samba_runner_ready
+      changed_when: false
+      failed_when: false
+      when: proxmox_lxc_debian_base_effective.profile in ['minimal', 'tools']
+
     - name: Capture Debian version details from the container
       command:
         argv:
@@ -788,6 +818,8 @@
             ssh_service_name: "{{ proxmox_lxc_debian_ssh_service_name.stdout | default('') | trim }}"
             ssh_service_active: "{{ proxmox_lxc_debian_ssh_service_active.stdout | default('') | trim }}"
             ssh_listener_state: "{{ proxmox_lxc_debian_ssh_listener_state.stdout_lines | default([]) }}"
+            system_python3_version: "{{ proxmox_lxc_debian_base_system_python3.stdout | default('') | trim }}"
+            samba_runner_ready: {{ (proxmox_lxc_debian_samba_runner_ready.rc | default(1)) == 0 }}
             default_login_pairs: "{{ proxmox_lxc_debian_login_pairs | default([]) }}"
             default_password_rule: "password defaults to username unless explicitly overridden"
             debian_version: "{{ proxmox_lxc_debian_base_version.stdout | default('') | trim }}"
@@ -817,6 +849,8 @@
           ssh_service_name: "{{ proxmox_lxc_debian_ssh_service_name.stdout | default('') | trim }}"
           ssh_service_active: "{{ proxmox_lxc_debian_ssh_service_active.stdout | default('') | trim }}"
           ssh_listener_state: "{{ proxmox_lxc_debian_ssh_listener_state.stdout_lines | default([]) }}"
+          system_python3_version: "{{ proxmox_lxc_debian_base_system_python3.stdout | default('') | trim }}"
+          samba_runner_ready: "{{ (proxmox_lxc_debian_samba_runner_ready.rc | default(1)) == 0 }}"
           ipv4_summary: "{{ proxmox_lxc_debian_base_ipv4.stdout_lines | default([]) }}"
           default_route: "{{ proxmox_lxc_debian_base_route.stdout_lines | default([]) }}"
           nameservers: "{{ proxmox_lxc_debian_base_nameservers.stdout_lines | default([]) }}"

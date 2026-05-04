@@ -25,6 +25,9 @@ Recommendations:
 - Prefer `fix(pages):` for publish/workflow-only changes.
 - Prefer `release:<version> - ...` when the change is primarily release notes,
   release prompts, tagging flow, or GitHub release metadata.
+- Treat publish-wiring fixes as production fixes, not docs cleanup.
+- When a new runtime dependency was missing from Pages publication, prefer a
+  Pages-scoped `fix(...)` message if that is the primary repair.
 - Keep the subject compact, declarative, and under ~72 chars when practical.
 - Use present-tense verbs such as `add`, `align`, `fix`, `harden`, `publish`,
   `stabilize`, `update`.
@@ -38,3 +41,7 @@ Decision hints:
   docs scope.
 - If both exist, prefer the scope that best represents what the user would care
   about in `git log --oneline`.
+- Any new file fetched by a published runner should trigger review of
+  `actions/www.pages.sh`.
+- Any new publish dependency should usually imply matching updates in
+  `actions/validate.runtime.sh` and `actions/validate.pages.sh`.

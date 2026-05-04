@@ -118,6 +118,31 @@ ensure.managed.target.python() {
   PYTHON_BOOTSTRAP_BIN="${MANAGED_TARGET_PYTHON_PATH}"
 }
 
+ensure.container.python() {
+  export DEBIAN_FRONTEND=noninteractive
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BOOTSTRAP_BIN="$(command -v python3)"
+    log "Using existing container system Python: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+    return
+  fi
+
+  log "Installing container Python runtime prerequisites..."
+  apt-get update -y
+  apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+    python3-apt \
+    ca-certificates
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    log.error "python3 is still unavailable after installing container runtime prerequisites."
+    exit 1
+  fi
+
+  PYTHON_BOOTSTRAP_BIN="$(command -v python3)"
+  log "Using installed container system Python: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+}
+
 ensure.managed.ansible() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
@@ -138,6 +163,35 @@ ensure.managed.ansible() {
   "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
   "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
   log "Managed Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+}
+
+ensure.container.ansible() {
+  export DEBIAN_FRONTEND=noninteractive
+  if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
+    if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q "core ${ANSIBLE_CORE_VERSION}\$"; then
+      ensure.container.python
+      log "Using existing container Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+      return
+    fi
+    log "Existing container Ansible is out of policy; rebuilding venv..."
+    rm -rf "${ANSIBLE_VENV}"
+  fi
+
+  ensure.container.python
+
+  if ! "${PYTHON_BOOTSTRAP_BIN}" -m venv --help >/dev/null 2>&1; then
+    log "Installing python3-venv for container runtime..."
+    apt-get update -y
+    apt-get install -y --no-install-recommends python3-venv
+  fi
+
+  log "Creating container Ansible venv..."
+  mkdir -p "${ANSIBLE_VENV}"
+  "${PYTHON_BOOTSTRAP_BIN}" -m venv "${ANSIBLE_VENV}"
+  "${ANSIBLE_VENV}/bin/pip" install --upgrade pip setuptools wheel
+  "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
+  "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
+  log "Container Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
 }
 
 fetch.playlist() {

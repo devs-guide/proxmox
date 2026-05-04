@@ -162,6 +162,14 @@ if ! grep -q 'MANAGED_TARGET_PYTHON_HOME=' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must define MANAGED_TARGET_PYTHON_HOME before sourcing release.common.sh"
   exit 1
 fi
+if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must use the container-safe Ansible bootstrap helper"
+  exit 1
+fi
+if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must not force the managed-target Python bootstrap path inside the LXC"
+  exit 1
+fi
 echo "[validate.runtime][ok] setup/lxc/samba.sh exposes the structured Samba runner contract"
 
 echo "[validate.runtime] checking Proxmox Debian LXC runner contract..."
@@ -457,6 +465,10 @@ if ! grep -q 'openssh-server' "${ROOT}/ansible/proxmox/container/debian.base.yml
   echo "[validate.runtime][error] debian.base.yml must install openssh-server"
   exit 1
 fi
+if ! grep -q 'python3-venv' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must pre-seed python3-venv for container-local feature runners"
+  exit 1
+fi
 if grep -q 'node' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must stay light and must not install Node tooling"
   exit 1
@@ -503,6 +515,14 @@ if ! grep -q 'Restart SSH service inside the container' "${ROOT}/ansible/proxmox
 fi
 if ! grep -q 'ssh_listener_state' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml runtime facts must include SSH listener state"
+  exit 1
+fi
+if ! grep -q 'Capture system Python 3 version from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must capture container system Python version for Samba runtime handoff"
+  exit 1
+fi
+if ! grep -q 'samba_runner_ready' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml runtime facts must include Samba runner readiness"
   exit 1
 fi
 if ! grep -q 'Capture Debian version details from the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
@@ -563,6 +583,18 @@ if ! grep -q 'access_profile: "local_only"' "${ROOT}/ansible/group_vars/proxmox.
 fi
 if ! grep -q 'expected_dns: "10.0.0.1"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] proxmox LXC hardening defaults must include expected_dns"
+  exit 1
+fi
+if ! grep -q 'python3-venv' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox Debian LXC package defaults must include python3-venv"
+  exit 1
+fi
+if ! grep -q 'ensure.container.ansible()' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must expose a container-safe Ansible bootstrap helper"
+  exit 1
+fi
+if ! grep -q 'Using existing container system Python' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must prefer system python3 for container-local runners"
   exit 1
 fi
 if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then

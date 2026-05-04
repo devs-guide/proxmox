@@ -19,6 +19,13 @@ Required local checks before proposing the message:
 - `git diff --stat`
 - `git diff --cached --stat`
 - `git log -10 --oneline`
+- If the change adds, renames, or newly references a published runtime file
+  under `setup/`, `ansible/`, or `bootstrap/`, inspect:
+  - `actions/www.pages.sh`
+  - `actions/validate.runtime.sh`
+  - `actions/validate.pages.sh`
+- If publish or validation wiring was not updated where needed, warn that the
+  change is not release-safe yet.
 
 Selection policy:
 
@@ -27,6 +34,10 @@ Selection policy:
 - If the change is release-only metadata, prefer a release-scoped message.
 - If the change spans feature code plus validators, prefer the feature/fix scope
   that best represents the user-visible outcome.
+- If the diff is only a Pages publication or whitelist repair, prefer a
+  Pages-scoped message.
+- If the diff adds feature/runtime files plus the required publish wiring,
+  scope the message to the user-visible feature rather than only Pages.
 
 Current repo patterns observed in recent history:
 

@@ -165,6 +165,32 @@ check_setup_feature_refs "setup/vlan.sh"
 check_setup_feature_refs "setup/lxc/debian.sh"
 check_setup_feature_refs "setup/lxc/samba.sh"
 
+check_published_samba_runner_policy() {
+  local published_runner="${TMPDIR}/setup/lxc/samba.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/lxc/samba.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'ensure.container.ansible' \
+    'Container Ansible ready' \
+    'Using existing container system Python'; do
+    if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
+      echo "[validate.pages][error] published Samba/container runtime path is stale or missing marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if grep -q 'ensure.managed.ansible' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/samba.sh still uses the heavy managed-target Ansible bootstrap path"
+    rc=1
+  fi
+}
+
 check_published_debian_lxc_policy() {
   local published_runner="${TMPDIR}/setup/lxc/debian.sh"
   local needle
@@ -222,6 +248,9 @@ check_published_debian_base_bootstrap() {
     'PasswordAuthentication' \
     'Ensure SSH host keys exist inside the container' \
     'Restart SSH service inside the container' \
+    'Capture system Python 3 version from the container' \
+    'samba_runner_ready' \
+    'python3-venv' \
     'ssh_listener_state' \
     'default_login_pairs' \
     'dpkg' \
@@ -234,6 +263,7 @@ check_published_debian_base_bootstrap() {
   done
 }
 
+check_published_samba_runner_policy
 check_published_debian_lxc_policy
 check_published_debian_base_bootstrap
 
