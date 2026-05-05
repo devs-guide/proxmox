@@ -407,8 +407,20 @@ if ! grep -q 'Wait for DHCP IPv4 assignment on selected container' "${ROOT}/ansi
   echo "[validate.runtime][error] debian.lxc.yml must wait for DHCP assignment before final IPv4 summary capture"
   exit 1
 fi
-if ! grep -q 'Normalize static IPv4 input for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+if ! grep -q 'Initialize static IPv4 CIDR fact for DHCP-safe create flow' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must initialize static IPv4 state before the DHCP/static branch"
+  exit 1
+fi
+if ! grep -q 'Normalize static IPv4 source input for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml must normalize static IPv4 input before pct create"
+  exit 1
+fi
+if ! grep -q 'Resolve static IPv4 CIDR for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must resolve static IPv4 CIDR in a separate set_fact task"
+  exit 1
+fi
+if grep -q 'proxmox_lxc_debian_ipv4_parts:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must not derive static IPv4 CIDR from same-task intermediate set_fact vars"
   exit 1
 fi
 if ! grep -q 'Assert normalized static IPv4 and gateway syntax before pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then

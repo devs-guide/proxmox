@@ -297,6 +297,22 @@ prompt.gateway.ipv4() {
   done
 }
 
+normalize.selected.static.network() {
+  local normalized=""
+  [[ "${SELECTED_IPV4_MODE:-}" == "static" ]] || return 0
+
+  if ! normalized="$(normalize.static.ipv4.input "${SELECTED_IPV4_CIDR:-}")"; then
+    log.error "Static IPv4 requires a valid IPv4 or IPv4/CIDR value. Received: ${SELECTED_IPV4_CIDR:-unset}"
+    exit 1
+  fi
+  SELECTED_IPV4_CIDR="${normalized}"
+
+  if ! ipv4.address.is.valid "${SELECTED_GATEWAY:-}"; then
+    log.error "Static IPv4 requires a valid gateway IPv4 address. Received: ${SELECTED_GATEWAY:-unset}"
+    exit 1
+  fi
+}
+
 require.valid.mode() {
   case "${FEATURE_MODE}" in
     preflight|create|harden|apply) ;;
@@ -1284,6 +1300,7 @@ collect.create.settings() {
     SELECTED_IPV4_CIDR=""
     SELECTED_GATEWAY=""
   fi
+  normalize.selected.static.network
   if is.true "$(prompt.tty "Create as unprivileged container? (yes|no)" "$(is.true "${DEFAULT_UNPRIVILEGED}" && printf yes || printf no)")"; then
     SELECTED_UNPRIVILEGED="true"
   else
@@ -1443,6 +1460,7 @@ collect.operator.selection() {
     if [[ "${SELECTED_OPERATION}" == "use_existing" ]]; then
       SELECTED_EXISTING_CTID="${SELECTED_CTID}"
     fi
+    normalize.selected.static.network
     if [[ -n "${DEFAULT_MOUNTS}" ]]; then
       apply.mount.selection.defaults
     fi

@@ -302,38 +302,39 @@
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
 
-    - name: Normalize static IPv4 input for pct create
+    - name: Initialize static IPv4 CIDR fact for DHCP-safe create flow
       set_fact:
-        proxmox_lxc_debian_ipv4_input: "{{ proxmox_lxc_debian_effective.network.ipv4_cidr | default('') | trim }}"
-        proxmox_lxc_debian_ipv4_parts: >-
+        proxmox_lxc_debian_ipv4_cidr_effective: null
+
+    - name: Normalize static IPv4 source input for pct create
+      set_fact:
+        proxmox_lxc_debian_ipv4_input: >-
           {{
-            (proxmox_lxc_debian_ipv4_input | regex_replace('\\s*/\\s*', '/')).split('/')
-            if proxmox_lxc_debian_ipv4_input | length > 0
-            else []
+            proxmox_lxc_debian_effective.network.ipv4_cidr
+            | default('', true)
+            | string
+            | trim
+            | regex_replace('\\s*/\\s*', '/')
           }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
+    - name: Resolve static IPv4 CIDR for pct create
+      set_fact:
         proxmox_lxc_debian_ipv4_cidr_effective: >-
           {{
-            (
-              (
-                (proxmox_lxc_debian_ipv4_parts[0] ~ '/24')
-                if proxmox_lxc_debian_ipv4_parts | length == 1
-                  and (proxmox_lxc_debian_ipv4_parts[0] | string)
-                    is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
-                else
-                  (
-                    proxmox_lxc_debian_ipv4_parts[0] ~ '/' ~ proxmox_lxc_debian_ipv4_parts[1]
-                    if (
-                      proxmox_lxc_debian_ipv4_parts | length == 2
-                      and proxmox_lxc_debian_ipv4_parts[0] | string is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
-                      and proxmox_lxc_debian_ipv4_parts[1] | string is match('^([0-9]|[12][0-9]|3[0-2])$')
-                    )
-                    else None
-                  )
-              )
-              if proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+            proxmox_lxc_debian_ipv4_input
+            if proxmox_lxc_debian_ipv4_input is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+            else (
+              proxmox_lxc_debian_ipv4_input ~ '/24'
+              if proxmox_lxc_debian_ipv4_input is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
               else None
             )
           }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
 
     - name: Assert normalized static IPv4 and gateway syntax before pct create
       assert:

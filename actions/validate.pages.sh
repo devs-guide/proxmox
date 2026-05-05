@@ -248,13 +248,20 @@ check_published_debian_lxc_playbook_policy() {
     'Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs' \
     'Assert selected mountpoints were attached to container config' \
     'Assert selected mountpoints are visible inside the running container' \
-    'Normalize static IPv4 input for pct create' \
+    'Initialize static IPv4 CIDR fact for DHCP-safe create flow' \
+    'Normalize static IPv4 source input for pct create' \
+    'Resolve static IPv4 CIDR for pct create' \
     'Assert normalized static IPv4 and gateway syntax before pct create'; do
     if ! grep -q -- "${needle}" "${published_lxc}"; then
       echo "[validate.pages][error] published debian.lxc.yml is stale or missing mountpoint marker: ${needle}"
       rc=1
     fi
   done
+
+  if grep -q 'proxmox_lxc_debian_ipv4_parts:' "${published_lxc}"; then
+    echo "[validate.pages][error] published debian.lxc.yml still has same-task static IPv4 intermediate facts"
+    rc=1
+  fi
 
   if grep -Fq "regex_search(\"'([^']+)'\", '\\1')" "${published_lxc}"; then
     echo "[validate.pages][error] published debian.lxc.yml still has list-prone rootfs capture-group regex path derivation"
