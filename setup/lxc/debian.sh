@@ -322,15 +322,15 @@ derive.iso.label() {
 sanitize.mount.label() {
   local label="$1"
   label="${label##*/}"
-  label="${label,,}"
-  label="$(printf '%s' "${label}" | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
-  [[ -n "${label}" ]] || label="share"
+  label="${label^^}"
+  label="$(printf '%s' "${label}" | sed -E 's/[^A-Z0-9._-]+/_/g; s/^_+//; s/_+$//')"
+  [[ -n "${label}" ]] || label="SHARE"
   printf '%s\n' "${label}"
 }
 
 mount.container.path.for() {
   local host_path="$1"
-  printf '/media/samba/%s\n' "$(sanitize.mount.label "${host_path}")"
+  printf '/media/%s\n' "$(sanitize.mount.label "${host_path}")"
 }
 
 path.is.excluded() {

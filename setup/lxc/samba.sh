@@ -354,7 +354,7 @@ discover.mounts() {
     MOUNT_WRITABLE+=("${writable}")
     MOUNT_XATTR+=("${xattr}")
     MOUNT_SHARE_NAME+=("${share_name}")
-  done < <(findmnt -R -n -o TARGET,SOURCE,FSTYPE,OPTIONS | awk '{target=$1; source=$2; fstype=$3; $1=$2=$3=""; sub(/^ +/,""); print target "|" source "|" fstype "|" $0}')
+  done < <(findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS | awk '{target=$1; source=$2; fstype=$3; $1=$2=$3=""; sub(/^ +/,""); print target "|" source "|" fstype "|" $0}')
 
   mkdir -p "${FACTS_DIR}"
   {
@@ -372,6 +372,8 @@ discover.mounts() {
         "${MOUNT_XATTR[$i]}"
     done
   } > "${SAMBA_MOUNTS_TSV}"
+
+  log "Discovered ${#MOUNT_PATH[@]} candidate share mountpoint(s)."
 }
 
 require.unique.share.names() {

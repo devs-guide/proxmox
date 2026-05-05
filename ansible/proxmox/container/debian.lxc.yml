@@ -444,11 +444,12 @@
               - proxmox_lxc_debian_rootfs_stat.stat.isdir
             fail_msg: "Mounted container rootfs path {{ proxmox_lxc_debian_rootfs_path }} was not found after pct mount."
 
-        - name: Ensure /media/samba exists inside mounted container rootfs
+        - name: Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs
           file:
-            path: "{{ proxmox_lxc_debian_rootfs_path }}/media/samba"
+            path: "{{ proxmox_lxc_debian_rootfs_path }}{{ item.container_path | dirname }}"
             state: directory
             mode: "0755"
+          loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
 
         - name: Ensure selected mountpoint targets exist inside mounted container rootfs
           file:

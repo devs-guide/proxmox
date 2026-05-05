@@ -180,6 +180,7 @@ check_published_samba_runner_policy() {
     'Container Ansible ready' \
     'Using existing container system Python' \
     'Continue with Samba base setup and no shares' \
+    'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' \
     'ensurepip --version'; do
     if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
       echo "[validate.pages][error] published Samba/container runtime path is stale or missing marker: ${needle}"
@@ -213,7 +214,7 @@ check_published_debian_lxc_policy() {
     'show Debian ISO + web reference context' \
     'Detected host mountpoint passthrough candidates:' \
     'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' \
-    '/media/samba/' \
+    "printf '/media/%s" \
     'Select access mode:' \
     'test access (SSH + default users/passwords)' \
     'Web-based Debian netinst references from ansible/debian/netboot.yml'; do
@@ -243,7 +244,7 @@ check_published_debian_lxc_playbook_policy() {
     'Mount selected container rootfs for mountpoint preparation' \
     'Resolve mounted container rootfs path as a scalar string' \
     'Assert mounted container rootfs path resolved to scalar string' \
-    'Ensure /media/samba exists inside mounted container rootfs' \
+    'Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs' \
     'Assert selected mountpoints were attached to container config' \
     'Assert selected mountpoints are visible inside the running container'; do
     if ! grep -q -- "${needle}" "${published_lxc}"; then

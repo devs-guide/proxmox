@@ -313,8 +313,8 @@ if ! grep -q 'mountpoints: \[\]' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must write mountpoints: [] when no mountpoints are selected"
   exit 1
 fi
-if ! grep -q '/media/samba/' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must derive container mount targets under /media/samba/"
+if ! grep -q "printf '/media/%s" "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must derive container mount targets under /media/{LABEL}"
   exit 1
 fi
 if ! grep -q 'Detected host mountpoint passthrough candidates:' "${ROOT}/setup/lxc/debian.sh"; then
@@ -331,6 +331,10 @@ if ! grep -q 'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, o
 fi
 if ! grep -q 'parse.mountpoint.selection' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must implement mountpoint multi-select parsing"
+  exit 1
+fi
+if ! grep -q 'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must scan the full container mount table for share discovery"
   exit 1
 fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
@@ -367,8 +371,8 @@ if ! grep -q 'Assert mounted container rootfs path resolved to scalar string' "$
   echo "[validate.runtime][error] debian.lxc.yml must guard against list-shaped rootfs path values"
   exit 1
 fi
-if ! grep -q 'Ensure /media/samba exists inside mounted container rootfs' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must create /media/samba inside the mounted CT rootfs"
+if ! grep -q 'Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must create parent directories for selected mountpoint targets inside the mounted CT rootfs"
   exit 1
 fi
 if ! grep -q 'Assert selected mountpoints were attached to container config' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
