@@ -241,6 +241,8 @@ check_published_debian_lxc_playbook_policy() {
 
   for needle in \
     'Mount selected container rootfs for mountpoint preparation' \
+    'Resolve mounted container rootfs path as a scalar string' \
+    'Assert mounted container rootfs path resolved to scalar string' \
     'Ensure /media/samba exists inside mounted container rootfs' \
     'Assert selected mountpoints were attached to container config' \
     'Assert selected mountpoints are visible inside the running container'; do
@@ -249,6 +251,11 @@ check_published_debian_lxc_playbook_policy() {
       rc=1
     fi
   done
+
+  if grep -Fq "regex_search(\"'([^']+)'\", '\\1')" "${published_lxc}"; then
+    echo "[validate.pages][error] published debian.lxc.yml still has list-prone rootfs capture-group regex path derivation"
+    rc=1
+  fi
 }
 
 check_published_debian_base_bootstrap() {

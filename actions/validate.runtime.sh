@@ -355,6 +355,18 @@ if ! grep -q 'Mount selected container rootfs for mountpoint preparation' "${ROO
   echo "[validate.runtime][error] debian.lxc.yml must mount the CT rootfs before preparing bind-mount targets"
   exit 1
 fi
+if grep -Fq "regex_search(\"'([^']+)'\", '\\1')" "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must not derive rootfs path via capture-group regex that can return list-shaped output"
+  exit 1
+fi
+if ! grep -q 'Resolve mounted container rootfs path as a scalar string' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must resolve mounted rootfs path as a scalar string"
+  exit 1
+fi
+if ! grep -q 'Assert mounted container rootfs path resolved to scalar string' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must guard against list-shaped rootfs path values"
+  exit 1
+fi
 if ! grep -q 'Ensure /media/samba exists inside mounted container rootfs' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml must create /media/samba inside the mounted CT rootfs"
   exit 1

@@ -400,17 +400,37 @@
           register: proxmox_lxc_debian_pct_mount
           changed_when: proxmox_lxc_debian_pct_mount.rc == 0
 
-        - name: Derive mounted container rootfs path
+        - name: Derive default mounted container rootfs path
+          set_fact:
+            proxmox_lxc_debian_rootfs_path_default: "/var/lib/lxc/{{ proxmox_lxc_debian_effective.ctid }}/rootfs"
+
+        - name: Check default mounted container rootfs path
+          stat:
+            path: "{{ proxmox_lxc_debian_rootfs_path_default }}"
+          register: proxmox_lxc_debian_rootfs_default_stat
+
+        - name: Resolve mounted container rootfs path as a scalar string
           set_fact:
             proxmox_lxc_debian_rootfs_path: >-
               {{
-                (
+                proxmox_lxc_debian_rootfs_path_default
+                if proxmox_lxc_debian_rootfs_default_stat.stat.exists
+                else (
                   proxmox_lxc_debian_pct_mount.stdout
                   | default('')
-                  | regex_search("'([^']+)'", '\1')
+                  | regex_search('/var/lib/lxc/[0-9]+/rootfs')
+                  | default('', true)
                 )
-                | default('/var/lib/lxc/' ~ proxmox_lxc_debian_effective.ctid ~ '/rootfs', true)
               }}
+
+        - name: Assert mounted container rootfs path resolved to scalar string
+          assert:
+            that:
+              - proxmox_lxc_debian_rootfs_path is string
+              - proxmox_lxc_debian_rootfs_path | length > 0
+              - "'[' not in proxmox_lxc_debian_rootfs_path"
+              - "']' not in proxmox_lxc_debian_rootfs_path"
+            fail_msg: "Mounted container rootfs path could not be resolved as a scalar string. pct mount output={{ proxmox_lxc_debian_pct_mount.stdout | default('') }}"
 
         - name: Assert mounted container rootfs path exists
           stat:
