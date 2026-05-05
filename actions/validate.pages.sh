@@ -247,7 +247,9 @@ check_published_debian_lxc_playbook_policy() {
     'Assert mounted container rootfs path resolved to scalar string' \
     'Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs' \
     'Assert selected mountpoints were attached to container config' \
-    'Assert selected mountpoints are visible inside the running container'; do
+    'Assert selected mountpoints are visible inside the running container' \
+    'Normalize static IPv4 input for pct create' \
+    'Assert normalized static IPv4 and gateway syntax before pct create'; do
     if ! grep -q -- "${needle}" "${published_lxc}"; then
       echo "[validate.pages][error] published debian.lxc.yml is stale or missing mountpoint marker: ${needle}"
       rc=1

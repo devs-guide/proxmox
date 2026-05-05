@@ -302,6 +302,36 @@
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
 
+    - name: Normalize static IPv4 input for pct create
+      set_fact:
+        proxmox_lxc_debian_ipv4_cidr_effective: >-
+          {{
+            (
+              proxmox_lxc_debian_effective.network.ipv4_cidr
+              if (
+                proxmox_lxc_debian_effective.network.ipv4_cidr | string
+                | regex_search('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+              )
+              else (proxmox_lxc_debian_effective.network.ipv4_cidr ~ '/24')
+            )
+            if proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+            else None
+          }}
+
+    - name: Assert normalized static IPv4 and gateway syntax before pct create
+      assert:
+        that:
+          - proxmox_lxc_debian_ipv4_cidr_effective is not none
+          - (proxmox_lxc_debian_ipv4_cidr_effective | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+          - (proxmox_lxc_debian_effective.network.gateway | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+        fail_msg: >-
+          Static IPv4 mode requires a valid IPv4/CIDR and gateway for pct create.
+          normalized_ip={{ proxmox_lxc_debian_ipv4_cidr_effective | default('unset') }}
+          gateway={{ proxmox_lxc_debian_effective.network.gateway | default('unset') }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
     - name: Build pct network string
       set_fact:
         proxmox_lxc_debian_net0: >-
@@ -314,7 +344,7 @@
                    and proxmox_lxc_debian_effective.network.vlan_tag | string | length > 0)
                else '')
             ~ (
-              ',ip=' ~ proxmox_lxc_debian_effective.network.ipv4_cidr
+              ',ip=' ~ proxmox_lxc_debian_ipv4_cidr_effective
               ~ (',gw=' ~ proxmox_lxc_debian_effective.network.gateway
                  if (proxmox_lxc_debian_effective.network.gateway is not none
                      and proxmox_lxc_debian_effective.network.gateway | string | length > 0)

@@ -333,6 +333,14 @@ if ! grep -q 'parse.mountpoint.selection' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must implement mountpoint multi-select parsing"
   exit 1
 fi
+if ! grep -q 'normalize.static.ipv4.input' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must normalize bare static IPv4 input before selection write"
+  exit 1
+fi
+if ! grep -q 'prompt.static.ipv4.cidr' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must validate and normalize static IPv4 prompt input"
+  exit 1
+fi
 if ! grep -q 'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must scan the full container mount table for share discovery"
   exit 1
@@ -397,6 +405,14 @@ if ! grep -q 'Ensure selected container console settings support interactive log
 fi
 if ! grep -q 'Wait for DHCP IPv4 assignment on selected container' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml must wait for DHCP assignment before final IPv4 summary capture"
+  exit 1
+fi
+if ! grep -q 'Normalize static IPv4 input for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must normalize static IPv4 input before pct create"
+  exit 1
+fi
+if ! grep -q 'Assert normalized static IPv4 and gateway syntax before pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must validate normalized static IPv4 and gateway syntax before pct create"
   exit 1
 fi
 

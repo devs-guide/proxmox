@@ -223,6 +223,80 @@ bool.yaml() {
   fi
 }
 
+ipv4.octet.is.valid() {
+  local octet="${1:-}"
+  [[ "${octet}" =~ ^[0-9]+$ ]] || return 1
+  ((octet >= 0 && octet <= 255))
+}
+
+ipv4.address.is.valid() {
+  local value="${1:-}"
+  local a b c d
+  [[ "${value}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  a="${BASH_REMATCH[1]}"
+  b="${BASH_REMATCH[2]}"
+  c="${BASH_REMATCH[3]}"
+  d="${BASH_REMATCH[4]}"
+  ipv4.octet.is.valid "${a}" &&
+    ipv4.octet.is.valid "${b}" &&
+    ipv4.octet.is.valid "${c}" &&
+    ipv4.octet.is.valid "${d}"
+}
+
+ipv4.cidr.is.valid() {
+  local value="${1:-}"
+  local address prefix
+  [[ "${value}" =~ ^([^/]+)/([0-9]+)$ ]] || return 1
+  address="${BASH_REMATCH[1]}"
+  prefix="${BASH_REMATCH[2]}"
+  ipv4.address.is.valid "${address}" || return 1
+  [[ "${prefix}" =~ ^[0-9]+$ ]] || return 1
+  ((prefix >= 0 && prefix <= 32))
+}
+
+normalize.static.ipv4.input() {
+  local value="${1:-}"
+  value="$(printf '%s' "${value}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if ipv4.cidr.is.valid "${value}"; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+  if ipv4.address.is.valid "${value}"; then
+    printf '%s/24\n' "${value}"
+    return 0
+  fi
+  return 1
+}
+
+prompt.static.ipv4.cidr() {
+  local default_value="${1:-}"
+  local answer normalized
+  while true; do
+    answer="$(prompt.tty "Enter IPv4 CIDR" "${default_value}")"
+    if normalized="$(normalize.static.ipv4.input "${answer}")"; then
+      if [[ "${normalized}" != "${answer}" ]]; then
+        printf 'Normalized static IPv4 to %s\n' "${normalized}" >&3
+      fi
+      printf '%s\n' "${normalized}"
+      return 0
+    fi
+    printf 'Invalid IPv4 input. Use `10.0.0.10` or `10.0.0.10/24`.\n' >&3
+  done
+}
+
+prompt.gateway.ipv4() {
+  local default_value="${1:-}"
+  local answer
+  while true; do
+    answer="$(prompt.tty "Enter gateway" "${default_value}")"
+    if ipv4.address.is.valid "${answer}"; then
+      printf '%s\n' "${answer}"
+      return 0
+    fi
+    printf 'Invalid gateway IPv4 address.\n' >&3
+  done
+}
+
 require.valid.mode() {
   case "${FEATURE_MODE}" in
     preflight|create|harden|apply) ;;
@@ -1204,8 +1278,8 @@ collect.create.settings() {
   SELECTED_VLAN_TAG="$(prompt.tty "Enter VLAN tag (blank for none)" "${DEFAULT_VLAN_TAG}")"
   SELECTED_IPV4_MODE="$(prompt.tty "Select IPv4 mode (dhcp|static)" "${DEFAULT_IPV4_MODE}")"
   if [[ "${SELECTED_IPV4_MODE}" == "static" ]]; then
-    SELECTED_IPV4_CIDR="$(prompt.tty "Enter IPv4 CIDR" "${DEFAULT_IPV4_CIDR}")"
-    SELECTED_GATEWAY="$(prompt.tty "Enter gateway" "${DEFAULT_GATEWAY}")"
+    SELECTED_IPV4_CIDR="$(prompt.static.ipv4.cidr "${DEFAULT_IPV4_CIDR}")"
+    SELECTED_GATEWAY="$(prompt.gateway.ipv4 "${DEFAULT_GATEWAY}")"
   else
     SELECTED_IPV4_CIDR=""
     SELECTED_GATEWAY=""
