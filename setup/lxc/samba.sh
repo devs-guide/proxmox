@@ -59,9 +59,9 @@ PROXMOX_SAMBA_ENABLE_AVAHI="${PROXMOX_SAMBA_ENABLE_AVAHI:-1}"
 PROXMOX_SAMBA_REQUIRE_XATTR="${PROXMOX_SAMBA_REQUIRE_XATTR:-0}"
 PROXMOX_SAMBA_WORKGROUP="${PROXMOX_SAMBA_WORKGROUP:-WORKGROUP}"
 PROXMOX_SAMBA_NETBIOS_NAME="${PROXMOX_SAMBA_NETBIOS_NAME:-}"
-PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-}"
-PROXMOX_SAMBA_FORCE_GROUP="${PROXMOX_SAMBA_FORCE_GROUP:-storage}"
-PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-0}"
+PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-root}"
+PROXMOX_SAMBA_FORCE_GROUP="${PROXMOX_SAMBA_FORCE_GROUP:-root}"
+PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-1}"
 PROXMOX_SAMBA_PROFILE="${PROXMOX_SAMBA_PROFILE:-modern_mac}"
 PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
@@ -584,7 +584,7 @@ EOF
     {
       printf '  shares:\n'
       for path in "${SELECTED_SHARES[@]}"; do
-        printf '    - path: %s\n      guest_ok: false\n      writable: true\n' "$(yaml.quote "${path}")"
+        printf '    - path: %s\n      guest_ok: %s\n      writable: true\n' "$(yaml.quote "${path}")" "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")"
       done
     } >> "${SAMBA_SELECTION_PATH}"
   else
@@ -731,7 +731,7 @@ EOF
       printf '  shares:\n'
       printf '    explicit:\n'
       for path in "${SELECTED_SHARES[@]}"; do
-        printf '      - path: %s\n        guest_ok: false\n        writable: true\n' "$(yaml.quote "${path}")"
+        printf '      - path: %s\n        guest_ok: %s\n        writable: true\n' "$(yaml.quote "${path}")" "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")"
       done
     } >> "${SAMBA_EXTRA_VARS_PATH}"
   else

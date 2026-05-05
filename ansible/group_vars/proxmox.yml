@@ -133,12 +133,14 @@ proxmox_samba:
     enabled: false
 
   samba:
-    guest_mode: false
-    map_to_guest: "Never"
-    force_user: null
-    force_group: "storage"
-    create_mask: "0660"
-    directory_mask: "0770"
+    guest_mode: true
+    map_to_guest: "Bad User"
+    force_user: "root"
+    force_group: "root"
+    create_mask: "0666"
+    directory_mask: "0777"
+    force_create_mode: "0666"
+    force_directory_mode: "0777"
     allocation_roundup_size: 4096
     min_protocol: "SMB3_02"
     max_protocol: "SMB3_11"

@@ -295,9 +295,14 @@
                   workgroup = {{ proxmox_samba_effective.identity.workgroup }}
                   netbios name = {{ proxmox_samba_effective.identity.netbios_name | default(ansible_facts.hostname, true) }}
                   server string = {{ proxmox_samba_effective.identity.server_string }}
+                  security = user
                   map to guest = {{ proxmox_samba_effective.samba.map_to_guest | lower }}
+                  usershare allow guests = yes
+                  guest account = nobody
                   create mask = {{ proxmox_samba_effective.samba.create_mask }}
+                  force create mode = {{ proxmox_samba_effective.samba.force_create_mode | default(proxmox_samba_effective.samba.create_mask) }}
                   directory mask = {{ proxmox_samba_effective.samba.directory_mask }}
+                  force directory mode = {{ proxmox_samba_effective.samba.force_directory_mode | default(proxmox_samba_effective.samba.directory_mask) }}
                   force group = {{ proxmox_samba_effective.samba.force_group }}
                   allocation roundup size = {{ proxmox_samba_effective.samba.allocation_roundup_size }}
                   vfs objects = {{ proxmox_samba_effective.samba.macos_vfs_objects | join(' ') }}
@@ -306,6 +311,8 @@
                   fruit:resource = {{ proxmox_samba_effective.samba.fruit_resource }}
                   fruit:nfs_aces = {{ 'yes' if proxmox_samba_effective.samba.fruit_nfs_aces else 'no' }}
                   fruit:model = {{ proxmox_samba_effective.identity.fruit_model }}
+                  ea support = yes
+                  store dos attributes = yes
                   server min protocol = {{ proxmox_samba_effective.samba.min_protocol }}
                   server max protocol = {{ proxmox_samba_effective.samba.max_protocol }}
                   smb ports = {{ proxmox_samba_effective.network.smb_ports | join(' ') }}
@@ -325,6 +332,7 @@
                   path = {{ share.path }}
                   browsable = yes
                   guest ok = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
+                  guest only = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
                   writable = {{ 'yes' if share.writable | default(true) else 'no' }}
                   read only = {{ 'no' if share.writable | default(true) else 'yes' }}
                   public = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
