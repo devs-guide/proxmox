@@ -175,9 +175,12 @@
         fail_msg: "This Samba feature must run inside a Debian LXC container, not on the Proxmox host."
       when: proxmox_feature_defaults_effective.require_container | bool
 
-    - name: Normalize Samba operator selection
+    - name: Normalize Samba selection payload
       set_fact:
         proxmox_samba_selection: "{{ proxmox_samba_operator_selection | default({}) }}"
+
+    - name: Build effective Samba model
+      set_fact:
         proxmox_samba_effective:
           mode: "{{ proxmox_feature_defaults_effective.mode }}"
           identity: >-
@@ -239,6 +242,12 @@
       debug:
         msg: "No Samba shares were selected. Continuing with base Samba setup only."
       when: (proxmox_samba_effective.shares.explicit | default([]) | length) == 0
+
+    - name: Report effective Samba share count before smb.conf render
+      debug:
+        msg:
+          share_count: "{{ proxmox_samba_effective.shares.explicit | default([]) | length }}"
+          selected_shares: "{{ proxmox_samba_effective.shares.explicit | map(attribute='path') | list }}"
 
     - name: Report Samba preflight summary
       debug:

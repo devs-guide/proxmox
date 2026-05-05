@@ -181,6 +181,7 @@ check_published_samba_runner_policy() {
     'Using existing container system Python' \
     'Continue with Samba base setup and no shares' \
     'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' \
+    'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' \
     'ensurepip --version'; do
     if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
       echo "[validate.pages][error] published Samba/container runtime path is stale or missing marker: ${needle}"
@@ -310,7 +311,10 @@ check_published_samba_playbook_policy() {
 
   for needle in \
     'No Samba shares were selected. Continuing with base Samba setup only.' \
-    'share_count:'; do
+    'share_count:' \
+    'Normalize Samba selection payload' \
+    'Build effective Samba model' \
+    'Report effective Samba share count before smb.conf render'; do
     if ! grep -q -- "${needle}" "${published_samba}"; then
       echo "[validate.pages][error] published samba.file.share.yml is stale or missing no-share marker: ${needle}"
       rc=1

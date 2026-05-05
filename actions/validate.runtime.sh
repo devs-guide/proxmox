@@ -337,6 +337,14 @@ if ! grep -q 'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' "${ROOT}/setup/lxc/sa
   echo "[validate.runtime][error] setup/lxc/samba.sh must scan the full container mount table for share discovery"
   exit 1
 fi
+if ! grep -q 'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must expose the parser-style multi-select share prompt"
+  exit 1
+fi
+if ! grep -q 'parse.share.selection' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must implement parser-style multi-select share selection"
+  exit 1
+fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
@@ -446,6 +454,18 @@ if ! grep -q 'testparm' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"
 fi
 if ! grep -q 'No Samba shares were selected. Continuing with base Samba setup only.' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
   echo "[validate.runtime][error] samba.file.share.yml must support no-share base setup mode"
+  exit 1
+fi
+if ! grep -q 'Normalize Samba selection payload' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must build selection payload in its own task"
+  exit 1
+fi
+if ! grep -q 'Build effective Samba model' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must build the effective Samba model in a separate task"
+  exit 1
+fi
+if ! grep -q 'Report effective Samba share count before smb.conf render' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must report effective share count before smb.conf render"
   exit 1
 fi
 if ! grep -q '/etc/samba/smb.conf' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then

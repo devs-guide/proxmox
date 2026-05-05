@@ -78,6 +78,7 @@ declare -a MOUNT_SHARE_NAME=()
 declare -a SELECTED_SHARES=()
 declare -a ALLOW_SUBNET_LIST=()
 declare -a CONTAINER_IPV4=()
+declare -a PARSED_SHARE_INDEXES=()
 
 CONTAINER_HOSTNAME=""
 CONTAINER_DEFAULT_ROUTE=""
@@ -86,6 +87,7 @@ CONTAINER_CTID="${PROXMOX_CTID:-}"
 CONTAINER_CTNAME="${PROXMOX_CTNAME:-}"
 OPEN_TTY=0
 ALLOW_EMPTY_SHARES="false"
+SHARE_SELECTION_ERROR=""
 
 source.release.common() {
   local script_dir=""
@@ -387,10 +389,83 @@ require.unique.share.names() {
   fi
 }
 
+append.share.selection.index() {
+  local candidate="$1"
+  local existing
+  for existing in "${PARSED_SHARE_INDEXES[@]:-}"; do
+    [[ "${existing}" == "${candidate}" ]] && return 0
+  done
+  PARSED_SHARE_INDEXES+=("${candidate}")
+}
+
+parse.share.selection() {
+  local raw="${1:-}"
+  local token value start end current
+  local count="${#MOUNT_PATH[@]}"
+  local -a share_selection_tokens=()
+
+  PARSED_SHARE_INDEXES=()
+  SHARE_SELECTION_ERROR=""
+
+  raw="$(printf '%s' "${raw}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "${raw}" || "${raw^^}" == "NONE" ]]; then
+    return 0
+  fi
+
+  if [[ "${raw^^}" == "ALL" ]]; then
+    for current in "${!MOUNT_PATH[@]}"; do
+      PARSED_SHARE_INDEXES+=("${current}")
+    done
+    return 0
+  fi
+
+  raw="${raw//[[:space:]]/}"
+  IFS=',' read -r -a share_selection_tokens <<< "${raw}"
+  for token in "${share_selection_tokens[@]}"; do
+    if [[ -z "${token}" ]]; then
+      SHARE_SELECTION_ERROR="Empty selection token is not valid."
+      return 1
+    fi
+    if [[ "${token}" =~ ^[0-9]+$ ]]; then
+      value="${token}"
+      if ((value < 1 || value > count)); then
+        SHARE_SELECTION_ERROR="Selection ${value} is out of range."
+        return 1
+      fi
+      append.share.selection.index "$((value - 1))"
+      continue
+    fi
+    if [[ "${token}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      start="${BASH_REMATCH[1]}"
+      end="${BASH_REMATCH[2]}"
+      if ((start > end)); then
+        SHARE_SELECTION_ERROR="Range ${token} must be ascending."
+        return 1
+      fi
+      if ((start < 1 || end > count)); then
+        SHARE_SELECTION_ERROR="Range ${token} is out of range."
+        return 1
+      fi
+      for ((current = start; current <= end; current++)); do
+        append.share.selection.index "$((current - 1))"
+      done
+      continue
+    fi
+    SHARE_SELECTION_ERROR="Unsupported selection token: ${token}"
+    return 1
+  done
+}
+
+apply.share.selection.by.indexes() {
+  local idx
+  SELECTED_SHARES=()
+  for idx in "${PARSED_SHARE_INDEXES[@]:-}"; do
+    SELECTED_SHARES+=("${MOUNT_PATH[$idx]}")
+  done
+}
+
 choose.shares.interactive() {
-  local -a options=()
-  local -a indexes=()
-  local choice i selected
+  local selection i
 
   printf '\nDetected container:\n' >&3
   printf '  hostname:      %s\n' "${CONTAINER_HOSTNAME}" >&3
@@ -412,23 +487,28 @@ choose.shares.interactive() {
     exit 1
   fi
 
-  for i in "${!MOUNT_PATH[@]}"; do
-    options+=("${MOUNT_PATH[$i]} | share=${MOUNT_SHARE_NAME[$i]} | fs=${MOUNT_FSTYPE[$i]} | read=${MOUNT_READABLE[$i]} | write=${MOUNT_WRITABLE[$i]} | xattr=${MOUNT_XATTR[$i]}")
-    indexes+=("${i}")
+  while true; do
+    for i in "${!MOUNT_PATH[@]}"; do
+      printf '  [ ] %d | %s | share=%s | fs=%s | read=%s | write=%s | xattr=%s\n' \
+        "$((i + 1))" \
+        "${MOUNT_PATH[$i]}" \
+        "${MOUNT_SHARE_NAME[$i]}" \
+        "${MOUNT_FSTYPE[$i]}" \
+        "${MOUNT_READABLE[$i]}" \
+        "${MOUNT_WRITABLE[$i]}" \
+        "${MOUNT_XATTR[$i]}" >&3
+    done
+    printf '\nSelect shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`\n' >&3
+    selection="$(prompt.tty "Selection" "NONE")"
+    if parse.share.selection "${selection}"; then
+      apply.share.selection.by.indexes
+      if ((${#SELECTED_SHARES[@]} == 0)); then
+        ALLOW_EMPTY_SHARES="true"
+      fi
+      return 0
+    fi
+    printf 'Invalid selection: %s\n\n' "${SHARE_SELECTION_ERROR:-unknown error}" >&3
   done
-  options+=("all")
-  options+=("abort")
-  choice="$(menu.tty "Select share path:" "${options[@]}")"
-  if ((choice == ${#options[@]})); then
-    log.error "Operator aborted share selection."
-    exit 1
-  fi
-  if ((choice == ${#options[@]} - 1)); then
-    SELECTED_SHARES=("${MOUNT_PATH[@]}")
-    return 0
-  fi
-  selected="${indexes[$((choice - 1))]}"
-  SELECTED_SHARES=("${MOUNT_PATH[$selected]}")
 }
 
 parse.share.paths.env() {
@@ -550,6 +630,11 @@ collect.operator.selection() {
   fi
   normalize.allow.subnets
   validate.selection
+  if ((${#SELECTED_SHARES[@]} > 0)); then
+    log "Share selection summary: discovered=${#MOUNT_PATH[@]} selected=${#SELECTED_SHARES[@]} paths=$(printf '%s ' "${SELECTED_SHARES[@]}")"
+  else
+    log "Share selection summary: discovered=${#MOUNT_PATH[@]} selected=0 paths=none"
+  fi
   write.selection.file
   write.runtime.facts
 }
