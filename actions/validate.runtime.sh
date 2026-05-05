@@ -170,6 +170,14 @@ if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must not force the managed-target Python bootstrap path inside the LXC"
   exit 1
 fi
+if ! grep -q 'Continue with Samba base setup and no shares' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must offer a no-mount continue path for base Samba setup"
+  exit 1
+fi
+if ! grep -q 'shares: \[\]' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must serialize explicit empty share selections safely"
+  exit 1
+fi
 echo "[validate.runtime][ok] setup/lxc/samba.sh exposes the structured Samba runner contract"
 
 echo "[validate.runtime] checking Proxmox Debian LXC runner contract..."
@@ -305,6 +313,18 @@ if ! grep -q 'mountpoints: \[\]' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must write mountpoints: [] when no mountpoints are selected"
   exit 1
 fi
+if ! grep -q '/media/samba/' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must derive container mount targets under /media/samba/"
+  exit 1
+fi
+if ! grep -q 'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must expose the mountpoint multi-select prompt contract"
+  exit 1
+fi
+if ! grep -q 'parse.mountpoint.selection' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must implement mountpoint multi-select parsing"
+  exit 1
+fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
@@ -382,6 +402,10 @@ if ! grep -q 'This Samba feature must run inside a Debian LXC container, not on 
 fi
 if ! grep -q 'testparm' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
   echo "[validate.runtime][error] samba.file.share.yml must validate generated config with testparm"
+  exit 1
+fi
+if ! grep -q 'No Samba shares were selected. Continuing with base Samba setup only.' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must support no-share base setup mode"
   exit 1
 fi
 if ! grep -q '/etc/samba/smb.conf' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
@@ -595,6 +619,14 @@ if ! grep -q 'ensure.container.ansible()' "${ROOT}/bootstrap/release.common.sh";
 fi
 if ! grep -q 'Using existing container system Python' "${ROOT}/bootstrap/release.common.sh"; then
   echo "[validate.runtime][error] release.common.sh must prefer system python3 for container-local runners"
+  exit 1
+fi
+if ! grep -q 'ensurepip --version' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must verify ensurepip availability before building the container Ansible venv"
+  exit 1
+fi
+if ! grep -q 'Removing incomplete container Ansible venv before rebuild' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must clean up incomplete container venvs after failed bootstrap attempts"
   exit 1
 fi
 if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then

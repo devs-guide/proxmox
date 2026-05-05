@@ -319,6 +319,20 @@ derive.iso.label() {
   fi
 }
 
+sanitize.mount.label() {
+  local label="$1"
+  label="${label##*/}"
+  label="${label,,}"
+  label="$(printf '%s' "${label}" | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+  [[ -n "${label}" ]] || label="share"
+  printf '%s\n' "${label}"
+}
+
+mount.container.path.for() {
+  local host_path="$1"
+  printf '/media/samba/%s\n' "$(sanitize.mount.label "${host_path}")"
+}
+
 path.is.excluded() {
   local path="$1"
   case "${path}" in
@@ -707,12 +721,114 @@ discover.mountpoints() {
     path.is.included_root "${path}" || continue
     fstype.is.excluded "${fstype}" && continue
     [[ -d "${path}" ]] || continue
-    container_path="/srv/samba/$(basename "${path}")"
+    container_path="$(mount.container.path.for "${path}")"
     MOUNT_HOST_PATH+=("${path}")
     MOUNT_SOURCE+=("${source:-unknown}")
     MOUNT_FSTYPE+=("${fstype:-unknown}")
     MOUNT_CONTAINER_PATH+=("${container_path}")
   done < <(findmnt -R -n -o TARGET,SOURCE,FSTYPE,OPTIONS 2>/dev/null | awk '{target=$1; source=$2; fstype=$3; $1=$2=$3=""; sub(/^ +/,""); print target "|" source "|" fstype "|" $0}')
+}
+
+append.mount.selection.index() {
+  local candidate="$1"
+  local existing
+  for existing in "${PARSED_MOUNT_INDEXES[@]:-}"; do
+    [[ "${existing}" == "${candidate}" ]] && return 0
+  done
+  PARSED_MOUNT_INDEXES+=("${candidate}")
+}
+
+parse.mountpoint.selection() {
+  local raw="${1:-}"
+  local token value start end current
+  local count="${#MOUNT_HOST_PATH[@]}"
+
+  PARSED_MOUNT_INDEXES=()
+  MOUNT_SELECTION_ERROR=""
+
+  raw="$(printf '%s' "${raw}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "${raw}" || "${raw^^}" == "NONE" ]]; then
+    return 0
+  fi
+
+  if [[ "${raw^^}" == "ALL" ]]; then
+    for current in "${!MOUNT_HOST_PATH[@]}"; do
+      PARSED_MOUNT_INDEXES+=("${current}")
+    done
+    return 0
+  fi
+
+  raw="${raw//[[:space:]]/}"
+  IFS=',' read -r -a MOUNT_SELECTION_TOKENS <<< "${raw}"
+  for token in "${MOUNT_SELECTION_TOKENS[@]}"; do
+    if [[ -z "${token}" ]]; then
+      MOUNT_SELECTION_ERROR="Empty selection token is not valid."
+      return 1
+    fi
+    if [[ "${token}" =~ ^[0-9]+$ ]]; then
+      value="${token}"
+      if ((value < 1 || value > count)); then
+        MOUNT_SELECTION_ERROR="Selection ${value} is out of range."
+        return 1
+      fi
+      append.mount.selection.index "$((value - 1))"
+      continue
+    fi
+    if [[ "${token}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      start="${BASH_REMATCH[1]}"
+      end="${BASH_REMATCH[2]}"
+      if ((start > end)); then
+        MOUNT_SELECTION_ERROR="Range ${token} must be ascending."
+        return 1
+      fi
+      if ((start < 1 || end > count)); then
+        MOUNT_SELECTION_ERROR="Range ${token} is out of range."
+        return 1
+      fi
+      for ((current = start; current <= end; current++)); do
+        append.mount.selection.index "$((current - 1))"
+      done
+      continue
+    fi
+    MOUNT_SELECTION_ERROR="Unsupported selection token: ${token}"
+    return 1
+  done
+}
+
+apply.mount.selection.by.indexes() {
+  local idx
+  SELECTED_MOUNT_HOST_PATHS=()
+  SELECTED_MOUNT_CONTAINER_PATHS=()
+  for idx in "${PARSED_MOUNT_INDEXES[@]:-}"; do
+    SELECTED_MOUNT_HOST_PATHS+=("${MOUNT_HOST_PATH[$idx]}")
+    SELECTED_MOUNT_CONTAINER_PATHS+=("${MOUNT_CONTAINER_PATH[$idx]}")
+  done
+}
+
+apply.mount.selection.defaults() {
+  local host_path
+
+  SELECTED_MOUNT_HOST_PATHS=()
+  SELECTED_MOUNT_CONTAINER_PATHS=()
+
+  if [[ -z "${DEFAULT_MOUNTS}" ]]; then
+    return 0
+  fi
+
+  case "${DEFAULT_MOUNTS^^}" in
+    NONE) return 0 ;;
+    ALL)
+      SELECTED_MOUNT_HOST_PATHS=("${MOUNT_HOST_PATH[@]}")
+      SELECTED_MOUNT_CONTAINER_PATHS=("${MOUNT_CONTAINER_PATH[@]}")
+      return 0
+      ;;
+  esac
+
+  for host_path in ${DEFAULT_MOUNTS}; do
+    [[ -n "${host_path}" ]] || continue
+    SELECTED_MOUNT_HOST_PATHS+=("${host_path}")
+    SELECTED_MOUNT_CONTAINER_PATHS+=("$(mount.container.path.for "${host_path}")")
+  done
 }
 
 next.available.ctid() {
@@ -1030,40 +1146,33 @@ select.bridge.interactive() {
 }
 
 select.mountpoints.interactive() {
-  local choice idx
-  SELECTED_MOUNT_HOST_PATHS=()
-  SELECTED_MOUNT_CONTAINER_PATHS=()
+  local idx selection
 
   if [[ -n "${DEFAULT_MOUNTS}" ]]; then
-    local host_path
-      for host_path in ${DEFAULT_MOUNTS}; do
-        SELECTED_MOUNT_HOST_PATHS+=("${host_path}")
-        SELECTED_MOUNT_CONTAINER_PATHS+=("/srv/samba/$(basename "${host_path}")")
-      done
-      return 0
-    fi
+    apply.mount.selection.defaults
+    return 0
+  fi
 
   ((${#MOUNT_HOST_PATH[@]} > 0)) || return 0
 
-  local -a options=()
-  for idx in "${!MOUNT_HOST_PATH[@]}"; do
-    options+=("${MOUNT_HOST_PATH[$idx]} | fs=${MOUNT_FSTYPE[$idx]} | source=${MOUNT_SOURCE[$idx]}")
+  while true; do
+    printf 'Selectable host mountpoints for container passthrough:\n\n' >&3
+    for idx in "${!MOUNT_HOST_PATH[@]}"; do
+      printf '  [ ] %d | %s | fs=%s | source=%s | ct=%s\n' \
+        "$((idx + 1))" \
+        "${MOUNT_HOST_PATH[$idx]}" \
+        "${MOUNT_FSTYPE[$idx]}" \
+        "${MOUNT_SOURCE[$idx]}" \
+        "${MOUNT_CONTAINER_PATH[$idx]}" >&3
+    done
+    printf '\nSelect mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`\n' >&3
+    selection="$(prompt.tty "Selection" "NONE")"
+    if parse.mountpoint.selection "${selection}"; then
+      apply.mount.selection.by.indexes
+      return 0
+    fi
+    printf 'Invalid selection: %s\n\n' "${MOUNT_SELECTION_ERROR:-unknown error}" >&3
   done
-  options+=("all candidates")
-  options+=("none")
-  choice="$(menu.tty "Select optional mountpoint passthrough:" "${options[@]}")"
-  if ((choice == ${#options[@]})); then
-    return 0
-  fi
-  if ((choice == ${#options[@]} - 1)); then
-    SELECTED_MOUNT_HOST_PATHS=("${MOUNT_HOST_PATH[@]}")
-    SELECTED_MOUNT_CONTAINER_PATHS=("${MOUNT_CONTAINER_PATH[@]}")
-    return 0
-  fi
-
-  idx=$((choice - 1))
-  SELECTED_MOUNT_HOST_PATHS+=("${MOUNT_HOST_PATH[$idx]}")
-  SELECTED_MOUNT_CONTAINER_PATHS+=("${MOUNT_CONTAINER_PATH[$idx]}")
 }
 
 collect.create.settings() {
@@ -1247,11 +1356,7 @@ collect.operator.selection() {
       SELECTED_EXISTING_CTID="${SELECTED_CTID}"
     fi
     if [[ -n "${DEFAULT_MOUNTS}" ]]; then
-      local host_path
-      for host_path in ${DEFAULT_MOUNTS}; do
-        SELECTED_MOUNT_HOST_PATHS+=("${host_path}")
-        SELECTED_MOUNT_CONTAINER_PATHS+=("/srv/samba/$(basename "${host_path}")")
-      done
+      apply.mount.selection.defaults
     fi
     return 0
   fi

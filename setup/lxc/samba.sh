@@ -65,6 +65,7 @@ PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-0}"
 PROXMOX_SAMBA_PROFILE="${PROXMOX_SAMBA_PROFILE:-modern_mac}"
 PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
+PROXMOX_SAMBA_ALLOW_EMPTY_SHARES="${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES:-0}"
 
 declare -a MOUNT_PATH=()
 declare -a MOUNT_SOURCE=()
@@ -84,6 +85,7 @@ CONTAINER_OS_PRETTY=""
 CONTAINER_CTID="${PROXMOX_CTID:-}"
 CONTAINER_CTNAME="${PROXMOX_CTNAME:-}"
 OPEN_TTY=0
+ALLOW_EMPTY_SHARES="false"
 
 source.release.common() {
   local script_dir=""
@@ -395,6 +397,19 @@ choose.shares.interactive() {
   printf '  IPv4:          %s\n\n' "$(printf '%s ' "${CONTAINER_IPV4[@]:-none}")" >&3
   printf 'Detected candidate shares:\n\n' >&3
 
+  if ((${#MOUNT_PATH[@]} == 0)); then
+    local continue_without_shares
+    printf '  none\n\n' >&3
+    continue_without_shares="$(prompt.tty "No mounted files were discovered. Continue with Samba base setup and no shares? (yes|no)" "no")"
+    if is.true "${continue_without_shares}"; then
+      ALLOW_EMPTY_SHARES="true"
+      SELECTED_SHARES=()
+      return 0
+    fi
+    log.error "Operator aborted because no share mountpoints were discovered."
+    exit 1
+  fi
+
   for i in "${!MOUNT_PATH[@]}"; do
     options+=("${MOUNT_PATH[$i]} | share=${MOUNT_SHARE_NAME[$i]} | fs=${MOUNT_FSTYPE[$i]} | read=${MOUNT_READABLE[$i]} | write=${MOUNT_WRITABLE[$i]} | xattr=${MOUNT_XATTR[$i]}")
     indexes+=("${i}")
@@ -440,10 +455,16 @@ normalize.allow.subnets() {
 
 validate.selection() {
   ((${#MOUNT_PATH[@]} > 0)) || {
+    if is.true "${ALLOW_EMPTY_SHARES}" || is.true "${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES}"; then
+      return 0
+    fi
     log.error "No candidate share mountpoints were discovered."
     exit 1
   }
   ((${#SELECTED_SHARES[@]} > 0)) || {
+    if is.true "${ALLOW_EMPTY_SHARES}" || is.true "${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES}"; then
+      return 0
+    fi
     log.error "No Samba shares were selected."
     exit 1
   }
@@ -476,9 +497,17 @@ proxmox_samba_operator_selection:
     allow_subnets:
 $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
     bind_interfaces_only: true
-  shares:
-$(for path in "${SELECTED_SHARES[@]}"; do printf '    - path: %s\n      guest_ok: false\n      writable: true\n' "$(yaml.quote "${path}")"; done)
 EOF
+  if ((${#SELECTED_SHARES[@]} > 0)); then
+    {
+      printf '  shares:\n'
+      for path in "${SELECTED_SHARES[@]}"; do
+        printf '    - path: %s\n      guest_ok: false\n      writable: true\n' "$(yaml.quote "${path}")"
+      done
+    } >> "${SAMBA_SELECTION_PATH}"
+  else
+    printf '  shares: []\n' >> "${SAMBA_SELECTION_PATH}"
+  fi
 }
 
 write.runtime.facts() {
@@ -489,20 +518,33 @@ proxmox_samba_runtime:
   os_pretty_name: $(yaml.quote "${CONTAINER_OS_PRETTY}")
   default_route: $(yaml.scalar.or.null "${CONTAINER_DEFAULT_ROUTE}")
   mode: $(yaml.quote "${FEATURE_MODE}")
-  selected_shares:
-$(for path in "${SELECTED_SHARES[@]}"; do printf '    - %s\n' "$(yaml.quote "${path}")"; done)
+  allow_empty_shares: $(bool.yaml "${ALLOW_EMPTY_SHARES}")
 EOF
+  if ((${#SELECTED_SHARES[@]} > 0)); then
+    {
+      printf '  selected_shares:\n'
+      for path in "${SELECTED_SHARES[@]}"; do
+        printf '    - %s\n' "$(yaml.quote "${path}")"
+      done
+    } >> "${SAMBA_FACTS_PATH}"
+  else
+    printf '  selected_shares: []\n' >> "${SAMBA_FACTS_PATH}"
+  fi
 }
 
 collect.operator.selection() {
   if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
     choose.shares.interactive
   else
-    [[ -n "${PROXMOX_SAMBA_SHARE_PATHS}" ]] || {
+    if [[ -n "${PROXMOX_SAMBA_SHARE_PATHS}" ]]; then
+      parse.share.paths.env
+    elif ((${#MOUNT_PATH[@]} == 0)) && is.true "${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES}"; then
+      ALLOW_EMPTY_SHARES="true"
+      SELECTED_SHARES=()
+    else
       log.error "Interactive UI unavailable. Set PROXMOX_SAMBA_SHARE_PATHS for non-interactive mode."
       exit 1
-    }
-    parse.share.paths.env
+    fi
   fi
   normalize.allow.subnets
   validate.selection
@@ -596,10 +638,18 @@ $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quot
     force_user: $(yaml.scalar.or.null "${PROXMOX_SAMBA_FORCE_USER}")
     force_group: $(yaml.quote "${PROXMOX_SAMBA_FORCE_GROUP}")
     guest_mode: $(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")
-  shares:
-    explicit:
-$(for path in "${SELECTED_SHARES[@]}"; do printf '      - path: %s\n        guest_ok: false\n        writable: true\n' "$(yaml.quote "${path}")"; done)
 EOF
+  if ((${#SELECTED_SHARES[@]} > 0)); then
+    {
+      printf '  shares:\n'
+      printf '    explicit:\n'
+      for path in "${SELECTED_SHARES[@]}"; do
+        printf '      - path: %s\n        guest_ok: false\n        writable: true\n' "$(yaml.quote "${path}")"
+      done
+    } >> "${SAMBA_EXTRA_VARS_PATH}"
+  else
+    printf '  shares:\n    explicit: []\n' >> "${SAMBA_EXTRA_VARS_PATH}"
+  fi
   log "Prepared Samba extra-vars: ${SAMBA_EXTRA_VARS_PATH}"
 }
 

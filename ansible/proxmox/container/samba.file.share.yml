@@ -232,11 +232,10 @@
             )
           }}
 
-    - name: Assert at least one Samba share was selected
-      assert:
-        that:
-          - (proxmox_samba_effective.shares.explicit | default([]) | length) > 0
-        fail_msg: "No Samba shares were selected."
+    - name: Note when Samba is being configured without shares
+      debug:
+        msg: "No Samba shares were selected. Continuing with base Samba setup only."
+      when: (proxmox_samba_effective.shares.explicit | default([]) | length) == 0
 
     - name: Report Samba preflight summary
       debug:
@@ -244,6 +243,7 @@
           mode: "{{ proxmox_samba_effective.mode }}"
           hostname: "{{ ansible_facts.hostname }}"
           selected_shares: "{{ proxmox_samba_effective.shares.explicit }}"
+          share_count: "{{ proxmox_samba_effective.shares.explicit | default([]) | length }}"
           allow_subnets: "{{ proxmox_samba_effective.network.allow_subnets }}"
       when: proxmox_samba_effective.mode == 'preflight'
 
@@ -453,12 +453,14 @@
               proxmox_samba_runtime:
                 hostname: {{ ansible_facts.hostname | to_json }}
                 mode: {{ proxmox_samba_effective.mode | to_json }}
+                share_count: {{ proxmox_samba_effective.shares.explicit | default([]) | length }}
                 shares: {{ proxmox_samba_effective.shares.explicit | to_nice_yaml(indent=2) | indent(4, true) }}
 
         - name: Report Samba apply summary
           debug:
             msg:
               - "Samba apply completed for {{ ansible_facts.hostname }}."
+              - "Share count: {{ proxmox_samba_effective.shares.explicit | default([]) | length }}"
               - "Selected shares: {{ proxmox_samba_effective.shares.explicit | map(attribute='path') | list }}"
               - "Listener state:"
               - "{{ proxmox_samba_listener_state.stdout_lines | default([]) }}"

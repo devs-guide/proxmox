@@ -178,7 +178,9 @@ check_published_samba_runner_policy() {
   for needle in \
     'ensure.container.ansible' \
     'Container Ansible ready' \
-    'Using existing container system Python'; do
+    'Using existing container system Python' \
+    'Continue with Samba base setup and no shares' \
+    'ensurepip --version'; do
     if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
       echo "[validate.pages][error] published Samba/container runtime path is stale or missing marker: ${needle}"
       rc=1
@@ -209,6 +211,8 @@ check_published_debian_lxc_policy() {
     'DEBIAN_LXC_TEMPLATE_BASE_URL' \
     'official URL fallback' \
     'show Debian ISO + web reference context' \
+    'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' \
+    '/media/samba/' \
     'Select access mode:' \
     'test access (SSH + default users/passwords)' \
     'Web-based Debian netinst references from ansible/debian/netboot.yml'; do
@@ -263,9 +267,30 @@ check_published_debian_base_bootstrap() {
   done
 }
 
+check_published_samba_playbook_policy() {
+  local published_samba="${TMPDIR}/ansible/proxmox/container/samba.file.share.yml"
+  local needle
+
+  if [[ ! -f "${published_samba}" ]]; then
+    echo "[validate.pages][error] published ansible/proxmox/container/samba.file.share.yml was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'No Samba shares were selected. Continuing with base Samba setup only.' \
+    'share_count:'; do
+    if ! grep -q -- "${needle}" "${published_samba}"; then
+      echo "[validate.pages][error] published samba.file.share.yml is stale or missing no-share marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
 check_published_samba_runner_policy
 check_published_debian_lxc_policy
 check_published_debian_base_bootstrap
+check_published_samba_playbook_policy
 
 rm -rf "${TMPDIR}"
 exit "${rc}"

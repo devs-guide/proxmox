@@ -179,10 +179,15 @@ ensure.container.ansible() {
 
   ensure.container.python
 
-  if ! "${PYTHON_BOOTSTRAP_BIN}" -m venv --help >/dev/null 2>&1; then
+  if ! "${PYTHON_BOOTSTRAP_BIN}" -m ensurepip --version >/dev/null 2>&1; then
     log "Installing python3-venv for container runtime..."
     apt-get update -y
     apt-get install -y --no-install-recommends python3-venv
+  fi
+
+  if [[ -d "${ANSIBLE_VENV}" && ! -x "${ANSIBLE_VENV_BIN}" ]]; then
+    log "Removing incomplete container Ansible venv before rebuild..."
+    rm -rf "${ANSIBLE_VENV}"
   fi
 
   log "Creating container Ansible venv..."
