@@ -373,6 +373,85 @@
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_features | length > 0
 
+    - name: Validate selected host mountpoints exist on the Proxmox host
+      stat:
+        path: "{{ item.host_path }}"
+      register: proxmox_lxc_debian_host_mount_stats
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Assert selected host mountpoints remain valid
+      assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: "Selected host mountpoint {{ item.stat.path | default('unknown') }} does not exist as a directory on the Proxmox host."
+      loop: "{{ proxmox_lxc_debian_host_mount_stats.results | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Prepare selected container mountpoint target directories
+      block:
+        - name: Mount selected container rootfs for mountpoint preparation
+          command:
+            argv:
+              - pct
+              - mount
+              - "{{ proxmox_lxc_debian_effective.ctid }}"
+          register: proxmox_lxc_debian_pct_mount
+          changed_when: proxmox_lxc_debian_pct_mount.rc == 0
+
+        - name: Derive mounted container rootfs path
+          set_fact:
+            proxmox_lxc_debian_rootfs_path: >-
+              {{
+                (
+                  proxmox_lxc_debian_pct_mount.stdout
+                  | default('')
+                  | regex_search("'([^']+)'", '\1')
+                )
+                | default('/var/lib/lxc/' ~ proxmox_lxc_debian_effective.ctid ~ '/rootfs', true)
+              }}
+
+        - name: Assert mounted container rootfs path exists
+          stat:
+            path: "{{ proxmox_lxc_debian_rootfs_path }}"
+          register: proxmox_lxc_debian_rootfs_stat
+
+        - name: Require mounted container rootfs path for mountpoint preparation
+          assert:
+            that:
+              - proxmox_lxc_debian_rootfs_stat.stat.exists
+              - proxmox_lxc_debian_rootfs_stat.stat.isdir
+            fail_msg: "Mounted container rootfs path {{ proxmox_lxc_debian_rootfs_path }} was not found after pct mount."
+
+        - name: Ensure /media/samba exists inside mounted container rootfs
+          file:
+            path: "{{ proxmox_lxc_debian_rootfs_path }}/media/samba"
+            state: directory
+            mode: "0755"
+
+        - name: Ensure selected mountpoint targets exist inside mounted container rootfs
+          file:
+            path: "{{ proxmox_lxc_debian_rootfs_path }}{{ item.container_path }}"
+            state: directory
+            mode: "0755"
+          loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      always:
+        - name: Unmount selected container rootfs after mountpoint preparation
+          command:
+            argv:
+              - pct
+              - unmount
+              - "{{ proxmox_lxc_debian_effective.ctid }}"
+          changed_when: false
+          failed_when: false
+          when:
+            - proxmox_lxc_debian_pct_mount is defined
+            - proxmox_lxc_debian_pct_mount.rc == 0
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
     - name: Attach selected mountpoints to the container
       command:
         argv:
@@ -381,6 +460,40 @@
           - "{{ proxmox_lxc_debian_effective.ctid }}"
           - "-mp{{ ansible_loop.index0 }}"
           - "{{ item.host_path }},mp={{ item.container_path }},backup={{ '1' if item.backup | default(false) | bool else '0' }}"
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      loop_control:
+        extended: true
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Capture container config after mountpoint attachment
+      command:
+        argv:
+          - pct
+          - config
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+      register: proxmox_lxc_debian_config_after_mounts
+      changed_when: false
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Assert selected mountpoints were attached to container config
+      assert:
+        that:
+          - >-
+            (
+              proxmox_lxc_debian_config_after_mounts.stdout
+              | default('')
+              | regex_search(
+                  '(^|\\n)mp'
+                  ~ ansible_loop.index0
+                  ~ ':\\s*'
+                  ~ (item.host_path | regex_escape)
+                  ~ ',mp='
+                  ~ (item.container_path | regex_escape)
+                  ~ '([,\\n]|$)',
+                  multiline=True
+                )
+            ) is not none
+        fail_msg: "Container config is missing expected mp{{ ansible_loop.index0 }} attachment for {{ item.host_path }} -> {{ item.container_path }}."
       loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
       loop_control:
         extended: true
@@ -461,6 +574,30 @@
       changed_when: false
       failed_when: false
 
+    - name: Verify selected mountpoints are visible inside the running container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - --
+          - findmnt
+          - -n
+          - --target
+          - "{{ item.container_path }}"
+      register: proxmox_lxc_debian_container_mounts
+      changed_when: false
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Assert selected mountpoints are visible inside the running container
+      assert:
+        that:
+          - item.rc == 0
+        fail_msg: "Attached mountpoint {{ item.item.container_path }} is not visible inside container {{ proxmox_lxc_debian_effective.ctid }}."
+      loop: "{{ proxmox_lxc_debian_container_mounts.results | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
     - name: Persist Debian LXC runtime facts
       copy:
         dest: "{{ proxmox_lxc_debian_runtime_facts_path }}"
@@ -475,6 +612,7 @@
             template: "{{ proxmox_lxc_debian_effective.template.name | default('') }}"
             bridge: "{{ proxmox_lxc_debian_effective.network.bridge }}"
             ipv4_summary: "{{ proxmox_lxc_debian_ipv4.stdout_lines | default([]) }}"
+            mountpoints: {{ proxmox_lxc_debian_effective.mountpoints | default([], true) | to_json }}
 
     - name: Report Debian LXC host-side completion summary
       debug:
@@ -486,3 +624,4 @@
           template: "{{ proxmox_lxc_debian_effective.template.name | default('') }}"
           bridge: "{{ proxmox_lxc_debian_effective.network.bridge }}"
           ipv4_summary: "{{ proxmox_lxc_debian_ipv4.stdout_lines | default([]) }}"
+          mountpoints: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"

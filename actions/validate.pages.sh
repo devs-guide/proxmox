@@ -211,6 +211,7 @@ check_published_debian_lxc_policy() {
     'DEBIAN_LXC_TEMPLATE_BASE_URL' \
     'official URL fallback' \
     'show Debian ISO + web reference context' \
+    'Detected host mountpoint passthrough candidates:' \
     'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' \
     '/media/samba/' \
     'Select access mode:' \
@@ -226,6 +227,28 @@ check_published_debian_lxc_policy() {
     echo "[validate.pages][error] published setup/lxc/debian.sh still has stale menu label: show Debian web references"
     rc=1
   fi
+}
+
+check_published_debian_lxc_playbook_policy() {
+  local published_lxc="${TMPDIR}/ansible/proxmox/container/debian.lxc.yml"
+  local needle
+
+  if [[ ! -f "${published_lxc}" ]]; then
+    echo "[validate.pages][error] published ansible/proxmox/container/debian.lxc.yml was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'Mount selected container rootfs for mountpoint preparation' \
+    'Ensure /media/samba exists inside mounted container rootfs' \
+    'Assert selected mountpoints were attached to container config' \
+    'Assert selected mountpoints are visible inside the running container'; do
+    if ! grep -q -- "${needle}" "${published_lxc}"; then
+      echo "[validate.pages][error] published debian.lxc.yml is stale or missing mountpoint marker: ${needle}"
+      rc=1
+    fi
+  done
 }
 
 check_published_debian_base_bootstrap() {
@@ -289,6 +312,7 @@ check_published_samba_playbook_policy() {
 
 check_published_samba_runner_policy
 check_published_debian_lxc_policy
+check_published_debian_lxc_playbook_policy
 check_published_debian_base_bootstrap
 check_published_samba_playbook_policy
 

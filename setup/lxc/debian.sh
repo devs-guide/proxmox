@@ -726,7 +726,7 @@ discover.mountpoints() {
     MOUNT_SOURCE+=("${source:-unknown}")
     MOUNT_FSTYPE+=("${fstype:-unknown}")
     MOUNT_CONTAINER_PATH+=("${container_path}")
-  done < <(findmnt -R -n -o TARGET,SOURCE,FSTYPE,OPTIONS 2>/dev/null | awk '{target=$1; source=$2; fstype=$3; $1=$2=$3=""; sub(/^ +/,""); print target "|" source "|" fstype "|" $0}')
+  done < <(findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS 2>/dev/null | awk '{target=$1; source=$2; fstype=$3; $1=$2=$3=""; sub(/^ +/,""); print target "|" source "|" fstype "|" $0}')
 }
 
 append.mount.selection.index() {
@@ -882,6 +882,20 @@ print.discovery.summary() {
   else
     for i in "${!NETBOOT_LABEL[@]}"; do
       printf '  %s | %s\n' "${NETBOOT_LABEL[$i]}" "${NETBOOT_URLS[$i]}" >&2
+    done
+  fi
+
+  printf '\n' >&2
+  log "Detected host mountpoint passthrough candidates:"
+  if ((${#MOUNT_HOST_PATH[@]} == 0)); then
+    printf '  (none under /media, /mnt, /srv/storage, or /storage)\n' >&2
+  else
+    for i in "${!MOUNT_HOST_PATH[@]}"; do
+      printf '  %s | fs=%s | source=%s | ct=%s\n' \
+        "${MOUNT_HOST_PATH[$i]}" \
+        "${MOUNT_FSTYPE[$i]}" \
+        "${MOUNT_SOURCE[$i]}" \
+        "${MOUNT_CONTAINER_PATH[$i]}" >&2
     done
   fi
 }

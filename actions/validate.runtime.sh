@@ -317,6 +317,14 @@ if ! grep -q '/media/samba/' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must derive container mount targets under /media/samba/"
   exit 1
 fi
+if ! grep -q 'Detected host mountpoint passthrough candidates:' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must report discovered host mountpoint candidates"
+  exit 1
+fi
+if ! grep -q 'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must scan the full host mount table for passthrough candidates"
+  exit 1
+fi
 if ! grep -q 'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must expose the mountpoint multi-select prompt contract"
   exit 1
@@ -341,6 +349,22 @@ if ! grep -q 'mountpoints: \[\]' "${ROOT}/ansible/proxmox/container/debian.lxc.y
 fi
 if ! grep -Fq 'proxmox_lxc_debian_effective.mountpoints | default([], true)' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml mountpoint loop must default null mountpoints to an empty list"
+  exit 1
+fi
+if ! grep -q 'Mount selected container rootfs for mountpoint preparation' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must mount the CT rootfs before preparing bind-mount targets"
+  exit 1
+fi
+if ! grep -q 'Ensure /media/samba exists inside mounted container rootfs' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must create /media/samba inside the mounted CT rootfs"
+  exit 1
+fi
+if ! grep -q 'Assert selected mountpoints were attached to container config' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must verify mpX attachment in pct config"
+  exit 1
+fi
+if ! grep -q 'Assert selected mountpoints are visible inside the running container' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must verify selected mounts from inside the running container"
   exit 1
 fi
 if ! grep -q 'Ensure selected container console settings support interactive login' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
