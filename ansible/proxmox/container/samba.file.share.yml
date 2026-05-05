@@ -206,6 +206,9 @@
               proxmox_samba_defaults_effective.shares
               | combine({'explicit': proxmox_samba_selection.shares | default([])}, recursive=true)
             }}
+
+    - name: Build effective Samba package list
+      set_fact:
         proxmox_samba_packages_effective: >-
           {{
             proxmox_samba_defaults_effective.packages
