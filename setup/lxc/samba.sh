@@ -9,6 +9,7 @@ set -euo pipefail
 
 log()       { printf '[setup.lxc.samba] %s\n' "$*" >&2; }
 log.error() { printf '[setup.lxc.samba][error] %s\n' "$*" >&2; }
+log.warn()  { printf '[setup.lxc.samba][warn] %s\n' "$*" >&2; }
 
 TMP_DIR="/tmp/pve-feature-samba"
 PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
@@ -59,6 +60,8 @@ PROXMOX_SAMBA_ENABLE_AVAHI="${PROXMOX_SAMBA_ENABLE_AVAHI:-1}"
 PROXMOX_SAMBA_REQUIRE_XATTR="${PROXMOX_SAMBA_REQUIRE_XATTR:-0}"
 PROXMOX_SAMBA_WORKGROUP="${PROXMOX_SAMBA_WORKGROUP:-WORKGROUP}"
 PROXMOX_SAMBA_NETBIOS_NAME="${PROXMOX_SAMBA_NETBIOS_NAME:-}"
+PROXMOX_SAMBA_MAP_TO_GUEST="${PROXMOX_SAMBA_MAP_TO_GUEST:-Bad User}"
+PROXMOX_SAMBA_GUEST_ACCOUNT="${PROXMOX_SAMBA_GUEST_ACCOUNT:-nobody}"
 PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-root}"
 PROXMOX_SAMBA_FORCE_GROUP="${PROXMOX_SAMBA_FORCE_GROUP:-root}"
 PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-1}"
@@ -389,6 +392,54 @@ require.unique.share.names() {
   fi
 }
 
+mount.index.by.path() {
+  local path="${1:-}"
+  local i
+  for i in "${!MOUNT_PATH[@]}"; do
+    if [[ "${MOUNT_PATH[$i]}" == "${path}" ]]; then
+      printf '%s\n' "${i}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+mount.readable.by.path() {
+  local path="${1:-}" idx
+  if idx="$(mount.index.by.path "${path}")"; then
+    printf '%s\n' "${MOUNT_READABLE[$idx]}"
+  else
+    printf 'no\n'
+  fi
+}
+
+mount.writable.by.path() {
+  local path="${1:-}" idx
+  if idx="$(mount.index.by.path "${path}")"; then
+    printf '%s\n' "${MOUNT_WRITABLE[$idx]}"
+  else
+    printf 'no\n'
+  fi
+}
+
+mount.xattr.by.path() {
+  local path="${1:-}" idx
+  if idx="$(mount.index.by.path "${path}")"; then
+    printf '%s\n' "${MOUNT_XATTR[$idx]}"
+  else
+    printf 'no\n'
+  fi
+}
+
+mount.share.name.by.path() {
+  local path="${1:-}" idx
+  if idx="$(mount.index.by.path "${path}")"; then
+    printf '%s\n' "${MOUNT_SHARE_NAME[$idx]}"
+  else
+    normalize.share.name "${path}"
+  fi
+}
+
 append.share.selection.index() {
   local candidate="$1"
   local existing
@@ -536,6 +587,7 @@ normalize.allow.subnets() {
 }
 
 validate.selection() {
+  local path readable writable xattr
   ((${#MOUNT_PATH[@]} > 0)) || {
     if is.true "${ALLOW_EMPTY_SHARES}" || is.true "${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES}"; then
       return 0
@@ -561,6 +613,20 @@ validate.selection() {
       done
     done
   fi
+  for path in "${SELECTED_SHARES[@]}"; do
+    readable="$(mount.readable.by.path "${path}")"
+    writable="$(mount.writable.by.path "${path}")"
+    xattr="$(mount.xattr.by.path "${path}")"
+    if [[ "${readable}" != "yes" ]]; then
+      log.warn "Selected share ${path} was probed as read=no. Guest browse may list it, but access may still fail until permissions are corrected."
+    fi
+    if [[ "${writable}" != "yes" ]]; then
+      log.warn "Selected share ${path} was probed as write=no. It will be published read-only."
+    fi
+    if [[ "${xattr}" != "yes" ]]; then
+      log.warn "Selected share ${path} was probed as xattr=no. macOS metadata compatibility may be reduced."
+    fi
+  done
 }
 
 write.selection.file() {
@@ -584,7 +650,13 @@ EOF
     {
       printf '  shares:\n'
       for path in "${SELECTED_SHARES[@]}"; do
-        printf '    - path: %s\n      guest_ok: %s\n      writable: true\n' "$(yaml.quote "${path}")" "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")"
+        printf '    - path: %s\n      name: %s\n      guest_ok: %s\n      writable: %s\n      readable: %s\n      xattr: %s\n' \
+          "$(yaml.quote "${path}")" \
+          "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
+          "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
+          "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
+          "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
+          "$(bool.yaml "$(mount.xattr.by.path "${path}")")"
       done
     } >> "${SAMBA_SELECTION_PATH}"
   else
@@ -722,6 +794,8 @@ $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quot
   firewall:
     enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_UFW}")
   samba:
+    map_to_guest: $(yaml.quote "${PROXMOX_SAMBA_MAP_TO_GUEST}")
+    guest_account: $(yaml.quote "${PROXMOX_SAMBA_GUEST_ACCOUNT}")
     force_user: $(yaml.scalar.or.null "${PROXMOX_SAMBA_FORCE_USER}")
     force_group: $(yaml.quote "${PROXMOX_SAMBA_FORCE_GROUP}")
     guest_mode: $(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")
@@ -731,7 +805,13 @@ EOF
       printf '  shares:\n'
       printf '    explicit:\n'
       for path in "${SELECTED_SHARES[@]}"; do
-        printf '      - path: %s\n        guest_ok: %s\n        writable: true\n' "$(yaml.quote "${path}")" "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")"
+        printf '      - path: %s\n        name: %s\n        guest_ok: %s\n        writable: %s\n        readable: %s\n        xattr: %s\n' \
+          "$(yaml.quote "${path}")" \
+          "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
+          "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
+          "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
+          "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
+          "$(bool.yaml "$(mount.xattr.by.path "${path}")")"
       done
     } >> "${SAMBA_EXTRA_VARS_PATH}"
   else

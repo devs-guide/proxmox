@@ -302,44 +302,42 @@
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
 
-    - name: Initialize static IPv4 CIDR fact for DHCP-safe create flow
+    - name: Capture runner-normalized static IPv4 CIDR for pct create
       set_fact:
-        proxmox_lxc_debian_ipv4_cidr_effective: null
-
-    - name: Normalize static IPv4 source input for pct create
-      set_fact:
-        proxmox_lxc_debian_ipv4_input: >-
+        proxmox_lxc_debian_ipv4_cidr_effective: >-
           {{
             proxmox_lxc_debian_effective.network.ipv4_cidr
             | default('', true)
             | string
             | trim
-            | regex_replace('\\s*/\\s*', '/')
           }}
       when:
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
 
-    - name: Resolve static IPv4 CIDR for pct create
+    - name: Append default /24 when static IPv4 selection is a bare address
       set_fact:
-        proxmox_lxc_debian_ipv4_cidr_effective: >-
-          {{
-            proxmox_lxc_debian_ipv4_input
-            if proxmox_lxc_debian_ipv4_input is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
-            else (
-              proxmox_lxc_debian_ipv4_input ~ '/24'
-              if proxmox_lxc_debian_ipv4_input is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
-              else None
-            )
-          }}
+        proxmox_lxc_debian_ipv4_cidr_effective: "{{ proxmox_lxc_debian_ipv4_cidr_effective ~ '/24' }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+        - (proxmox_lxc_debian_ipv4_cidr_effective | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+
+    - name: Report effective static IPv4 payload before pct create
+      debug:
+        msg:
+          requested_ip: "{{ proxmox_lxc_debian_effective.network.ipv4_cidr | default('unset') }}"
+          effective_ip: "{{ proxmox_lxc_debian_ipv4_cidr_effective | default('unset') }}"
+          gateway: "{{ proxmox_lxc_debian_effective.network.gateway | default('unset') }}"
       when:
         - proxmox_lxc_debian_effective.operation == 'create'
         - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
 
-    - name: Assert normalized static IPv4 and gateway syntax before pct create
+    - name: Assert effective static IPv4 and gateway syntax before pct create
       assert:
         that:
           - proxmox_lxc_debian_ipv4_cidr_effective is not none
+          - proxmox_lxc_debian_ipv4_cidr_effective | string | length > 0
           - (proxmox_lxc_debian_ipv4_cidr_effective | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
           - (proxmox_lxc_debian_effective.network.gateway | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
         fail_msg: >-
@@ -371,6 +369,13 @@
               else ',ip=dhcp'
             )
           }}
+
+    - name: Report effective pct net0 string before pct create
+      debug:
+        msg:
+          net0: "{{ proxmox_lxc_debian_net0 }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
 
     - name: Build pct feature string
       set_fact:

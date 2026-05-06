@@ -353,6 +353,14 @@ if ! grep -q 'parse.share.selection' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must implement parser-style multi-select share selection"
   exit 1
 fi
+if ! grep -q 'PROXMOX_SAMBA_MAP_TO_GUEST=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must expose an explicit map-to-guest override"
+  exit 1
+fi
+if ! grep -q 'PROXMOX_SAMBA_GUEST_ACCOUNT=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must expose an explicit guest account override"
+  exit 1
+fi
 if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
@@ -407,24 +415,28 @@ if ! grep -q 'Wait for DHCP IPv4 assignment on selected container' "${ROOT}/ansi
   echo "[validate.runtime][error] debian.lxc.yml must wait for DHCP assignment before final IPv4 summary capture"
   exit 1
 fi
-if ! grep -q 'Initialize static IPv4 CIDR fact for DHCP-safe create flow' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must initialize static IPv4 state before the DHCP/static branch"
+if ! grep -q 'Capture runner-normalized static IPv4 CIDR for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must capture the runner-normalized static IPv4 CIDR before pct create"
   exit 1
 fi
-if ! grep -q 'Normalize static IPv4 source input for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must normalize static IPv4 input before pct create"
+if ! grep -q 'Append default /24 when static IPv4 selection is a bare address' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must support a simple bare-IPv4 to /24 fallback"
   exit 1
 fi
-if ! grep -q 'Resolve static IPv4 CIDR for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must resolve static IPv4 CIDR in a separate set_fact task"
+if ! grep -q 'Report effective static IPv4 payload before pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must report the effective static IPv4 payload before pct create"
   exit 1
 fi
-if grep -q 'proxmox_lxc_debian_ipv4_parts:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must not derive static IPv4 CIDR from same-task intermediate set_fact vars"
+if ! grep -q 'Report effective pct net0 string before pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must report the final pct net0 string before pct create"
   exit 1
 fi
-if ! grep -q 'Assert normalized static IPv4 and gateway syntax before pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must validate normalized static IPv4 and gateway syntax before pct create"
+if ! grep -q 'Assert effective static IPv4 and gateway syntax before pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must validate the effective static IPv4 and gateway syntax before pct create"
+  exit 1
+fi
+if grep -q 'Normalize static IPv4 source input for pct create' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must not re-normalize runner-validated static IPv4 via the stale regex path"
   exit 1
 fi
 
@@ -494,6 +506,18 @@ if ! grep -q 'Build effective Samba model' "${ROOT}/ansible/proxmox/container/sa
 fi
 if ! grep -q 'Report effective Samba share count before smb.conf render' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
   echo "[validate.runtime][error] samba.file.share.yml must report effective share count before smb.conf render"
+  exit 1
+fi
+if ! grep -q 'Assert guest browse lists selected shares when guest mode is enabled' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must verify guest browse output for selected shares"
+  exit 1
+fi
+if ! grep -q 'guest account =' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must manage the Samba guest account explicitly"
+  exit 1
+fi
+if ! grep -q 'writable: %s' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must persist per-share writability instead of hard-coding writable=true"
   exit 1
 fi
 if ! grep -q '/etc/samba/smb.conf' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then

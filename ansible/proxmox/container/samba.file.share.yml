@@ -75,12 +75,15 @@
         firewall:
           enabled: false
         samba:
-          guest_mode: false
-          map_to_guest: "Never"
-          force_user: null
-          force_group: "storage"
-          create_mask: "0660"
-          directory_mask: "0770"
+          guest_mode: true
+          map_to_guest: "Bad User"
+          guest_account: "nobody"
+          force_user: "root"
+          force_group: "root"
+          create_mask: "0666"
+          directory_mask: "0777"
+          force_create_mode: "0666"
+          force_directory_mode: "0777"
           allocation_roundup_size: 4096
           min_protocol: "SMB3_02"
           max_protocol: "SMB3_11"
@@ -112,6 +115,7 @@
         proxmox_samba_defaults_effective: >-
           {{
             proxmox_samba_defaults_safe.feature
+            | combine(proxmox_feature_defaults.samba | default({}), recursive=true)
             | combine(proxmox_samba | default({}), recursive=true)
           }}
 
@@ -277,6 +281,32 @@
             name: "{{ proxmox_samba_effective.samba.force_group }}"
             state: present
 
+        - name: Ensure Samba force user exists when a non-root custom account is requested
+          user:
+            name: "{{ proxmox_samba_effective.samba.force_user }}"
+            group: "{{ proxmox_samba_effective.samba.force_group }}"
+            system: true
+            create_home: false
+            shell: /usr/sbin/nologin
+            state: present
+          when:
+            - proxmox_samba_effective.samba.force_user is not none
+            - proxmox_samba_effective.samba.force_user | string | length > 0
+            - proxmox_samba_effective.samba.force_user not in ['root', 'nobody']
+
+        - name: Ensure Samba guest account exists when a custom guest account is requested
+          user:
+            name: "{{ proxmox_samba_effective.samba.guest_account }}"
+            group: "{{ proxmox_samba_effective.samba.force_group }}"
+            system: true
+            create_home: false
+            shell: /usr/sbin/nologin
+            state: present
+          when:
+            - proxmox_samba_effective.samba.guest_account is defined
+            - proxmox_samba_effective.samba.guest_account | string | length > 0
+            - proxmox_samba_effective.samba.guest_account not in ['root', 'nobody']
+
         - name: Backup existing Samba config when present
           copy:
             src: /etc/samba/smb.conf
@@ -298,7 +328,7 @@
                   security = user
                   map to guest = {{ proxmox_samba_effective.samba.map_to_guest | lower }}
                   usershare allow guests = yes
-                  guest account = nobody
+                  guest account = {{ proxmox_samba_effective.samba.guest_account }}
                   create mask = {{ proxmox_samba_effective.samba.create_mask }}
                   force create mode = {{ proxmox_samba_effective.samba.force_create_mode | default(proxmox_samba_effective.samba.create_mask) }}
                   directory mask = {{ proxmox_samba_effective.samba.directory_mask }}
@@ -463,6 +493,30 @@
           register: proxmox_samba_smbclient_probe
           changed_when: false
           failed_when: false
+
+        - name: Assert guest browse lists selected shares when guest mode is enabled
+          assert:
+            that:
+              - proxmox_samba_smbclient_probe.rc == 0
+              - >-
+                (
+                  (proxmox_samba_smbclient_probe.stdout | default(''))
+                  | regex_search(
+                      '(^|\\n)\\s*'
+                      ~ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_'))))
+                      ~ '\\s+Disk(\\s|$)',
+                      multiline=True
+                    )
+                ) is not none
+            fail_msg: >-
+              Guest browse probe did not list expected share
+              {{
+                item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
+              }}.
+          loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
+          when:
+            - proxmox_samba_effective.samba.guest_mode | bool
+            - (proxmox_samba_effective.shares.explicit | default([]) | length) > 0
 
         - name: Persist runtime Samba summary
           copy:

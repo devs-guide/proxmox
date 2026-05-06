@@ -182,6 +182,9 @@ check_published_samba_runner_policy() {
     'Continue with Samba base setup and no shares' \
     'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' \
     'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' \
+    'PROXMOX_SAMBA_MAP_TO_GUEST' \
+    'PROXMOX_SAMBA_GUEST_ACCOUNT' \
+    'writable: %s' \
     'ensurepip --version'; do
     if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
       echo "[validate.pages][error] published Samba/container runtime path is stale or missing marker: ${needle}"
@@ -248,18 +251,19 @@ check_published_debian_lxc_playbook_policy() {
     'Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs' \
     'Assert selected mountpoints were attached to container config' \
     'Assert selected mountpoints are visible inside the running container' \
-    'Initialize static IPv4 CIDR fact for DHCP-safe create flow' \
-    'Normalize static IPv4 source input for pct create' \
-    'Resolve static IPv4 CIDR for pct create' \
-    'Assert normalized static IPv4 and gateway syntax before pct create'; do
+    'Capture runner-normalized static IPv4 CIDR for pct create' \
+    'Append default /24 when static IPv4 selection is a bare address' \
+    'Report effective static IPv4 payload before pct create' \
+    'Assert effective static IPv4 and gateway syntax before pct create' \
+    'Report effective pct net0 string before pct create'; do
     if ! grep -q -- "${needle}" "${published_lxc}"; then
       echo "[validate.pages][error] published debian.lxc.yml is stale or missing mountpoint marker: ${needle}"
       rc=1
     fi
   done
 
-  if grep -q 'proxmox_lxc_debian_ipv4_parts:' "${published_lxc}"; then
-    echo "[validate.pages][error] published debian.lxc.yml still has same-task static IPv4 intermediate facts"
+  if grep -q 'Normalize static IPv4 source input for pct create' "${published_lxc}"; then
+    echo "[validate.pages][error] published debian.lxc.yml still has the stale static IPv4 regex re-normalization path"
     rc=1
   fi
 
@@ -323,7 +327,9 @@ check_published_samba_playbook_policy() {
     'share_count:' \
     'Normalize Samba selection payload' \
     'Build effective Samba model' \
-    'Report effective Samba share count before smb.conf render'; do
+    'Report effective Samba share count before smb.conf render' \
+    'Assert guest browse lists selected shares when guest mode is enabled' \
+    'guest account ='; do
     if ! grep -q -- "${needle}" "${published_samba}"; then
       echo "[validate.pages][error] published samba.file.share.yml is stale or missing no-share marker: ${needle}"
       rc=1

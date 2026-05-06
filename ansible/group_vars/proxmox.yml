@@ -135,6 +135,7 @@ proxmox_samba:
   samba:
     guest_mode: true
     map_to_guest: "Bad User"
+    guest_account: "nobody"
     force_user: "root"
     force_group: "root"
     create_mask: "0666"

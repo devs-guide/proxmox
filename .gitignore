@@ -25,8 +25,10 @@ Icon
 refactor.docs/
 tools/
 logs/
+log/
 
 # Local prompt notes
 prompts/
+prompt/
 
 refresh.sh
