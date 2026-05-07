@@ -12,6 +12,7 @@
     proxmox_sources_path: "/etc/apt/sources.list.d/proxmox.sources"
     proxmox_key_path: "/etc/apt/keyrings/proxmox-release-trixie.gpg"
     proxmox_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg"
+    proxmox_enterprise_cleanup_regex: "(enterprise\\.proxmox\\.com/debian/(pve|ceph)|pve-enterprise|ceph-squid)"
 
   tasks:
     - name: Ensure apt keyring directory exists
@@ -54,3 +55,26 @@
       loop:
         - /etc/apt/sources.list.d/pve-enterprise.list
         - /etc/apt/sources.list.d/pve-no-subscription.list
+        - /etc/apt/sources.list.d/ceph.list
+        - /etc/apt/trusted.gpg.d/ceph.release.gpg
+
+    - name: Find enterprise deb822/list apt source files for cleanup
+      shell: >-
+        grep -lER
+        --include='*.list'
+        --include='*.sources'
+        '{{ proxmox_enterprise_cleanup_regex }}'
+        /etc/apt/sources.list.d
+      register: proxmox_enterprise_source_cleanup
+      changed_when: false
+      failed_when: false
+      when: not proxmox_enterprise | bool
+
+    - name: Remove enterprise deb822/list apt source files when using no-subscription
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ proxmox_enterprise_source_cleanup.stdout_lines | default([], true) }}"
+      when:
+        - not proxmox_enterprise | bool
+        - (proxmox_enterprise_source_cleanup.stdout_lines | default([], true) | length) > 0

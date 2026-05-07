@@ -112,11 +112,40 @@ require.pve9_or_trixie() {
   exit 1
 }
 
+disable.enterprise.sources() {
+  local sources_dir="/etc/apt/sources.list.d"
+  local source_path=""
+
+  log "Disabling Proxmox enterprise apt sources before bootstrap update..."
+
+  rm -f \
+    "${sources_dir}/pve-enterprise.list" \
+    "${sources_dir}/pve-no-subscription.list" \
+    "${sources_dir}/ceph.list" \
+    /etc/apt/trusted.gpg.d/ceph.release.gpg
+
+  if [[ ! -d "${sources_dir}" ]]; then
+    return
+  fi
+
+  while IFS= read -r source_path; do
+    [[ -n "${source_path}" ]] || continue
+    rm -f "${source_path}"
+  done < <(
+    grep -lER \
+      --include='*.list' \
+      --include='*.sources' \
+      '(enterprise\.proxmox\.com/debian/(pve|ceph)|pve-enterprise|ceph-squid)' \
+      "${sources_dir}" 2>/dev/null || true
+  )
+}
+
 prepare.trixie.sources() {
   log "Configuring Debian Trixie and Proxmox 9.x repositories (deb822)..."
   mkdir -p /etc/apt/keyrings
 
   ensure.proxmox.key
+  disable.enterprise.sources
 
   cat > /etc/apt/sources.list.d/debian.sources <<'EOF'
 Types: deb
@@ -140,7 +169,7 @@ Components: pve-no-subscription
 Signed-By: ${PROXMOX_KEY_PATH}
 EOF
 
-  rm -f /etc/apt/sources.list.d/pve-enterprise.list
+  disable.enterprise.sources
   apt-get update -y
 }
 

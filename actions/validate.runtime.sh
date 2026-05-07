@@ -59,6 +59,41 @@ if grep -qx 'debian/ansible.venv.yml' "${ROOT}/ansible/release/9.1/install.playb
 fi
 echo "[validate.runtime][ok] 9.1 playlist delegates runtime bootstrap to release.common.sh"
 
+echo "[validate.runtime] checking 9.1 bootstrap apt source cleanup..."
+if ! grep -q 'disable.enterprise.sources()' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must define disable.enterprise.sources()"
+  exit 1
+fi
+if ! grep -q 'Disabling Proxmox enterprise apt sources before bootstrap update' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must log enterprise source cleanup before apt update"
+  exit 1
+fi
+if ! grep -q "enterprise\\\\.proxmox\\\\.com/debian/(pve|ceph)" "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must clean enterprise Proxmox and Ceph source entries by content"
+  exit 1
+fi
+if ! grep -q 'ceph.release.gpg' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must drop legacy Ceph enterprise key material"
+  exit 1
+fi
+if ! grep -q 'disable.enterprise.sources' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must call disable.enterprise.sources before bootstrap apt update"
+  exit 1
+fi
+if ! grep -q 'Find enterprise deb822/list apt source files for cleanup' "${ROOT}/ansible/release/9.1/enterprise.yml"; then
+  echo "[validate.runtime][error] ansible/release/9.1/enterprise.yml must locate enterprise deb822/list source files for cleanup"
+  exit 1
+fi
+if ! grep -q 'Remove enterprise deb822/list apt source files when using no-subscription' "${ROOT}/ansible/release/9.1/enterprise.yml"; then
+  echo "[validate.runtime][error] ansible/release/9.1/enterprise.yml must remove enterprise deb822/list source files in no-subscription mode"
+  exit 1
+fi
+if ! grep -q 'ceph.release.gpg' "${ROOT}/ansible/release/9.1/enterprise.yml"; then
+  echo "[validate.runtime][error] ansible/release/9.1/enterprise.yml must remove legacy Ceph enterprise key material"
+  exit 1
+fi
+echo "[validate.runtime][ok] 9.1 bootstrap cleans enterprise PVE/Ceph sources before apt update"
+
 echo "[validate.runtime] checking Proxmox feature runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh does not define FEATURE_PLAYBOOKS array"

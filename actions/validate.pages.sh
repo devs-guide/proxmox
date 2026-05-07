@@ -198,6 +198,45 @@ check_published_samba_runner_policy() {
   fi
 }
 
+check_published_release91_bootstrap_policy() {
+  local published_bootstrap="${TMPDIR}/9.1.sh"
+  local published_enterprise="${TMPDIR}/ansible/release/9.1/enterprise.yml"
+  local needle
+
+  if [[ ! -f "${published_bootstrap}" ]]; then
+    echo "[validate.pages][error] published 9.1.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'disable.enterprise.sources()' \
+    'Disabling Proxmox enterprise apt sources before bootstrap update' \
+    "enterprise\\.proxmox\\.com/debian/(pve|ceph)" \
+    'ceph.release.gpg'; do
+    if ! grep -q -- "${needle}" "${published_bootstrap}"; then
+      echo "[validate.pages][error] published 9.1 bootstrap is stale or missing apt cleanup marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if [[ ! -f "${published_enterprise}" ]]; then
+    echo "[validate.pages][error] published ansible/release/9.1/enterprise.yml was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'Find enterprise deb822/list apt source files for cleanup' \
+    'Remove enterprise deb822/list apt source files when using no-subscription' \
+    'ceph.release.gpg'; do
+    if ! grep -q -- "${needle}" "${published_enterprise}"; then
+      echo "[validate.pages][error] published 9.1 enterprise policy is stale or missing cleanup marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
 check_published_debian_lxc_policy() {
   local published_runner="${TMPDIR}/setup/lxc/debian.sh"
   local needle
@@ -338,6 +377,7 @@ check_published_samba_playbook_policy() {
 }
 
 check_published_samba_runner_policy
+check_published_release91_bootstrap_policy
 check_published_debian_lxc_policy
 check_published_debian_lxc_playbook_policy
 check_published_debian_base_bootstrap
