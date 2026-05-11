@@ -14,6 +14,7 @@ declare -A PKGS
 # --- Playlist (Of Playbooks) File Name:
 PLAYBOOKS="debian/install.playbooks.txt"
 SETUP_VLAN_RUNNER="setup/vlan.sh"
+SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
 SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
 SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
 
@@ -156,6 +157,28 @@ load.setup.vlan.playbooks() {
   PKGS[setup_vlan]="${_setup_vlan_items[*]}"
 }
 
+load.setup.cli_codex.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_CLI_CODEX_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_CLI_CODEX_RUNNER} not found; skipping setup-cli-codex playbook refs"
+    PKGS[setup_cli_codex]=""
+    return 0
+  }
+
+  mapfile -t _setup_cli_codex_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_cli_codex_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_CLI_CODEX_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_cli_codex]="${_setup_cli_codex_items[*]}"
+}
+
 load.setup.samba.playbooks() {
   local runner="${PATH_TO[root]}/${SETUP_SAMBA_RUNNER}"
   [[ -f "${runner}" ]] || {
@@ -293,6 +316,13 @@ publish.setup.features() {
     log.warn "[www.pages] setup/vlan.sh not found; skipping setup.vlan.sh publish"
   fi
 
+  if [[ -f "${SETUP_CLI_CODEX_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_CLI_CODEX_RUNNER} as setup.cli.codex.sh"
+    install -m 0755 "${SETUP_CLI_CODEX_RUNNER}" "${PATH_TO[publish]}/setup.cli.codex.sh"
+  else
+    log.warn "[www.pages] ${SETUP_CLI_CODEX_RUNNER} not found; skipping setup.cli.codex.sh publish"
+  fi
+
   if [[ -f "${SETUP_SAMBA_RUNNER}" ]]; then
     log.info "[www.pages] installing ${SETUP_SAMBA_RUNNER}"
     mkdir -p "${PATH_TO[publish]}/setup/lxc"
@@ -343,6 +373,11 @@ publish.ansible() {
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
   done
 
+  load.setup.cli_codex.playbooks
+  for playbook_to_run in ${PKGS[setup_cli_codex]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
   load.setup.samba.playbooks
   for playbook_to_run in ${PKGS[setup_samba]:-}; do
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
@@ -362,6 +397,9 @@ publish.ansible() {
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
   if [[ -n "${PKGS[setup_vlan]:-}" ]]; then
     log.info "[www.pages] setup vlan entries: ${PKGS[setup_vlan]}"
+  fi
+  if [[ -n "${PKGS[setup_cli_codex]:-}" ]]; then
+    log.info "[www.pages] setup cli codex entries: ${PKGS[setup_cli_codex]}"
   fi
   if [[ -n "${PKGS[setup_samba]:-}" ]]; then
     log.info "[www.pages] setup samba entries: ${PKGS[setup_samba]}"

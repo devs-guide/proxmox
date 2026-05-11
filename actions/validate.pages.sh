@@ -10,6 +10,7 @@ FILES=(
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
   "setup.vlan.sh:setup/vlan.sh"
+  "setup.cli.codex.sh:setup/cli.codex.sh"
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
   "setup/lxc/samba.sh:setup/lxc/samba.sh"
   "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
@@ -162,6 +163,7 @@ check_playlist_refs() {
 check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
 check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
 check_setup_feature_refs "setup/vlan.sh"
+check_setup_feature_refs "setup/cli.codex.sh"
 check_setup_feature_refs "setup/lxc/debian.sh"
 check_setup_feature_refs "setup/lxc/samba.sh"
 

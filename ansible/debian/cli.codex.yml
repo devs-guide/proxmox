@@ -1,0 +1,204 @@
+---
+- name: "[debian]: codex via npm"
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    codex_enable: false
+    codex_mode: "apply"
+    codex_npm_package: "@openai/codex"
+    codex_version: "latest"
+    codex_nvm_dir: "/root/.nvm"
+    codex_binary_symlink: "/usr/local/bin/codex"
+    codex_install_docs_mcp: true
+    codex_docs_mcp_name: "openaiDeveloperDocs"
+    codex_docs_mcp_url: "https://developers.openai.com/mcp"
+    codex_runtime_facts_path: "/etc/ansible/proxmox/facts/cli.codex.yml"
+
+  tasks:
+    - name: Assert Codex mode is valid
+      assert:
+        that:
+          - codex_mode in ['preflight', 'apply']
+        fail_msg: "Unsupported Codex mode: {{ codex_mode }}"
+
+    - name: Check if nvm is already installed
+      stat:
+        path: "{{ codex_nvm_dir }}/nvm.sh"
+      register: codex_nvm_sh
+
+    - name: Fail when Codex install is requested before Node/nvm exists
+      assert:
+        that:
+          - codex_nvm_sh.stat.exists
+        fail_msg: >-
+          nvm is missing at {{ codex_nvm_dir }}/nvm.sh.
+          Run ansible/debian/node.yml first or use the setup.cli.codex.sh runner.
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'
+
+    - name: Gather current Node, npm, and Codex versions
+      shell: |
+        set -e
+        export NVM_DIR="{{ codex_nvm_dir }}"
+        . "{{ codex_nvm_dir }}/nvm.sh"
+        node_version="$(node --version 2>/dev/null || true)"
+        npm_version="$(npm --version 2>/dev/null || true)"
+        codex_path="$(command -v codex || true)"
+        codex_version_current=""
+        pkg_json="$(npm root -g 2>/dev/null)/{{ codex_npm_package }}/package.json"
+        if [ -f "${pkg_json}" ]; then
+          codex_version_current="$(node -p "require(process.argv[1]).version" "${pkg_json}")"
+        fi
+        printf 'node_version=%s\n' "${node_version}"
+        printf 'npm_version=%s\n' "${npm_version}"
+        printf 'codex_path=%s\n' "${codex_path}"
+        printf 'codex_version=%s\n' "${codex_version_current}"
+      args:
+        executable: /bin/bash
+      register: codex_current_versions
+      changed_when: false
+      failed_when: false
+      when: codex_nvm_sh.stat.exists
+
+    - name: Report Codex preflight summary
+      debug:
+        msg:
+          mode: "{{ codex_mode }}"
+          nvm_present: "{{ codex_nvm_sh.stat.exists | default(false) }}"
+          desired_package: "{{ codex_npm_package }}"
+          desired_version: "{{ codex_version }}"
+          current_versions: "{{ codex_current_versions.stdout_lines | default([]) }}"
+      when: codex_mode == 'preflight'
+
+    - name: Install or update Codex CLI via npm
+      shell: |
+        set -e
+        export NVM_DIR="{{ codex_nvm_dir }}"
+        . "{{ codex_nvm_dir }}/nvm.sh"
+
+        pkg_root="$(npm root -g)"
+        pkg_json="${pkg_root}/{{ codex_npm_package }}/package.json"
+        current_version=""
+        if [ -f "${pkg_json}" ]; then
+          current_version="$(node -p "require(process.argv[1]).version" "${pkg_json}")"
+        fi
+
+        if [ "{{ codex_version }}" = "latest" ]; then
+          desired_version="$(npm view "{{ codex_npm_package }}" version)"
+          install_spec="{{ codex_npm_package }}@${desired_version}"
+        else
+          desired_version="{{ codex_version }}"
+          install_spec="{{ codex_npm_package }}@{{ codex_version }}"
+        fi
+
+        changed=0
+        if [ "${current_version}" != "${desired_version}" ]; then
+          npm install -g "${install_spec}"
+          changed=1
+        fi
+
+        echo "current=${current_version:-none}"
+        echo "desired=${desired_version}"
+        echo "changed=${changed}"
+      args:
+        executable: /bin/bash
+      register: codex_install_result
+      changed_when: "'changed=1' in codex_install_result.stdout"
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'
+
+    - name: Ensure Codex symlink is available for non-login shells
+      shell: |
+        set -e
+        export NVM_DIR="{{ codex_nvm_dir }}"
+        . "{{ codex_nvm_dir }}/nvm.sh"
+        codex_path="$(command -v codex)"
+        changed=0
+        if [ "$(readlink "{{ codex_binary_symlink }}" 2>/dev/null || true)" != "${codex_path}" ]; then
+          changed=1
+        fi
+        ln -sf "${codex_path}" "{{ codex_binary_symlink }}"
+        echo "changed=${changed}"
+      args:
+        executable: /bin/bash
+      register: codex_symlink_result
+      changed_when: "'changed=1' in codex_symlink_result.stdout"
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'
+
+    - name: Configure OpenAI docs MCP in Codex
+      shell: |
+        set -e
+        export NVM_DIR="{{ codex_nvm_dir }}"
+        . "{{ codex_nvm_dir }}/nvm.sh"
+        changed=0
+        if ! codex mcp list 2>/dev/null | grep -q "{{ codex_docs_mcp_name }}"; then
+          codex mcp add "{{ codex_docs_mcp_name }}" --url "{{ codex_docs_mcp_url }}"
+          changed=1
+        fi
+        echo "changed=${changed}"
+      args:
+        executable: /bin/bash
+      register: codex_docs_mcp_result
+      changed_when: "'changed=1' in codex_docs_mcp_result.stdout"
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'
+        - codex_install_docs_mcp | bool
+
+    - name: Ensure Proxmox facts directory exists for Node/Codex runtime facts
+      file:
+        path: "{{ codex_runtime_facts_path | dirname }}"
+        state: directory
+        mode: "0755"
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'
+
+    - name: Refresh Node, npm, and Codex runtime facts
+      shell: |
+        set -e
+        export NVM_DIR="{{ codex_nvm_dir }}"
+        . "{{ codex_nvm_dir }}/nvm.sh"
+        node_version="$(node --version)"
+        npm_version="$(npm --version)"
+        codex_path="$(command -v codex)"
+        codex_version_current="$(codex --version)"
+        docs_mcp_installed="false"
+        if codex mcp list 2>/dev/null | grep -q "{{ codex_docs_mcp_name }}"; then
+          docs_mcp_installed="true"
+        fi
+        cat > "{{ codex_runtime_facts_path }}" <<EOF
+---
+proxmox_cli_codex_runtime:
+  node_version: "${node_version}"
+  npm_version: "${npm_version}"
+  codex_version: "${codex_version_current}"
+  codex_path: "${codex_path}"
+  docs_mcp_installed: ${docs_mcp_installed}
+EOF
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'
+
+    - name: Report Codex install completion guidance
+      debug:
+        msg:
+          codex_path: "{{ codex_binary_symlink }}"
+          next_steps:
+            - "Run `codex --version` to verify the CLI."
+            - "Run `codex mcp list` to confirm the OpenAI docs MCP entry."
+            - "Authenticate Codex on the target host before first real use."
+      when:
+        - codex_enable | bool
+        - codex_mode == 'apply'

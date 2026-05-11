@@ -16,12 +16,14 @@ files=(
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
   "setup/vlan.sh"
+  "setup/cli.codex.sh"
   "setup/lxc/debian.sh"
   "setup/lxc/samba.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
   "ansible/debian/install.packages.yml"
+  "ansible/debian/codex.yml"
   "ansible/debian/netboot.yml"
   "ansible/debian/packages.yml"
   "ansible/debian/ssh.yml"
@@ -147,6 +149,45 @@ if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
   exit 1
 fi
 echo "[validate.runtime][ok] setup/vlan.sh uses generated YAML extra-vars and exposes the readable NIC UI"
+
+echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"debian/node.yml"' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/node.yml"
+  exit 1
+fi
+if ! grep -q '"debian/codex.yml"' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/codex.yml"
+  exit 1
+fi
+if ! grep -q 'CLI_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh is missing CLI_CODEX_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'write.cli.codex.extra.vars.file()' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh is missing write.cli.codex.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${CLI_CODEX_EXTRA_VARS_PATH}"' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh must use the lightweight container-style Ansible bootstrap helper"
+  exit 1
+fi
+if grep -q 'ensure.managed.ansible' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh must not require the full managed-target bootstrap path"
+  exit 1
+fi
+if ! grep -q 'setup.cli.codex.sh' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh must advertise its published setup.cli.codex.sh URL"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/cli.codex.sh exposes the minimal CLI/Codex runner contract"
 
 echo "[validate.runtime] checking Proxmox LXC Samba runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/samba.sh"; then
@@ -871,6 +912,10 @@ if ! grep -q 'load.setup.vlan.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/vlan.sh feature playbook refs"
   exit 1
 fi
+if ! grep -q 'load.setup.cli_codex.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/cli.codex.sh feature playbook refs"
+  exit 1
+fi
 if ! grep -q 'load.setup.samba.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/samba.sh feature playbook refs"
   exit 1
@@ -885,6 +930,10 @@ if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
 fi
 if ! grep -q 'setup/lxc/samba.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Samba runner path"
+  exit 1
+fi
+if ! grep -q 'setup.cli.codex.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish setup.cli.codex.sh"
   exit 1
 fi
 if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
@@ -903,6 +952,7 @@ bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
 bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VERSION:?}" "${ANSIBLE_CORE_SPEC:?}" "${MANAGED_TARGET_PYTHON_HOME:?}" "${MANAGED_TARGET_PYTHON_PATH:?}"' _ "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
+bash -n "${ROOT}/setup/cli.codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
 bash -n "${ROOT}/setup/lxc/samba.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
@@ -975,5 +1025,13 @@ run_proxmox_feature_check() {
 }
 
 run_proxmox_feature_check "proxmox feature playbooks" -e @${ROOT}/ansible/group_vars/proxmox.yml
+
+echo "[validate.runtime] syntax-checking Debian Node/Codex playbooks ..."
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/node.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/codex.yml"
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."

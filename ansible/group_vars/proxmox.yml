@@ -19,6 +19,9 @@ proxmox_feature_defaults:
     mode: "apply"  # preflight | apply
     require_container: true
     require_operator_selection: true
+  cli_codex:
+    enabled: false
+    mode: "apply"  # preflight | apply
 
 proxmox_vlan_ui:
   enabled: true
@@ -174,6 +177,17 @@ proxmox_samba:
       - "/tmp"
       - "/var"
     explicit: []
+
+proxmox_cli_codex:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/cli.codex.yml"
+  nvm_version: "v0.39.7"
+  node_version: "lts/*"
+  codex_package: "@openai/codex"
+  codex_version: "latest"
+  install_docs_mcp: true
+  docs_mcp_name: "openaiDeveloperDocs"
+  docs_mcp_url: "https://developers.openai.com/mcp"
 
 proxmox_lxc_debian:
   facts_dir: "/etc/ansible/proxmox/facts"
