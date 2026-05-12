@@ -2,6 +2,8 @@
 ## Read-only Proxmox network preflight collector.
 ## Local usage:
 ##   ./setup/network.sh [preflight|report|all]
+## Published usage:
+##   wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash
 
 set -euo pipefail
 
@@ -19,6 +21,7 @@ EXPECTED_GUEST_ADMIN_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF:-eth0}"
 EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-eth1}"
 CTID_FILTER="${PROXMOX_NETWORK_CTIDS:-}"
 VMID_FILTER="${PROXMOX_NETWORK_VMIDS:-}"
+FEATURE_INTERACTIVE="${PROXMOX_NETWORK_INTERACTIVE:-1}"
 
 RUN_DIR=""
 RAW_DIR=""
@@ -49,9 +52,14 @@ DISCOVERED_ADMIN_NIC=""
 DISCOVERED_ADMIN_IP_CIDR=""
 DISCOVERED_DATA_BRIDGE=""
 DISCOVERED_DATA_NICS=""
+OPEN_TTY=0
+CURRENT_STAGE="startup"
+PARTIAL_ERROR_PATH=""
 
 declare -a CT_IDS=()
 declare -a VM_IDS=()
+declare -a DISCOVERED_CT_IDS=()
+declare -a DISCOVERED_VM_IDS=()
 
 usage() {
   cat <<'EOF'
@@ -83,6 +91,14 @@ EOF
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+is.true() {
+  local value="${1:-}"
+  case "${value,,}" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 require.root() {
@@ -138,6 +154,122 @@ yaml.quote() {
   value="${value//\"/\\\"}"
   printf '"%s"' "${value}"
 }
+
+open.tty() {
+  if [[ ! -r /dev/tty ]]; then
+    return 1
+  fi
+  exec 3<>/dev/tty
+  OPEN_TTY=1
+  return 0
+}
+
+prompt.tty() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer=""
+  if [[ -n "${default}" ]]; then
+    printf '%s [%s]: ' "${prompt}" "${default}" >&3
+  else
+    printf '%s: ' "${prompt}" >&3
+  fi
+  read -r -u 3 answer || true
+  if [[ -z "${answer}" ]]; then
+    answer="${default}"
+  fi
+  printf '%s\n' "${answer}"
+}
+
+menu.tty() {
+  local prompt="$1"
+  shift
+  local -a options=("$@")
+  local answer=""
+  local i
+  while true; do
+    printf '%s\n' "${prompt}" >&3
+    for i in "${!options[@]}"; do
+      printf '  %d) %s\n' "$((i + 1))" "${options[$i]}" >&3
+    done
+    printf 'Select option: ' >&3
+    read -r -u 3 answer || true
+    if [[ "${answer}" =~ ^[0-9]+$ ]] && ((answer >= 1 && answer <= ${#options[@]})); then
+      printf '%s\n' "${answer}"
+      return 0
+    fi
+    printf 'Invalid selection.\n' >&3
+  done
+}
+
+trim.space() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+path.basename.or.empty() {
+  local path="${1:-}"
+  if [[ -z "${path}" ]]; then
+    printf ''
+    return 0
+  fi
+  basename "${path}" 2>/dev/null || true
+}
+
+readlink.basename.or.empty() {
+  local path="${1:-}"
+  local resolved=""
+  resolved="$(readlink -f "${path}" 2>/dev/null || true)"
+  path.basename.or.empty "${resolved}"
+}
+
+set.stage() {
+  CURRENT_STAGE="$1"
+  log "Stage: ${CURRENT_STAGE}"
+}
+
+join.discovered.ids() {
+  local -n ids_ref="$1"
+  local joined=""
+  if ((${#ids_ref[@]} == 0)); then
+    printf 'none'
+    return 0
+  fi
+  joined="$(join.by ',' "${ids_ref[@]}")"
+  printf '%s' "${joined}"
+}
+
+write.partial.error() {
+  local line_no="${1:-unknown}"
+  local exit_code="${2:-1}"
+  if [[ -z "${RUN_DIR}" ]]; then
+    return 0
+  fi
+  PARTIAL_ERROR_PATH="${RUN_DIR}/network.error.txt"
+  {
+    printf 'setup/network.sh error\n'
+    printf 'host: %s\n' "${HOSTNAME_SHORT:-unknown}"
+    printf 'stage: %s\n' "${CURRENT_STAGE:-unknown}"
+    printf 'line: %s\n' "${line_no}"
+    printf 'exit_code: %s\n' "${exit_code}"
+    printf 'collected_at: %s\n' "${COLLECTED_AT:-unknown}"
+    printf 'run_dir: %s\n' "${RUN_DIR}"
+  } > "${PARTIAL_ERROR_PATH}"
+}
+
+on.err() {
+  local line_no="${1:-unknown}"
+  local exit_code="${2:-1}"
+  write.partial.error "${line_no}" "${exit_code}"
+  log.error "Preflight failed at stage=${CURRENT_STAGE} line=${line_no} exit=${exit_code}"
+  if [[ -n "${PARTIAL_ERROR_PATH}" ]]; then
+    log.error "Partial error details saved to ${PARTIAL_ERROR_PATH}"
+  fi
+  exit "${exit_code}"
+}
+
+trap 'on.err "${LINENO}" "$?"' ERR
 
 first_line() {
   awk 'NF && $0 !~ /^#/ { print; exit }' "$1" 2>/dev/null || true
@@ -248,6 +380,10 @@ update.latest.pointer() {
 }
 
 discover.basic.host.facts() {
+  set.stage "discover.basic.host.facts"
+  if [[ -z "${HOSTNAME_SHORT}" ]]; then
+    HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
+  fi
   PVE_VERSION="$(pveversion 2>/dev/null | head -n1 || true)"
   KERNEL_VERSION="$(uname -r 2>/dev/null || true)"
   DEFAULT_ROUTE_LINE="$(ip route show default 2>/dev/null | head -n1 || true)"
@@ -256,7 +392,7 @@ discover.basic.host.facts() {
 
   DISCOVERED_ADMIN_BRIDGE="${DEFAULT_ROUTE_DEV}"
   if [[ -n "${DEFAULT_ROUTE_DEV}" && -L "/sys/class/net/${DEFAULT_ROUTE_DEV}/master" ]]; then
-    DISCOVERED_ADMIN_BRIDGE="$(basename "$(readlink -f "/sys/class/net/${DEFAULT_ROUTE_DEV}/master")")"
+    DISCOVERED_ADMIN_BRIDGE="$(readlink.basename.or.empty "/sys/class/net/${DEFAULT_ROUTE_DEV}/master")"
   fi
   if [[ "${DISCOVERED_ADMIN_BRIDGE}" == "${DEFAULT_ROUTE_DEV}" ]]; then
     DISCOVERED_ADMIN_NIC="${DEFAULT_ROUTE_DEV}"
@@ -265,9 +401,11 @@ discover.basic.host.facts() {
   fi
   DISCOVERED_ADMIN_IP_CIDR="$(ip -o -4 addr show dev "${DISCOVERED_ADMIN_BRIDGE}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
   DISCOVERED_DATA_BRIDGE="${EXPECTED_DATA_BRIDGE}"
+  log "Discovered admin bridge=${DISCOVERED_ADMIN_BRIDGE:-unknown} admin_nic=${DISCOVERED_ADMIN_NIC:-unknown} admin_ip=${DISCOVERED_ADMIN_IP_CIDR:-none} gateway=${DEFAULT_GATEWAY:-none}"
 }
 
 collect.host.raw() {
+  set.stage "collect.host.raw"
   capture.cmd "${RAW_HOST_DIR}/pveversion.txt" "Proxmox version" "pveversion"
   capture.cmd "${RAW_HOST_DIR}/uname.txt" "Kernel version" "uname -a"
   capture.cmd "${RAW_HOST_DIR}/ip.br.link.txt" "Interface link summary" "ip -br link"
@@ -288,9 +426,11 @@ collect.host.raw() {
     [[ -f "${path}" ]] || continue
     capture.cmd "${RAW_HOST_DIR}/interfaces.d.$(basename "${path}").txt" "Host interfaces.d file ${path}" "cat $(printf '%q' "${path}")"
   done
+  log "Captured raw host facts in ${RAW_HOST_DIR}"
 }
 
 collect.nics.tsv() {
+  set.stage "collect.nics.tsv"
   printf 'iface\tkind\tmac\tmtu\toperstate\tcarrier\tspeed\tduplex\tdriver\tpci_slot\tmaster\tipv4\tipv6\n' > "${NICS_TSV_PATH}"
 
   local iface=""
@@ -329,11 +469,11 @@ collect.nics.tsv() {
     carrier="$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || true)"
     speed="$(cat "/sys/class/net/${iface}/speed" 2>/dev/null || true)"
     duplex="$(cat "/sys/class/net/${iface}/duplex" 2>/dev/null || true)"
-    driver="$(basename "$(readlink -f "/sys/class/net/${iface}/device/driver" 2>/dev/null || true)")"
-    pci_slot="$(basename "$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null || true)")"
+    driver="$(readlink.basename.or.empty "/sys/class/net/${iface}/device/driver")"
+    pci_slot="$(readlink.basename.or.empty "/sys/class/net/${iface}/device")"
     master=""
     if [[ -L "/sys/class/net/${iface}/master" ]]; then
-      master="$(basename "$(readlink -f "/sys/class/net/${iface}/master")")"
+      master="$(readlink.basename.or.empty "/sys/class/net/${iface}/master")"
     fi
     ipv4="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
     ipv6="$(ip -o -6 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
@@ -363,9 +503,11 @@ collect.nics.tsv() {
     DISCOVERED_ADMIN_NIC="${physical_admin_nics[0]}"
   fi
   DISCOVERED_DATA_NICS="$(join.by ',' "${physical_data_nics[@]}")"
+  log "Collected NIC facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${NICS_TSV_PATH}") interfaces; data_nics=${DISCOVERED_DATA_NICS:-none}"
 }
 
 collect.bridges.tsv() {
+  set.stage "collect.bridges.tsv"
   printf 'bridge\tvlan_filtering\tmembers\tipv4\tipv6\n' > "${BRIDGES_TSV_PATH}"
 
   local iface=""
@@ -385,9 +527,11 @@ collect.bridges.tsv() {
 
     append.tsv.row "${BRIDGES_TSV_PATH}" "${iface}" "${vlan_filtering}" "${members}" "${ipv4}" "${ipv6}"
   done
+  log "Collected bridge facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${BRIDGES_TSV_PATH}") bridge rows"
 }
 
 collect.vlans.tsv() {
+  set.stage "collect.vlans.tsv"
   printf 'port\tvlan_detail\n' > "${VLANS_TSV_PATH}"
   awk '
     /^#/ || /^$/ { next }
@@ -404,9 +548,27 @@ collect.vlans.tsv() {
       }
     }
   ' "${RAW_HOST_DIR}/bridge.vlan.txt" >> "${VLANS_TSV_PATH}" 2>/dev/null || true
+  log "Collected VLAN membership facts"
+}
+
+discover.available.ct.ids() {
+  DISCOVERED_CT_IDS=()
+  local token=""
+  while IFS= read -r token; do
+    [[ -n "${token}" ]] && DISCOVERED_CT_IDS+=("${token}")
+  done < <(pct list 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ {print $1}')
+}
+
+discover.available.vm.ids() {
+  DISCOVERED_VM_IDS=()
+  local token=""
+  while IFS= read -r token; do
+    [[ -n "${token}" ]] && DISCOVERED_VM_IDS+=("${token}")
+  done < <(qm list 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ {print $1}')
 }
 
 discover.ct.ids() {
+  CT_IDS=()
   local token=""
   if [[ -n "${CTID_FILTER}" ]]; then
     while IFS= read -r token; do
@@ -415,12 +577,11 @@ discover.ct.ids() {
     return
   fi
 
-  while IFS= read -r token; do
-    [[ -n "${token}" ]] && CT_IDS+=("${token}")
-  done < <(pct list 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ {print $1}')
+  CT_IDS=("${DISCOVERED_CT_IDS[@]}")
 }
 
 discover.vm.ids() {
+  VM_IDS=()
   local token=""
   if [[ -n "${VMID_FILTER}" ]]; then
     while IFS= read -r token; do
@@ -429,9 +590,7 @@ discover.vm.ids() {
     return
   fi
 
-  while IFS= read -r token; do
-    [[ -n "${token}" ]] && VM_IDS+=("${token}")
-  done < <(qm list 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ {print $1}')
+  VM_IDS=("${DISCOVERED_VM_IDS[@]}")
 }
 
 append.risk() {
@@ -439,6 +598,7 @@ append.risk() {
 }
 
 collect.lxc.data() {
+  set.stage "collect.lxc.data"
   printf 'guest_type\tguest_id\tguest_name\tstatus\tnet_slot\tguest_if\tbridge\tvlan_tag\ttrunks\tfirewall\tmtu\tip_hint\tgw_hint\traw\n' > "${LXC_TSV_PATH}"
 
   local id=""
@@ -476,6 +636,7 @@ collect.lxc.data() {
   printf 'guest_type\tguest_id\tguest_name\tstatus\tservice_present\tinterfaces\tbind_interfaces_only\thosts_allow\tsmb_ports\tufw_summary\n' > "${SAMBA_TSV_PATH}"
 
   for id in "${CT_IDS[@]}"; do
+    log "Inspecting LXC ${id}"
     status="$(pct status "${id}" 2>/dev/null | awk '{print $2}' || true)"
     runtime_dir="${RAW_LXC_DIR}/${id}"
     mkdir -p "${runtime_dir}"
@@ -603,9 +764,11 @@ collect.lxc.data() {
         "lxc" "${id}" "${name}" "${status}" "unknown" "-" "-" "-" "-" "-"
     fi
   done
+  log "Collected LXC facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${LXC_TSV_PATH}") NIC rows"
 }
 
 collect.vm.data() {
+  set.stage "collect.vm.data"
   printf 'guest_type\tguest_id\tguest_name\tstatus\tnet_slot\tmodel\tmac\tbridge\tvlan_tag\ttrunks\tfirewall\tmtu\traw\n' > "${VM_TSV_PATH}"
 
   local id=""
@@ -627,6 +790,7 @@ collect.vm.data() {
   local qga_state=""
 
   for id in "${VM_IDS[@]}"; do
+    log "Inspecting VM ${id}"
     status="$(qm status "${id}" 2>/dev/null | awk '{print $2}' || true)"
     runtime_dir="${RAW_VM_DIR}/${id}"
     mkdir -p "${runtime_dir}"
@@ -682,9 +846,11 @@ collect.vm.data() {
         "vm" "${id}" "${name}" "${status}" "unavailable" "-" "-" "-" "-"
     fi
   done
+  log "Collected VM facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${VM_TSV_PATH}") NIC rows"
 }
 
 classify.host.risks() {
+  set.stage "classify.host.risks"
   printf 'severity\tscope\tguest_id\tguest_name\tcode\tdetail\n' > "${RISKS_TSV_PATH}"
 
   local data_bridge_row=""
@@ -736,9 +902,11 @@ classify.host.risks() {
     append.risk "warn" "host" "-" "${HOSTNAME_SHORT}" "data_nic_has_host_ip" \
       "Physical data NIC ${iface} under ${EXPECTED_DATA_BRIDGE} has host IPv4 address(es): ${ipv4}."
   done
+  log "Classified risks: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${RISKS_TSV_PATH}") findings"
 }
 
 write.host.yaml() {
+  set.stage "write.host.yaml"
   cat > "${HOST_YAML_PATH}" <<EOF
 ---
 proxmox_network_preflight:
@@ -777,6 +945,7 @@ EOF
 }
 
 write.next.stage.env() {
+  set.stage "write.next.stage.env"
   cat > "${ENV_PATH}" <<EOF
 # Saved by setup/network.sh preflight
 export PROXMOX_NETWORK_REPORT_DIR=$(yaml.quote "${RUN_DIR}")
@@ -795,6 +964,7 @@ EOF
 }
 
 write.summary() {
+  set.stage "write.summary"
   local ct_count vm_count nic_count bridge_count risk_total risk_error risk_warn risk_info
   ct_count="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${LXC_TSV_PATH}" 2>/dev/null || printf '0')"
   vm_count="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${VM_TSV_PATH}" 2>/dev/null || printf '0')"
@@ -848,9 +1018,76 @@ write.summary() {
   } > "${SUMMARY_PATH}"
 }
 
+print.discovery.preview() {
+  printf '\n'
+  printf 'Discovered host defaults:\n' >&3
+  printf '  host: %s\n' "${HOSTNAME_SHORT}" >&3
+  printf '  output root: %s\n' "${OUTPUT_ROOT}" >&3
+  printf '  admin bridge: %s\n' "${DISCOVERED_ADMIN_BRIDGE:-${EXPECTED_ADMIN_BRIDGE}}" >&3
+  printf '  admin nic: %s\n' "${DISCOVERED_ADMIN_NIC:-unknown}" >&3
+  printf '  admin ip: %s\n' "${DISCOVERED_ADMIN_IP_CIDR:-none}" >&3
+  printf '  default gateway: %s\n' "${DEFAULT_GATEWAY:-none}" >&3
+  printf '  data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
+  printf '  guest admin if: %s\n' "${EXPECTED_GUEST_ADMIN_IF}" >&3
+  printf '  guest data if: %s\n' "${EXPECTED_GUEST_DATA_IF}" >&3
+  printf '  expected LAN CIDR: %s\n' "${EXPECTED_LAN_CIDR}" >&3
+  printf '  discovered LXC IDs: %s\n' "$(join.discovered.ids DISCOVERED_CT_IDS)" >&3
+  printf '  discovered VM IDs: %s\n' "$(join.discovered.ids DISCOVERED_VM_IDS)" >&3
+  printf '\n' >&3
+}
+
+collect.operator.selection() {
+  local choice=""
+  local discovered_ctids=""
+  local discovered_vmids=""
+
+  if ! is.true "${FEATURE_INTERACTIVE}" || ! open.tty; then
+    return 0
+  fi
+
+  discovered_ctids="$(join.discovered.ids DISCOVERED_CT_IDS)"
+  discovered_vmids="$(join.discovered.ids DISCOVERED_VM_IDS)"
+  print.discovery.preview
+
+  choice="$(menu.tty "Accept discovered preflight defaults?" "yes" "edit values manually" "abort")"
+  case "${choice}" in
+    1)
+      return 0
+      ;;
+    2)
+      OUTPUT_ROOT="$(prompt.tty "Enter output root directory" "${OUTPUT_ROOT}")"
+      EXPECTED_ADMIN_BRIDGE="$(prompt.tty "Enter expected admin bridge" "${DISCOVERED_ADMIN_BRIDGE:-${EXPECTED_ADMIN_BRIDGE}}")"
+      EXPECTED_DATA_BRIDGE="$(prompt.tty "Enter expected data bridge" "${EXPECTED_DATA_BRIDGE}")"
+      EXPECTED_LAN_CIDR="$(prompt.tty "Enter expected LAN CIDR" "${EXPECTED_LAN_CIDR}")"
+      EXPECTED_GUEST_ADMIN_IF="$(prompt.tty "Enter guest admin interface name" "${EXPECTED_GUEST_ADMIN_IF}")"
+      EXPECTED_GUEST_DATA_IF="$(prompt.tty "Enter guest data interface name" "${EXPECTED_GUEST_DATA_IF}")"
+      CTID_FILTER="$(trim.space "$(prompt.tty "Enter LXC IDs to inspect (blank = all discovered)" "${CTID_FILTER}")")"
+      VMID_FILTER="$(trim.space "$(prompt.tty "Enter VM IDs to inspect (blank = all discovered)" "${VMID_FILTER}")")"
+      printf '\nFinal preflight selection:\n' >&3
+      printf '  output root: %s\n' "${OUTPUT_ROOT}" >&3
+      printf '  expected admin bridge: %s\n' "${EXPECTED_ADMIN_BRIDGE}" >&3
+      printf '  expected data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
+      printf '  expected LAN CIDR: %s\n' "${EXPECTED_LAN_CIDR}" >&3
+      printf '  guest admin if: %s\n' "${EXPECTED_GUEST_ADMIN_IF}" >&3
+      printf '  guest data if: %s\n' "${EXPECTED_GUEST_DATA_IF}" >&3
+      printf '  selected LXC IDs: %s\n' "${CTID_FILTER:-${discovered_ctids}}" >&3
+      printf '  selected VM IDs: %s\n' "${VMID_FILTER:-${discovered_vmids}}" >&3
+      printf '\n' >&3
+      ;;
+    *)
+      log.error "Aborted by operator."
+      exit 1
+      ;;
+  esac
+}
+
 run.preflight() {
-  init.run.dir
   discover.basic.host.facts
+  discover.available.ct.ids
+  discover.available.vm.ids
+  collect.operator.selection
+
+  init.run.dir
   collect.host.raw
   collect.nics.tsv
   collect.bridges.tsv
@@ -858,6 +1095,7 @@ run.preflight() {
   collect.vlans.tsv
   discover.ct.ids
   discover.vm.ids
+  log "Selected scope: LXC IDs=$(join.by ',' "${CT_IDS[@]}") VM IDs=$(join.by ',' "${VM_IDS[@]}")"
   collect.lxc.data
   collect.vm.data
   write.host.yaml
