@@ -7,7 +7,13 @@
 
 set -Eeuo pipefail
 
-log()       { printf '[setup.network] %s\n' "$*" >&2; [[ -n "${TRACE_PATH:-}" ]] && printf '[setup.network] %s\n' "$*" >> "${TRACE_PATH}"; }
+log() {
+  printf '[setup.network] %s\n' "$*" >&2
+  if [[ -n "${TRACE_PATH:-}" ]]; then
+    printf '[setup.network] %s\n' "$*" >> "${TRACE_PATH}"
+  fi
+  return 0
+}
 log.error() { printf '[setup.network][error] %s\n' "$*" >&2; }
 log.warn()  { printf '[setup.network][warn] %s\n' "$*" >&2; }
 
