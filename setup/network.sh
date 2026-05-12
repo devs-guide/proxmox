@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-## Read-only Proxmox network preflight collector.
+## Proxmox network preflight + update feature runner.
 ## Local usage:
-##   ./setup/network.sh [preflight|report|all]
+##   ./setup/network.sh [preflight|update|report|all|debug]
 ## Published usage:
 ##   wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash
 
@@ -17,9 +17,12 @@ log() {
 log.error() { printf '[setup.network][error] %s\n' "$*" >&2; }
 log.warn()  { printf '[setup.network][warn] %s\n' "$*" >&2; }
 
-FEATURE_MODE="${1:-${PROXMOX_NETWORK_MODE:-preflight}}"
+CLI_ARG_COUNT="$#"
+CLI_MODE_RAW="${1:-}"
+FEATURE_MODE="${CLI_MODE_RAW:-${PROXMOX_NETWORK_MODE:-preflight}}"
 OUTPUT_ROOT="${PROXMOX_NETWORK_OUTPUT_ROOT:-${HOME:-/root}/proxmox.network.preflight}"
 REPORT_DIR_OVERRIDE="${PROXMOX_NETWORK_REPORT_DIR:-}"
+SNAPSHOT_DIR_OVERRIDE="${PROXMOX_NETWORK_SNAPSHOT_DIR:-}"
 EXPECTED_ADMIN_BRIDGE="${PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE:-vmbr0}"
 EXPECTED_DATA_BRIDGE="${PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE:-vmbr1}"
 EXPECTED_LAN_CIDR="${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-10.0.0.0/24}"
@@ -29,6 +32,63 @@ CTID_FILTER="${PROXMOX_NETWORK_CTIDS:-}"
 VMID_FILTER="${PROXMOX_NETWORK_VMIDS:-}"
 FEATURE_INTERACTIVE="${PROXMOX_NETWORK_INTERACTIVE:-1}"
 FEATURE_DEBUG="${PROXMOX_NETWORK_DEBUG:-0}"
+PROXMOX_NETWORK_UPDATE_MODE="${PROXMOX_NETWORK_UPDATE_MODE:-check}"
+PROXMOX_NETWORK_UPDATE_AUTO_APPLY="${PROXMOX_NETWORK_UPDATE_AUTO_APPLY:-0}"
+PROXMOX_NETWORK_UPDATE_VLAN_TAG="${PROXMOX_NETWORK_UPDATE_VLAN_TAG:-}"
+PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS="${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS:-}"
+PROXMOX_NETWORK_UPDATE_VM_MODEL="${PROXMOX_NETWORK_UPDATE_VM_MODEL:-virtio}"
+PROXMOX_NETWORK_UPDATE_LXCS="${PROXMOX_NETWORK_UPDATE_LXCS:-}"
+PROXMOX_NETWORK_UPDATE_VMS="${PROXMOX_NETWORK_UPDATE_VMS:-}"
+
+TMP_DIR="/tmp/pve-feature-network"
+PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
+PLAYBOOK_ROOT="${TMP_DIR}/ansible"
+PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
+LOCAL_COMMON_HELPER="../bootstrap/release.common.sh"
+COMMON_HELPER_NAME="release.common.sh"
+COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
+COMMON_HELPER_PATH="${TMP_DIR}/${COMMON_HELPER_NAME}"
+GROUP_VARS_FILE="proxmox.yml"
+GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
+GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
+FEATURE_PLAYBOOKS=(
+  "proxmox/helper/network.preflight.export.yml"
+  "proxmox/network.update.yml"
+  "proxmox/network.verify.yml"
+)
+NETWORK_EXPORT_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
+NETWORK_UPDATE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
+NETWORK_VERIFY_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[2]}"
+NETWORK_EXPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NETWORK_EXPORT_PLAYBOOK_REL}"
+NETWORK_UPDATE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NETWORK_UPDATE_PLAYBOOK_REL}"
+NETWORK_VERIFY_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NETWORK_VERIFY_PLAYBOOK_REL}"
+NETWORK_EXPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_EXPORT_PLAYBOOK_REL}"
+NETWORK_UPDATE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_UPDATE_PLAYBOOK_REL}"
+NETWORK_VERIFY_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_VERIFY_PLAYBOOK_REL}"
+NETWORK_EXTRA_VARS_PATH="${TMP_DIR}/network.update.extra-vars.yml"
+ANSIBLE_VENV="/opt/ansible-venv"
+ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
+ANSIBLE_CORE_VERSION="${PROXMOX_BOOTSTRAP_ANSIBLE_CORE_VERSION:-2.20.5}"
+ANSIBLE_CORE_SPEC="ansible-core==${ANSIBLE_CORE_VERSION}"
+PYTHON_VERSION="${PROXMOX_BOOTSTRAP_PYTHON_VERSION:-3.12.3}"
+PYTHON_MAJOR_MINOR="${PYTHON_VERSION%.*}"
+PYTHON_SOURCE_PREFIX="${PROXMOX_BOOTSTRAP_PYTHON_SOURCE_PREFIX:-/usr/local}"
+PYTHON_BIN="${PYTHON_SOURCE_PREFIX}/bin/python${PYTHON_MAJOR_MINOR}"
+PYTHON_SRC_DIR="${PYTHON_SOURCE_PREFIX}/src/Python-${PYTHON_VERSION}"
+PYTHON_SRC_ARCHIVE="${PYTHON_SRC_DIR}.tgz"
+PYTHON_SRC_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
+MANAGED_TARGET_PYTHON_HOME="${PROXMOX_BOOTSTRAP_MANAGED_TARGET_PYTHON_HOME:-/opt/ansible/py312}"
+MANAGED_TARGET_PYTHON_PATH="${MANAGED_TARGET_PYTHON_HOME}/bin/python"
+MANAGED_TARGET_HANDOFF_MARKER="${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready"
+PYTHON_BOOTSTRAP_BIN=""
+COMMON_HELPER_SOURCED=0
+
+FACTS_DIR="${PROXMOX_NETWORK_FACTS_DIR:-/etc/ansible/proxmox/facts}"
+ANSIBLE_PREFLIGHT_FACTS_YAML="${PROXMOX_NETWORK_PREFLIGHT_FACTS_YAML:-${FACTS_DIR}/network.preflight.latest.yml}"
+ANSIBLE_PREFLIGHT_FACTS_JSON="${PROXMOX_NETWORK_PREFLIGHT_FACTS_JSON:-${FACTS_DIR}/network.preflight.latest.json}"
+NETWORK_INTENT_PATH="${PROXMOX_NETWORK_INTENT_PATH:-${FACTS_DIR}/network.intent.yml}"
+NETWORK_PLAN_PATH="${PROXMOX_NETWORK_PLAN_PATH:-${FACTS_DIR}/network.plan.tsv}"
+NETWORK_VERIFY_PATH="${PROXMOX_NETWORK_VERIFY_PATH:-${FACTS_DIR}/network.verify.tsv}"
 
 RUN_DIR=""
 RAW_DIR=""
@@ -69,22 +129,29 @@ declare -a CT_IDS=()
 declare -a VM_IDS=()
 declare -a DISCOVERED_CT_IDS=()
 declare -a DISCOVERED_VM_IDS=()
+declare -a UPDATE_LXC_IDS=()
+declare -a UPDATE_VM_IDS=()
+declare -a UPDATE_PLAN_ROWS=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./setup/network.sh [preflight|report|all|debug]
+  ./setup/network.sh [preflight|update|report|all|debug]
 
 Behavior:
-  preflight  Collect read-only host/guest network facts, classify risks, and
-             save a reusable snapshot under $HOME.
+  preflight  Collect host/guest network facts, classify risks, and save a
+             reusable snapshot under $HOME.
+  update     Build a guest network update plan from saved preflight facts and
+             run Ansible check/apply for selected LXCs/VMs.
   report     Print the latest saved summary, or use PROXMOX_NETWORK_REPORT_DIR.
-  all        Alias for preflight.
+  all        Run preflight, then offer update stage (interactive only).
   debug      Alias for preflight with verbose trace logging enabled.
 
 Optional environment overrides:
   PROXMOX_NETWORK_OUTPUT_ROOT=/root/proxmox.network.preflight
   PROXMOX_NETWORK_REPORT_DIR=/root/proxmox.network.preflight/host.timestamp
+  PROXMOX_NETWORK_SNAPSHOT_DIR=/root/proxmox.network.preflight/host.timestamp
+  PROXMOX_NETWORK_FACTS_DIR=/etc/ansible/proxmox/facts
   PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE=vmbr0
   PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE=vmbr1
   PROXMOX_NETWORK_EXPECTED_LAN_CIDR=10.0.0.0/24
@@ -92,10 +159,17 @@ Optional environment overrides:
   PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF=eth1
   PROXMOX_NETWORK_CTIDS=100,101
   PROXMOX_NETWORK_VMIDS=200,201
+  PROXMOX_NETWORK_UPDATE_MODE=check|apply
+  PROXMOX_NETWORK_UPDATE_AUTO_APPLY=0|1
+  PROXMOX_NETWORK_UPDATE_VLAN_TAG=<vid>
+  PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=10;20;30
+  PROXMOX_NETWORK_UPDATE_VM_MODEL=virtio
+  PROXMOX_NETWORK_UPDATE_LXCS=100,101
+  PROXMOX_NETWORK_UPDATE_VMS=200,201
 
 Safety:
-  This script is read-only. It does not call ifreload, pct set, qm set,
-  restart networking, or edit host/guest configs.
+  Preflight/report remain read-only. Update mode changes guest NIC config
+  through Ansible with an explicit check -> apply gate.
 EOF
 }
 
@@ -109,6 +183,38 @@ is.true() {
     1|true|yes|y|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+source.release.common() {
+  local script_dir=""
+  if [[ "${COMMON_HELPER_SOURCED}" -eq 1 ]]; then
+    return 0
+  fi
+
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+
+  if [[ -n "${script_dir}" && -r "${script_dir}/${LOCAL_COMMON_HELPER}" ]]; then
+    # shellcheck source=bootstrap/release.common.sh
+    source "${script_dir}/${LOCAL_COMMON_HELPER}"
+    COMMON_HELPER_SOURCED=1
+    return 0
+  fi
+
+  mkdir -p "${TMP_DIR}"
+  log "Fetching shared bootstrap helper: ${COMMON_HELPER_URL}"
+  if ! wget -qO "${COMMON_HELPER_PATH}" "${COMMON_HELPER_URL}"; then
+    log.error "Failed to fetch shared bootstrap helper: ${COMMON_HELPER_URL}"
+    exit 1
+  fi
+  if [[ ! -s "${COMMON_HELPER_PATH}" ]]; then
+    log.error "Shared bootstrap helper is empty: ${COMMON_HELPER_URL}"
+    exit 1
+  fi
+  # shellcheck source=/tmp/pve-feature-network/release.common.sh
+  source "${COMMON_HELPER_PATH}"
+  COMMON_HELPER_SOURCED=1
 }
 
 require.root() {
@@ -127,14 +233,14 @@ require.proxmox() {
 
 require.valid.mode() {
   case "${FEATURE_MODE}" in
-    preflight|report|all|debug) ;;
+    preflight|update|report|all|debug|run) ;;
     -h|--help|help)
       usage
       exit 0
       ;;
     *)
       log.error "Unsupported mode: ${FEATURE_MODE}"
-      log.error "Use one of: preflight, report, all, debug"
+      log.error "Use one of: preflight, update, report, all, debug"
       exit 1
       ;;
   esac
@@ -146,6 +252,20 @@ require.commands() {
   for cmd in awk bash bridge date grep hostname ip pct pvesh qm sed uname; do
     if ! command_exists "${cmd}"; then
       log.error "Missing required command: ${cmd}"
+      missing=1
+    fi
+  done
+  if [[ "${missing}" -ne 0 ]]; then
+    exit 1
+  fi
+}
+
+require.update.commands() {
+  local missing=0
+  local cmd=""
+  for cmd in awk bash grep ip pct qm sed sort wget; do
+    if ! command_exists "${cmd}"; then
+      log.error "Missing required update command: ${cmd}"
       missing=1
     fi
   done
@@ -383,6 +503,28 @@ join.by() {
   done
 }
 
+append.unique.id() {
+  local -n id_ref="$1"
+  local candidate="${2:-}"
+  local existing=""
+  [[ -n "${candidate}" ]] || return 0
+  for existing in "${id_ref[@]}"; do
+    if [[ "${existing}" == "${candidate}" ]]; then
+      return 0
+    fi
+  done
+  id_ref+=("${candidate}")
+}
+
+csv.from.id.list() {
+  local -n id_ref="$1"
+  if ((${#id_ref[@]} == 0)); then
+    printf ''
+    return 0
+  fi
+  join.by ',' "${id_ref[@]}"
+}
+
 init.run.dir() {
   HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
   COLLECTED_AT="$(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -390,6 +532,12 @@ init.run.dir() {
   stamp="$(date '+%Y%m%d.%H%M%S')"
 
   RUN_DIR="${OUTPUT_ROOT}/${HOSTNAME_SHORT}.${stamp}"
+  set.run.paths.from.dir
+  mkdir -p "${RAW_HOST_DIR}" "${RAW_LXC_DIR}" "${RAW_VM_DIR}"
+}
+
+set.run.paths.from.dir() {
+  [[ -n "${RUN_DIR}" ]] || return 1
   RAW_DIR="${RUN_DIR}/raw"
   RAW_HOST_DIR="${RAW_DIR}/host"
   RAW_LXC_DIR="${RAW_DIR}/lxc"
@@ -407,8 +555,6 @@ init.run.dir() {
   SAMBA_TSV_PATH="${RUN_DIR}/network.samba.tsv"
   RISKS_TSV_PATH="${RUN_DIR}/network.risks.tsv"
   TRACE_PATH="${RUN_DIR}/network.trace.log"
-
-  mkdir -p "${RAW_HOST_DIR}" "${RAW_LXC_DIR}" "${RAW_VM_DIR}"
 }
 
 update.latest.pointer() {
@@ -1026,6 +1172,56 @@ export PROXMOX_NETWORK_DEFAULT_GATEWAY=$(yaml.quote "${DEFAULT_GATEWAY}")
 EOF
 }
 
+export.preflight.facts.for.ansible() {
+  set.stage "export.preflight.facts.for.ansible"
+  mkdir -p "${FACTS_DIR}"
+
+  cat > "${ANSIBLE_PREFLIGHT_FACTS_YAML}" <<EOF
+---
+proxmox_network_preflight_latest:
+  generated_by: "setup/network.sh"
+  generated_at: $(yaml.quote "${COLLECTED_AT}")
+  hostname: $(yaml.quote "${HOSTNAME_SHORT}")
+  run_dir: $(yaml.quote "${RUN_DIR}")
+  expected:
+    admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
+    data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+    lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+    guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
+    guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
+  discovered:
+    admin_bridge: $(yaml.quote "${DISCOVERED_ADMIN_BRIDGE}")
+    admin_nic: $(yaml.quote "${DISCOVERED_ADMIN_NIC}")
+    admin_ip_cidr: $(yaml.quote "${DISCOVERED_ADMIN_IP_CIDR}")
+    data_nics: $(yaml.quote "${DISCOVERED_DATA_NICS}")
+    default_gateway: $(yaml.quote "${DEFAULT_GATEWAY}")
+  artifacts:
+    host_yaml: $(yaml.quote "${HOST_YAML_PATH}")
+    summary: $(yaml.quote "${SUMMARY_PATH}")
+    env: $(yaml.quote "${ENV_PATH}")
+    nics_tsv: $(yaml.quote "${NICS_TSV_PATH}")
+    bridges_tsv: $(yaml.quote "${BRIDGES_TSV_PATH}")
+    vlans_tsv: $(yaml.quote "${VLANS_TSV_PATH}")
+    lxc_tsv: $(yaml.quote "${LXC_TSV_PATH}")
+    vm_tsv: $(yaml.quote "${VM_TSV_PATH}")
+    guest_runtime_tsv: $(yaml.quote "${GUEST_RUNTIME_TSV_PATH}")
+    samba_tsv: $(yaml.quote "${SAMBA_TSV_PATH}")
+    risks_tsv: $(yaml.quote "${RISKS_TSV_PATH}")
+EOF
+
+  cp -f "${LXC_TSV_PATH}" "${FACTS_DIR}/network.lxc.latest.tsv"
+  cp -f "${VM_TSV_PATH}" "${FACTS_DIR}/network.vm.latest.tsv"
+  cp -f "${NICS_TSV_PATH}" "${FACTS_DIR}/network.nics.latest.tsv"
+  cp -f "${BRIDGES_TSV_PATH}" "${FACTS_DIR}/network.bridges.latest.tsv"
+  cp -f "${RISKS_TSV_PATH}" "${FACTS_DIR}/network.risks.latest.tsv"
+  cp -f "${SUMMARY_PATH}" "${FACTS_DIR}/network.summary.latest.txt"
+
+  cat > "${ANSIBLE_PREFLIGHT_FACTS_JSON}" <<EOF
+{"proxmox_network_preflight_latest":{"generated_by":"setup/network.sh","generated_at":"${COLLECTED_AT}","hostname":"${HOSTNAME_SHORT}","run_dir":"${RUN_DIR}","expected":{"admin_bridge":"${EXPECTED_ADMIN_BRIDGE}","data_bridge":"${EXPECTED_DATA_BRIDGE}","lan_cidr":"${EXPECTED_LAN_CIDR}","guest_admin_if":"${EXPECTED_GUEST_ADMIN_IF}","guest_data_if":"${EXPECTED_GUEST_DATA_IF}"},"discovered":{"admin_bridge":"${DISCOVERED_ADMIN_BRIDGE}","admin_nic":"${DISCOVERED_ADMIN_NIC}","admin_ip_cidr":"${DISCOVERED_ADMIN_IP_CIDR}","data_nics":"${DISCOVERED_DATA_NICS}","default_gateway":"${DEFAULT_GATEWAY}"}}}
+EOF
+  log "Exported preflight facts for Ansible: ${ANSIBLE_PREFLIGHT_FACTS_YAML}"
+}
+
 write.summary() {
   set.stage "write.summary"
   local ct_count vm_count nic_count bridge_count risk_total risk_error risk_warn risk_info
@@ -1075,6 +1271,8 @@ write.summary() {
     printf '  - %s\n' "${GUEST_RUNTIME_TSV_PATH}"
     printf '  - %s\n' "${SAMBA_TSV_PATH}"
     printf '  - %s\n' "${RISKS_TSV_PATH}"
+    printf '  - %s\n' "${ANSIBLE_PREFLIGHT_FACTS_YAML}"
+    printf '  - %s\n' "${ANSIBLE_PREFLIGHT_FACTS_JSON}"
     printf '\n'
     printf 'Suggested Next Step:\n'
     printf '  source %s\n' "${ENV_PATH}"
@@ -1144,6 +1342,517 @@ collect.operator.selection() {
   esac
 }
 
+resolve.snapshot.dir() {
+  local resolved=""
+  if [[ -n "${SNAPSHOT_DIR_OVERRIDE}" ]]; then
+    resolved="${SNAPSHOT_DIR_OVERRIDE}"
+  elif [[ -n "${REPORT_DIR_OVERRIDE}" ]]; then
+    resolved="${REPORT_DIR_OVERRIDE}"
+  elif [[ -L "${OUTPUT_ROOT}/latest" ]]; then
+    resolved="$(readlink "${OUTPUT_ROOT}/latest")"
+    if [[ "${resolved}" != /* ]]; then
+      resolved="${OUTPUT_ROOT}/${resolved}"
+    fi
+  elif [[ -f "${OUTPUT_ROOT}/latest.path" ]]; then
+    resolved="$(cat "${OUTPUT_ROOT}/latest.path")"
+  fi
+
+  if [[ -z "${resolved}" || ! -d "${resolved}" ]]; then
+    log.error "No saved preflight snapshot directory found for update mode."
+    log.error "Run ./setup/network.sh preflight first, or set PROXMOX_NETWORK_SNAPSHOT_DIR."
+    exit 1
+  fi
+
+  RUN_DIR="${resolved}"
+  set.run.paths.from.dir
+}
+
+load.snapshot.defaults() {
+  local env_file="${RUN_DIR}/network.next-stage.env"
+  if [[ -f "${env_file}" ]]; then
+    # shellcheck disable=SC1090
+    source "${env_file}"
+  fi
+}
+
+require.snapshot.artifacts() {
+  local missing=0
+  local path=""
+  for path in \
+    "${LXC_TSV_PATH}" \
+    "${VM_TSV_PATH}" \
+    "${RAW_LXC_DIR}" \
+    "${RAW_VM_DIR}"; do
+    if [[ ! -e "${path}" ]]; then
+      log.error "Missing snapshot artifact for update mode: ${path}"
+      missing=1
+    fi
+  done
+  if [[ "${missing}" -ne 0 ]]; then
+    exit 1
+  fi
+}
+
+use.local.feature.files() {
+  local script_dir repo_root
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  repo_root="$(cd "${script_dir}/.." && pwd)"
+
+  if [[ -r "${repo_root}/ansible/${NETWORK_EXPORT_PLAYBOOK_REL}" \
+    && -r "${repo_root}/ansible/${NETWORK_UPDATE_PLAYBOOK_REL}" \
+    && -r "${repo_root}/ansible/${NETWORK_VERIFY_PLAYBOOK_REL}" \
+    && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
+    PLAYBOOK_ROOT="${repo_root}/ansible"
+    PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
+    GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
+    NETWORK_EXPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_EXPORT_PLAYBOOK_REL}"
+    NETWORK_UPDATE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_UPDATE_PLAYBOOK_REL}"
+    NETWORK_VERIFY_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_VERIFY_PLAYBOOK_REL}"
+    log "Using local feature files from ${repo_root}."
+    return 0
+  fi
+
+  return 1
+}
+
+fetch.feature.file() {
+  local url="$1"
+  local dest="$2"
+  mkdir -p "$(dirname "${dest}")"
+  log "Fetching feature file: ${url}"
+  if ! wget -qO "${dest}" "${url}"; then
+    log.error "Failed to fetch feature file: ${url}"
+    exit 1
+  fi
+  if [[ ! -s "${dest}" ]]; then
+    log.error "Feature file is empty: ${url}"
+    exit 1
+  fi
+}
+
+prepare.feature.files() {
+  if use.local.feature.files; then
+    return
+  fi
+
+  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}"
+  fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
+  fetch.feature.file "${NETWORK_EXPORT_PLAYBOOK_URL}" "${NETWORK_EXPORT_PLAYBOOK_PATH}"
+  fetch.feature.file "${NETWORK_UPDATE_PLAYBOOK_URL}" "${NETWORK_UPDATE_PLAYBOOK_PATH}"
+  fetch.feature.file "${NETWORK_VERIFY_PLAYBOOK_URL}" "${NETWORK_VERIFY_PLAYBOOK_PATH}"
+}
+
+run.feature.playbook() {
+  local playbook_path="$1"
+  shift || true
+  "${ANSIBLE_VENV_BIN}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "$@" "${playbook_path}"
+}
+
+ensure.network.ansible() {
+  source.release.common
+  ensure.managed.ansible
+}
+
+pick.free.net.slot() {
+  local config_path="${1:-}"
+  local n=""
+  [[ -f "${config_path}" ]] || {
+    printf ''
+    return 1
+  }
+  for n in 1 2 3 4 5 6 7 8 9; do
+    if ! grep -qE "^net${n}:" "${config_path}" 2>/dev/null; then
+      printf 'net%s' "${n}"
+      return 0
+    fi
+  done
+  printf ''
+  return 1
+}
+
+lxc.has.data.nic() {
+  local id="$1"
+  awk -F'\t' -v target="${id}" -v bridge="${EXPECTED_DATA_BRIDGE}" 'NR > 1 && $2 == target && $7 == bridge {found=1} END {exit(found ? 0 : 1)}' \
+    "${LXC_TSV_PATH}" 2>/dev/null
+}
+
+vm.has.data.nic() {
+  local id="$1"
+  awk -F'\t' -v target="${id}" -v bridge="${EXPECTED_DATA_BRIDGE}" 'NR > 1 && $2 == target && $8 == bridge {found=1} END {exit(found ? 0 : 1)}' \
+    "${VM_TSV_PATH}" 2>/dev/null
+}
+
+lxc.has.admin.nic() {
+  local id="$1"
+  awk -F'\t' -v target="${id}" -v bridge="${EXPECTED_ADMIN_BRIDGE}" 'NR > 1 && $2 == target && $7 == bridge {found=1} END {exit(found ? 0 : 1)}' \
+    "${LXC_TSV_PATH}" 2>/dev/null
+}
+
+vm.has.any.nic() {
+  local id="$1"
+  awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {found=1} END {exit(found ? 0 : 1)}' "${VM_TSV_PATH}" 2>/dev/null
+}
+
+candidate.lxc.ids() {
+  awk -F'\t' -v admin="${EXPECTED_ADMIN_BRIDGE}" -v data="${EXPECTED_DATA_BRIDGE}" '
+    NR > 1 {
+      id = $2
+      name[id] = $3
+      if ($7 == admin) has_admin[id] = 1
+      if ($7 == data) has_data[id] = 1
+    }
+    END {
+      for (id in name) {
+        if (has_admin[id] && !has_data[id]) {
+          print id
+        }
+      }
+    }
+  ' "${LXC_TSV_PATH}" 2>/dev/null | sort -n
+}
+
+candidate.vm.ids() {
+  awk -F'\t' -v data="${EXPECTED_DATA_BRIDGE}" '
+    NR > 1 {
+      id = $2
+      if (id == "" || id == "-") {
+        next
+      }
+      seen[id] = 1
+      if ($8 == data) has_data[id] = 1
+    }
+    END {
+      for (id in seen) {
+        if (!has_data[id]) {
+          print id
+        }
+      }
+    }
+  ' "${VM_TSV_PATH}" 2>/dev/null | sort -n
+}
+
+load.update.candidates() {
+  UPDATE_LXC_IDS=()
+  UPDATE_VM_IDS=()
+  local id=""
+  while IFS= read -r id; do
+    append.unique.id UPDATE_LXC_IDS "${id}"
+  done < <(candidate.lxc.ids)
+  while IFS= read -r id; do
+    append.unique.id UPDATE_VM_IDS "${id}"
+  done < <(candidate.vm.ids)
+}
+
+collect.update.selection() {
+  local candidate_lxc_csv candidate_vm_csv choice manual_lxc manual_vm
+  candidate_lxc_csv="$(csv.from.id.list UPDATE_LXC_IDS)"
+  candidate_vm_csv="$(csv.from.id.list UPDATE_VM_IDS)"
+
+  if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
+    PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
+  fi
+
+  if ! is.true "${FEATURE_INTERACTIVE}" || ! open.tty; then
+    if [[ -n "${PROXMOX_NETWORK_UPDATE_LXCS}" ]]; then
+      UPDATE_LXC_IDS=()
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_LXC_IDS "${choice}"
+      done < <(parse.id.filter "${PROXMOX_NETWORK_UPDATE_LXCS}")
+    elif [[ -n "${CTID_FILTER}" ]]; then
+      UPDATE_LXC_IDS=()
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_LXC_IDS "${choice}"
+      done < <(parse.id.filter "${CTID_FILTER}")
+    fi
+    if [[ -n "${PROXMOX_NETWORK_UPDATE_VMS}" ]]; then
+      UPDATE_VM_IDS=()
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_VM_IDS "${choice}"
+      done < <(parse.id.filter "${PROXMOX_NETWORK_UPDATE_VMS}")
+    elif [[ -n "${VMID_FILTER}" ]]; then
+      UPDATE_VM_IDS=()
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_VM_IDS "${choice}"
+      done < <(parse.id.filter "${VMID_FILTER}")
+    fi
+    return 0
+  fi
+
+  printf '\nNetwork update candidate summary:\n' >&3
+  printf '  Snapshot: %s\n' "${RUN_DIR}" >&3
+  printf '  Candidate LXC IDs missing data NIC: %s\n' "${candidate_lxc_csv:-none}" >&3
+  printf '  Candidate VM IDs missing data NIC: %s\n' "${candidate_vm_csv:-none}" >&3
+  printf '  Default data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
+  printf '\n' >&3
+
+  choice="$(menu.tty "Select update scope:" "all candidates" "manual IDs" "abort")"
+  case "${choice}" in
+    1)
+      ;;
+    2)
+      manual_lxc="$(prompt.tty "Enter LXC IDs to update (blank = none)" "${candidate_lxc_csv}")"
+      manual_vm="$(prompt.tty "Enter VM IDs to update (blank = none)" "${candidate_vm_csv}")"
+      UPDATE_LXC_IDS=()
+      UPDATE_VM_IDS=()
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_LXC_IDS "${choice}"
+      done < <(parse.id.filter "${manual_lxc}")
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_VM_IDS "${choice}"
+      done < <(parse.id.filter "${manual_vm}")
+      ;;
+    *)
+      log.error "Aborted by operator."
+      exit 1
+      ;;
+  esac
+
+  EXPECTED_DATA_BRIDGE="$(prompt.tty "Enter target high-speed bridge" "${EXPECTED_DATA_BRIDGE}")"
+  PROXMOX_NETWORK_UPDATE_VLAN_TAG="$(trim.space "$(prompt.tty "Enter VLAN tag (blank = none)" "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")")"
+  if [[ -z "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
+    PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS="$(trim.space "$(prompt.tty "Enter VLAN trunks (blank = none)" "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")")"
+  else
+    PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
+  fi
+  PROXMOX_NETWORK_UPDATE_VM_MODEL="$(trim.space "$(prompt.tty "Enter VM NIC model" "${PROXMOX_NETWORK_UPDATE_VM_MODEL}")")"
+  if [[ -z "${PROXMOX_NETWORK_UPDATE_VM_MODEL}" ]]; then
+    PROXMOX_NETWORK_UPDATE_VM_MODEL="virtio"
+  fi
+
+  if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]]; then
+    choice="$(menu.tty "Run apply stage after check preview?" "yes" "no")"
+    if [[ "${choice}" == "2" ]]; then
+      PROXMOX_NETWORK_UPDATE_MODE="check"
+    fi
+  else
+    choice="$(menu.tty "Update mode:" "check only" "check then apply")"
+    if [[ "${choice}" == "2" ]]; then
+      PROXMOX_NETWORK_UPDATE_MODE="apply"
+    fi
+  fi
+}
+
+build.network.update.plan() {
+  local id name conf_path slot desired current_bridge
+  local row_count=0
+  set.stage "build.network.update.plan"
+  mkdir -p "${FACTS_DIR}"
+
+  printf 'guest_type\tguest_id\tguest_name\tnet_slot\tdesired_value\treason\n' > "${NETWORK_PLAN_PATH}"
+
+  for id in "${UPDATE_LXC_IDS[@]}"; do
+    [[ -n "${id}" ]] || continue
+    if ! lxc.has.admin.nic "${id}"; then
+      log.warn "Skipping LXC ${id}: no admin NIC on ${EXPECTED_ADMIN_BRIDGE}."
+      continue
+    fi
+    if lxc.has.data.nic "${id}"; then
+      log "Skipping LXC ${id}: already has a data NIC on ${EXPECTED_DATA_BRIDGE}."
+      continue
+    fi
+    conf_path="${RAW_LXC_DIR}/${id}/config.txt"
+    if [[ ! -f "${conf_path}" ]]; then
+      mkdir -p "$(dirname "${conf_path}")"
+      capture.cmd "${conf_path}" "pct config ${id}" "pct config ${id}"
+    fi
+    slot="$(pick.free.net.slot "${conf_path}")"
+    if [[ -z "${slot}" ]]; then
+      log.warn "Skipping LXC ${id}: no free net slot from net1..net9."
+      continue
+    fi
+    name="$(awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {print $3; exit}' "${LXC_TSV_PATH}" 2>/dev/null || true)"
+    [[ -n "${name}" ]] || name="ct${id}"
+    desired="name=${EXPECTED_GUEST_DATA_IF},bridge=${EXPECTED_DATA_BRIDGE},ip=dhcp"
+    if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
+      desired="${desired},tag=${PROXMOX_NETWORK_UPDATE_VLAN_TAG}"
+    elif [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}" ]]; then
+      desired="${desired},trunks=${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}"
+    fi
+    append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "missing_data_nic"
+    row_count=$((row_count + 1))
+  done
+
+  for id in "${UPDATE_VM_IDS[@]}"; do
+    [[ -n "${id}" ]] || continue
+    if ! vm.has.any.nic "${id}"; then
+      log.warn "Skipping VM ${id}: no existing NIC rows in snapshot."
+      continue
+    fi
+    if vm.has.data.nic "${id}"; then
+      log "Skipping VM ${id}: already has a data NIC on ${EXPECTED_DATA_BRIDGE}."
+      continue
+    fi
+    conf_path="${RAW_VM_DIR}/${id}/config.txt"
+    if [[ ! -f "${conf_path}" ]]; then
+      mkdir -p "$(dirname "${conf_path}")"
+      capture.cmd "${conf_path}" "qm config ${id}" "qm config ${id}"
+    fi
+    slot="$(pick.free.net.slot "${conf_path}")"
+    if [[ -z "${slot}" ]]; then
+      log.warn "Skipping VM ${id}: no free net slot from net1..net9."
+      continue
+    fi
+    name="$(awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {print $3; exit}' "${VM_TSV_PATH}" 2>/dev/null || true)"
+    [[ -n "${name}" ]] || name="vm${id}"
+    desired="${PROXMOX_NETWORK_UPDATE_VM_MODEL},bridge=${EXPECTED_DATA_BRIDGE}"
+    if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
+      desired="${desired},tag=${PROXMOX_NETWORK_UPDATE_VLAN_TAG}"
+    elif [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}" ]]; then
+      desired="${desired},trunks=${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}"
+    fi
+    append.tsv.row "${NETWORK_PLAN_PATH}" "vm" "${id}" "${name}" "${slot}" "${desired}" "missing_data_nic"
+    row_count=$((row_count + 1))
+  done
+
+  if [[ "${row_count}" -eq 0 ]]; then
+    log.warn "No guest network updates were planned from snapshot ${RUN_DIR}."
+  else
+    log "Built network update plan: ${NETWORK_PLAN_PATH} (${row_count} rows)"
+  fi
+}
+
+write.network.intent.file() {
+  set.stage "write.network.intent.file"
+  local lxc_csv vm_csv
+  lxc_csv="$(csv.from.id.list UPDATE_LXC_IDS)"
+  vm_csv="$(csv.from.id.list UPDATE_VM_IDS)"
+  mkdir -p "${FACTS_DIR}"
+
+  cat > "${NETWORK_INTENT_PATH}" <<EOF
+---
+proxmox_network_update:
+  snapshot_dir: $(yaml.quote "${RUN_DIR}")
+  mode: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_MODE}")
+  expected:
+    admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
+    data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+    lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+    guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
+    guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
+  selected:
+    lxc_ids_csv: $(yaml.quote "${lxc_csv}")
+    vm_ids_csv: $(yaml.quote "${vm_csv}")
+    vlan_tag: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")
+    vlan_trunks: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")
+    vm_model: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_VM_MODEL}")
+  artifacts:
+    preflight_facts_yml: $(yaml.quote "${ANSIBLE_PREFLIGHT_FACTS_YAML}")
+    preflight_facts_json: $(yaml.quote "${ANSIBLE_PREFLIGHT_FACTS_JSON}")
+    plan_tsv: $(yaml.quote "${NETWORK_PLAN_PATH}")
+    verify_tsv: $(yaml.quote "${NETWORK_VERIFY_PATH}")
+EOF
+}
+
+write.network.extra.vars.file() {
+  local mode="${1:-check}"
+  local apply_requested="false"
+  if [[ "${mode}" == "apply" ]]; then
+    apply_requested="true"
+  fi
+  set.stage "write.network.extra.vars.file"
+  mkdir -p "${TMP_DIR}"
+  cat > "${NETWORK_EXTRA_VARS_PATH}" <<EOF
+---
+proxmox_network_run_dir: $(yaml.quote "${RUN_DIR}")
+proxmox_network_facts_dir: $(yaml.quote "${FACTS_DIR}")
+proxmox_network_preflight_facts_path: $(yaml.quote "${ANSIBLE_PREFLIGHT_FACTS_YAML}")
+proxmox_network_preflight_json_path: $(yaml.quote "${ANSIBLE_PREFLIGHT_FACTS_JSON}")
+proxmox_network_intent_path: $(yaml.quote "${NETWORK_INTENT_PATH}")
+proxmox_network_plan_path: $(yaml.quote "${NETWORK_PLAN_PATH}")
+proxmox_network_verify_path: $(yaml.quote "${NETWORK_VERIFY_PATH}")
+proxmox_network_update_mode: $(yaml.quote "${mode}")
+proxmox_network_expected_admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
+proxmox_network_expected_data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+proxmox_network_expected_lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+proxmox_network_update_apply_requested: ${apply_requested}
+EOF
+}
+
+run.network.update.flow() {
+  local apply_requested=0 choice prev_interactive
+
+  resolve.snapshot.dir
+  load.snapshot.defaults
+  require.snapshot.artifacts
+  load.update.candidates
+  collect.update.selection
+  build.network.update.plan
+  if ! awk 'NR > 1 {found=1} END {exit(found ? 0 : 1)}' "${NETWORK_PLAN_PATH}" 2>/dev/null; then
+    log.warn "No actionable plan rows found. Update stage exiting without changes."
+    return 0
+  fi
+
+  write.network.intent.file
+
+  ensure.network.ansible
+  prepare.feature.files
+
+  write.network.extra.vars.file "check"
+  run.feature.playbook "${NETWORK_EXPORT_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
+  run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
+
+  if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]] || is.true "${PROXMOX_NETWORK_UPDATE_AUTO_APPLY}"; then
+    apply_requested=1
+  fi
+
+  if [[ "${apply_requested}" -eq 0 ]]; then
+    if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
+      choice="$(menu.tty "Apply guest network plan now?" "no" "yes")"
+      if [[ "${choice}" == "2" ]]; then
+        apply_requested=1
+      fi
+    fi
+  fi
+
+  if [[ "${apply_requested}" -eq 0 ]]; then
+    log "Update check phase complete. No apply requested."
+    return 0
+  fi
+
+  write.network.extra.vars.file "apply"
+  run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
+  run.feature.playbook "${NETWORK_VERIFY_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
+
+  log "Apply phase complete. Running post-apply preflight snapshot."
+  prev_interactive="${FEATURE_INTERACTIVE}"
+  FEATURE_INTERACTIVE=0
+  run.preflight
+  FEATURE_INTERACTIVE="${prev_interactive}"
+}
+
+maybe.prompt.run.stage() {
+  local choice=""
+  if [[ "${CLI_ARG_COUNT}" -gt 0 ]]; then
+    return 0
+  fi
+  if ! is.true "${FEATURE_INTERACTIVE}" || ! open.tty; then
+    return 0
+  fi
+
+  choice="$(menu.tty "Select setup/network stage:" "preflight: collect facts" "update: config network" "report latest" "abort")"
+  case "${choice}" in
+    1) FEATURE_MODE="preflight" ;;
+    2) FEATURE_MODE="update" ;;
+    3) FEATURE_MODE="report" ;;
+    *) log.error "Aborted by operator."; exit 1 ;;
+  esac
+}
+
+run.all.flow() {
+  local choice=""
+  run.preflight
+
+  if ! is.true "${FEATURE_INTERACTIVE}" || ! open.tty; then
+    return 0
+  fi
+
+  choice="$(menu.tty "Preflight finished. Continue to update stage?" "no" "yes")"
+  if [[ "${choice}" == "2" ]]; then
+    FEATURE_MODE="update"
+    run.network.update.flow
+  fi
+}
+
 run.preflight() {
   if [[ "${FEATURE_MODE}" == "debug" ]]; then
     FEATURE_DEBUG=1
@@ -1170,6 +1879,7 @@ run.preflight() {
   write.host.yaml
   write.next.stage.env
   write.summary
+  export.preflight.facts.for.ansible
   update.latest.pointer
 
   log "Preflight complete. Saved network snapshot to ${RUN_DIR}"
@@ -1196,7 +1906,7 @@ resolve.report.dir() {
   fi
 
   RUN_DIR="${resolved}"
-  SUMMARY_PATH="${RUN_DIR}/network.summary.txt"
+  set.run.paths.from.dir
 }
 
 run.report() {
@@ -1209,17 +1919,37 @@ run.report() {
 }
 
 main() {
+  maybe.prompt.run.stage
   require.valid.mode
 
   case "${FEATURE_MODE}" in
-    preflight|all|debug)
+    preflight|debug)
       require.root
       require.proxmox
       require.commands
       run.preflight
       ;;
+    update)
+      require.root
+      require.proxmox
+      require.update.commands
+      run.network.update.flow
+      ;;
+    all)
+      require.root
+      require.proxmox
+      require.commands
+      require.update.commands
+      run.all.flow
+      ;;
     report)
       run.report
+      ;;
+    run)
+      require.root
+      require.proxmox
+      require.commands
+      run.preflight
       ;;
   esac
 }

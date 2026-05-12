@@ -22,6 +22,9 @@ proxmox_feature_defaults:
   cli_codex:
     enabled: false
     mode: "apply"  # preflight | apply
+  network:
+    enabled: false
+    mode: "check"  # check | apply
 
 proxmox_vlan_ui:
   enabled: true
@@ -67,6 +70,23 @@ proxmox_vlan:
     migrate: false
     vm_vlan_map: {}
     ct_vlan_map: {}
+
+proxmox_network:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  preflight_facts_path: "/etc/ansible/proxmox/facts/network.preflight.latest.yml"
+  preflight_json_path: "/etc/ansible/proxmox/facts/network.preflight.latest.json"
+  intent_path: "/etc/ansible/proxmox/facts/network.intent.yml"
+  plan_path: "/etc/ansible/proxmox/facts/network.plan.tsv"
+  verify_path: "/etc/ansible/proxmox/facts/network.verify.tsv"
+  update_runtime_facts_path: "/etc/ansible/proxmox/facts/network.update.runtime.yml"
+  defaults:
+    admin_bridge: "vmbr0"
+    data_bridge: "vmbr1"
+    lan_cidr: "10.0.0.0/24"
+    guest_admin_if: "eth0"
+    guest_data_if: "eth1"
+    vm_model: "virtio"
+    mode: "check"
 
 proxmox_samba:
   facts_dir: "/etc/ansible/proxmox/facts"

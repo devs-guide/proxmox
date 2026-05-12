@@ -158,6 +158,28 @@ load.setup.vlan.playbooks() {
   PKGS[setup_vlan]="${_setup_vlan_items[*]}"
 }
 
+load.setup.network.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_NETWORK_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_NETWORK_RUNNER} not found; skipping setup-network playbook refs"
+    PKGS[setup_network]=""
+    return 0
+  }
+
+  mapfile -t _setup_network_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_network_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_NETWORK_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_network]="${_setup_network_items[*]}"
+}
+
 load.setup.cli_codex.playbooks() {
   local runner="${PATH_TO[root]}/${SETUP_CLI_CODEX_RUNNER}"
   [[ -f "${runner}" ]] || {
@@ -382,6 +404,11 @@ publish.ansible() {
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
   done
 
+  load.setup.network.playbooks
+  for playbook_to_run in ${PKGS[setup_network]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
   load.setup.cli_codex.playbooks
   for playbook_to_run in ${PKGS[setup_cli_codex]:-}; do
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
@@ -406,6 +433,9 @@ publish.ansible() {
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
   if [[ -n "${PKGS[setup_vlan]:-}" ]]; then
     log.info "[www.pages] setup vlan entries: ${PKGS[setup_vlan]}"
+  fi
+  if [[ -n "${PKGS[setup_network]:-}" ]]; then
+    log.info "[www.pages] setup network entries: ${PKGS[setup_network]}"
   fi
   if [[ -n "${PKGS[setup_cli_codex]:-}" ]]; then
     log.info "[www.pages] setup cli codex entries: ${PKGS[setup_cli_codex]}"

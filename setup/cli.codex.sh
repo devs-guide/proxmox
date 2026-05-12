@@ -23,7 +23,7 @@ GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 FEATURE_PLAYBOOKS=(
   "debian/node.yml"
-  "debian/codex.yml"
+  "debian/cli.codex.yml"
 )
 NODE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 CODEX_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"

@@ -164,6 +164,7 @@ check_playlist_refs() {
 check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
 check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
 check_setup_feature_refs "setup/vlan.sh"
+check_setup_feature_refs "setup/network.sh"
 check_setup_feature_refs "setup/cli.codex.sh"
 check_setup_feature_refs "setup/lxc/debian.sh"
 check_setup_feature_refs "setup/lxc/samba.sh"

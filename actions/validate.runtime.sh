@@ -16,6 +16,7 @@ files=(
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
   "setup/vlan.sh"
+  "setup/network.sh"
   "setup/cli.codex.sh"
   "setup/lxc/debian.sh"
   "setup/lxc/samba.sh"
@@ -23,13 +24,16 @@ files=(
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
   "ansible/debian/install.packages.yml"
-  "ansible/debian/codex.yml"
+  "ansible/debian/cli.codex.yml"
   "ansible/debian/netboot.yml"
   "ansible/debian/packages.yml"
   "ansible/debian/ssh.yml"
   "ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml"
   "ansible/proxmox/helper/hardware.yml"
+  "ansible/proxmox/helper/network.preflight.export.yml"
+  "ansible/proxmox/network.update.yml"
+  "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/container/debian.lxc.yml"
@@ -150,6 +154,41 @@ if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
 fi
 echo "[validate.runtime][ok] setup/vlan.sh uses generated YAML extra-vars and exposes the readable NIC UI"
 
+echo "[validate.runtime] checking Proxmox network runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"proxmox/helper/network.preflight.export.yml"' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS is missing proxmox/helper/network.preflight.export.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/network.update.yml"' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS is missing proxmox/network.update.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/network.verify.yml"' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS is missing proxmox/network.verify.yml"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! grep -q 'update: config network' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh must present update stage selection in interactive mode"
+  exit 1
+fi
+if ! grep -q 'network.intent.yml' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh must persist network.intent.yml"
+  exit 1
+fi
+if ! grep -q 'network.plan.tsv' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh must persist network.plan.tsv"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/network.sh exposes preflight/export/update/verify contract"
+
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
   echo "[validate.runtime][error] setup/cli.codex.sh does not define FEATURE_PLAYBOOKS array"
@@ -159,8 +198,8 @@ if ! grep -q '"debian/node.yml"' "${ROOT}/setup/cli.codex.sh"; then
   echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/node.yml"
   exit 1
 fi
-if ! grep -q '"debian/codex.yml"' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/codex.yml"
+if ! grep -q '"debian/cli.codex.yml"' "${ROOT}/setup/cli.codex.sh"; then
+  echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/cli.codex.yml"
   exit 1
 fi
 if ! grep -q 'CLI_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/cli.codex.sh"; then
@@ -912,6 +951,10 @@ if ! grep -q 'load.setup.vlan.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/vlan.sh feature playbook refs"
   exit 1
 fi
+if ! grep -q 'load.setup.network.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/network.sh feature playbook refs"
+  exit 1
+fi
 if ! grep -q 'load.setup.cli_codex.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/cli.codex.sh feature playbook refs"
   exit 1
@@ -926,6 +969,10 @@ if ! grep -q 'load.setup.debian_lxc.playbooks' "${ROOT}/actions/www.pages.sh"; t
 fi
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
   echo "[validate.runtime][error] setup/vlan.sh FEATURE_PLAYBOOKS array not found for publish parsing"
+  exit 1
+fi
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS array not found for publish parsing"
   exit 1
 fi
 if ! grep -q 'setup/lxc/samba.sh' "${ROOT}/actions/www.pages.sh"; then
@@ -1037,6 +1084,6 @@ ANSIBLE_FORCE_COLOR=0 \
   ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/node.yml"
 ANSIBLE_NOCOLOR=1 \
 ANSIBLE_FORCE_COLOR=0 \
-  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/codex.yml"
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/cli.codex.yml"
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."
