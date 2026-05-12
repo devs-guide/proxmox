@@ -10,6 +10,7 @@ FILES=(
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
   "setup.vlan.sh:setup/vlan.sh"
+  "setup/network.sh:setup/network.sh"
   "setup.cli.codex.sh:setup/cli.codex.sh"
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
   "setup/lxc/samba.sh:setup/lxc/samba.sh"

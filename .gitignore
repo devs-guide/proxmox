@@ -32,3 +32,6 @@ prompts/
 prompt/
 
 refresh.sh
+
+# local private prompt repo symlink
+/prompt

@@ -936,6 +936,10 @@ if ! grep -q 'setup.cli.codex.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish setup.cli.codex.sh"
   exit 1
 fi
+if ! grep -q 'setup/network.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured network runner path"
+  exit 1
+fi
 if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Debian LXC runner path"
   exit 1
@@ -952,6 +956,7 @@ bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
 bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VERSION:?}" "${ANSIBLE_CORE_SPEC:?}" "${MANAGED_TARGET_PYTHON_HOME:?}" "${MANAGED_TARGET_PYTHON_PATH:?}"' _ "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
+bash -n "${ROOT}/setup/network.sh"
 bash -n "${ROOT}/setup/cli.codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
 bash -n "${ROOT}/setup/lxc/samba.sh"

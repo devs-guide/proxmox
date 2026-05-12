@@ -14,6 +14,7 @@ declare -A PKGS
 # --- Playlist (Of Playbooks) File Name:
 PLAYBOOKS="debian/install.playbooks.txt"
 SETUP_VLAN_RUNNER="setup/vlan.sh"
+SETUP_NETWORK_RUNNER="setup/network.sh"
 SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
 SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
 SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
@@ -321,6 +322,14 @@ publish.setup.features() {
     install -m 0755 "${SETUP_CLI_CODEX_RUNNER}" "${PATH_TO[publish]}/setup.cli.codex.sh"
   else
     log.warn "[www.pages] ${SETUP_CLI_CODEX_RUNNER} not found; skipping setup.cli.codex.sh publish"
+  fi
+
+  if [[ -f "${SETUP_NETWORK_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_NETWORK_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup"
+    install -m 0755 "${SETUP_NETWORK_RUNNER}" "${PATH_TO[publish]}/${SETUP_NETWORK_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_NETWORK_RUNNER} not found; skipping structured network runner publish"
   fi
 
   if [[ -f "${SETUP_SAMBA_RUNNER}" ]]; then
