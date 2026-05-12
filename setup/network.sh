@@ -471,6 +471,7 @@ collect.nics.tsv() {
   set.stage "collect.nics.tsv"
   printf 'iface\tkind\tmac\tmtu\toperstate\tcarrier\tspeed\tduplex\tdriver\tpci_slot\tmaster\tipv4\tipv6\n' > "${NICS_TSV_PATH}"
 
+  local iface_path=""
   local iface=""
   local kind=""
   local mac=""
@@ -487,9 +488,15 @@ collect.nics.tsv() {
   local physical_data_nics=()
   local physical_admin_nics=()
 
-  for iface in /sys/class/net/*; do
-    iface="$(basename "${iface}")"
+  for iface_path in /sys/class/net/*; do
+    [[ -d "${iface_path}" ]] || continue
+
+    iface="$(basename "${iface_path}")"
     [[ -n "${iface}" ]] || continue
+    if ! ip link show dev "${iface}" >/dev/null 2>&1; then
+      log.warn "Skipping non-runtime network entry: ${iface}"
+      continue
+    fi
 
     if [[ "${iface}" == "lo" ]]; then
       kind="loopback"
@@ -513,8 +520,8 @@ collect.nics.tsv() {
     if [[ -L "/sys/class/net/${iface}/master" ]]; then
       master="$(readlink.basename.or.empty "/sys/class/net/${iface}/master")"
     fi
-    ipv4="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
-    ipv6="$(ip -o -6 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
+    ipv4="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, - || true)"
+    ipv6="$(ip -o -6 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, - || true)"
 
     append.tsv.row "${NICS_TSV_PATH}" \
       "${iface}" "${kind}" "${mac}" "${mtu}" "${operstate}" "${carrier}" \
