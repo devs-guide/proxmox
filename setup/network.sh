@@ -5,9 +5,9 @@
 ## Published usage:
 ##   wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
-log()       { printf '[setup.network] %s\n' "$*" >&2; }
+log()       { printf '[setup.network] %s\n' "$*" >&2; [[ -n "${TRACE_PATH:-}" ]] && printf '[setup.network] %s\n' "$*" >> "${TRACE_PATH}"; }
 log.error() { printf '[setup.network][error] %s\n' "$*" >&2; }
 log.warn()  { printf '[setup.network][warn] %s\n' "$*" >&2; }
 
@@ -22,6 +22,7 @@ EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-eth1}"
 CTID_FILTER="${PROXMOX_NETWORK_CTIDS:-}"
 VMID_FILTER="${PROXMOX_NETWORK_VMIDS:-}"
 FEATURE_INTERACTIVE="${PROXMOX_NETWORK_INTERACTIVE:-1}"
+FEATURE_DEBUG="${PROXMOX_NETWORK_DEBUG:-0}"
 
 RUN_DIR=""
 RAW_DIR=""
@@ -55,6 +56,8 @@ DISCOVERED_DATA_NICS=""
 OPEN_TTY=0
 CURRENT_STAGE="startup"
 PARTIAL_ERROR_PATH=""
+TRACE_PATH=""
+TRACE_FD_OPEN=0
 
 declare -a CT_IDS=()
 declare -a VM_IDS=()
@@ -64,13 +67,14 @@ declare -a DISCOVERED_VM_IDS=()
 usage() {
   cat <<'EOF'
 Usage:
-  ./setup/network.sh [preflight|report|all]
+  ./setup/network.sh [preflight|report|all|debug]
 
 Behavior:
   preflight  Collect read-only host/guest network facts, classify risks, and
              save a reusable snapshot under $HOME.
   report     Print the latest saved summary, or use PROXMOX_NETWORK_REPORT_DIR.
   all        Alias for preflight.
+  debug      Alias for preflight with verbose trace logging enabled.
 
 Optional environment overrides:
   PROXMOX_NETWORK_OUTPUT_ROOT=/root/proxmox.network.preflight
@@ -117,14 +121,14 @@ require.proxmox() {
 
 require.valid.mode() {
   case "${FEATURE_MODE}" in
-    preflight|report|all) ;;
+    preflight|report|all|debug) ;;
     -h|--help|help)
       usage
       exit 0
       ;;
     *)
       log.error "Unsupported mode: ${FEATURE_MODE}"
-      log.error "Use one of: preflight, report, all"
+      log.error "Use one of: preflight, report, all, debug"
       exit 1
       ;;
   esac
@@ -229,6 +233,18 @@ set.stage() {
   log "Stage: ${CURRENT_STAGE}"
 }
 
+enable.debug.trace() {
+  if ! is.true "${FEATURE_DEBUG}"; then
+    return 0
+  fi
+  exec 9>>"${TRACE_PATH}"
+  TRACE_FD_OPEN=1
+  export BASH_XTRACEFD=9
+  export PS4='+ [network:${LINENO}:${FUNCNAME[0]:-main}] '
+  set -x
+  log "Debug tracing enabled: ${TRACE_PATH}"
+}
+
 join.discovered.ids() {
   local -n ids_ref="$1"
   local joined=""
@@ -269,7 +285,22 @@ on.err() {
   exit "${exit_code}"
 }
 
+on.exit() {
+  local exit_code="${1:-0}"
+  if [[ "${TRACE_FD_OPEN}" -eq 1 ]]; then
+    set +x || true
+    exec 9>&- || true
+  fi
+  if [[ "${OPEN_TTY}" -eq 1 ]]; then
+    exec 3>&- 3<&- || true
+  fi
+  if [[ "${exit_code}" -ne 0 && -n "${RUN_DIR}" && -n "${PARTIAL_ERROR_PATH}" && ! -f "${PARTIAL_ERROR_PATH}" ]]; then
+    write.partial.error "exit" "${exit_code}"
+  fi
+}
+
 trap 'on.err "${LINENO}" "$?"' ERR
+trap 'on.exit "$?"' EXIT
 
 first_line() {
   awk 'NF && $0 !~ /^#/ { print; exit }' "$1" 2>/dev/null || true
@@ -369,6 +400,7 @@ init.run.dir() {
   GUEST_RUNTIME_TSV_PATH="${RUN_DIR}/network.guest.runtime.tsv"
   SAMBA_TSV_PATH="${RUN_DIR}/network.samba.tsv"
   RISKS_TSV_PATH="${RUN_DIR}/network.risks.tsv"
+  TRACE_PATH="${RUN_DIR}/network.trace.log"
 
   mkdir -p "${RAW_HOST_DIR}" "${RAW_LXC_DIR}" "${RAW_VM_DIR}"
 }
@@ -565,6 +597,24 @@ discover.available.vm.ids() {
   while IFS= read -r token; do
     [[ -n "${token}" ]] && DISCOVERED_VM_IDS+=("${token}")
   done < <(qm list 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ {print $1}')
+}
+
+collect.guest.raw() {
+  set.stage "collect.guest.raw"
+  local id=""
+  for id in "${CT_IDS[@]}"; do
+    mkdir -p "${RAW_LXC_DIR}/${id}"
+    capture.cmd "${RAW_LXC_DIR}/${id}/status.txt" "pct status ${id}" "pct status ${id}"
+    capture.cmd "${RAW_LXC_DIR}/${id}/config.txt" "pct config ${id}" "pct config ${id}"
+    capture.cmd "${RAW_LXC_DIR}/${id}/host.plumbing.txt" "Host-side CT plumbing ${id}" \
+      "ip link show | grep -E 'fwpr${id}p|fwln${id}i|veth${id}i' || true"
+  done
+  for id in "${VM_IDS[@]}"; do
+    mkdir -p "${RAW_VM_DIR}/${id}"
+    capture.cmd "${RAW_VM_DIR}/${id}/status.txt" "qm status ${id}" "qm status ${id}"
+    capture.cmd "${RAW_VM_DIR}/${id}/config.txt" "qm config ${id}" "qm config ${id}"
+  done
+  log "Captured raw guest facts for LXC IDs=$(join.by ',' "${CT_IDS[@]}") VM IDs=$(join.by ',' "${VM_IDS[@]}")"
 }
 
 discover.ct.ids() {
@@ -1082,19 +1132,25 @@ collect.operator.selection() {
 }
 
 run.preflight() {
+  if [[ "${FEATURE_MODE}" == "debug" ]]; then
+    FEATURE_DEBUG=1
+    FEATURE_MODE="preflight"
+  fi
   discover.basic.host.facts
   discover.available.ct.ids
   discover.available.vm.ids
   collect.operator.selection
 
   init.run.dir
+  enable.debug.trace
   collect.host.raw
+  discover.ct.ids
+  discover.vm.ids
+  collect.guest.raw
   collect.nics.tsv
   collect.bridges.tsv
   classify.host.risks
   collect.vlans.tsv
-  discover.ct.ids
-  discover.vm.ids
   log "Selected scope: LXC IDs=$(join.by ',' "${CT_IDS[@]}") VM IDs=$(join.by ',' "${VM_IDS[@]}")"
   collect.lxc.data
   collect.vm.data
@@ -1143,7 +1199,7 @@ main() {
   require.valid.mode
 
   case "${FEATURE_MODE}" in
-    preflight|all)
+    preflight|all|debug)
       require.root
       require.proxmox
       require.commands
