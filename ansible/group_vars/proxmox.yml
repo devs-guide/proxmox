@@ -85,6 +85,8 @@ proxmox_network:
     lan_cidr: "10.0.0.0/24"
     guest_admin_if: "eth0"
     guest_data_if: "eth1"
+    lxc_strategy: "highspeed_only"
+    vlan_tag: 1
     vm_model: "virtio"
     mode: "check"
 

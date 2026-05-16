@@ -34,11 +34,12 @@ FEATURE_INTERACTIVE="${PROXMOX_NETWORK_INTERACTIVE:-1}"
 FEATURE_DEBUG="${PROXMOX_NETWORK_DEBUG:-0}"
 PROXMOX_NETWORK_UPDATE_MODE="${PROXMOX_NETWORK_UPDATE_MODE:-check}"
 PROXMOX_NETWORK_UPDATE_AUTO_APPLY="${PROXMOX_NETWORK_UPDATE_AUTO_APPLY:-0}"
-PROXMOX_NETWORK_UPDATE_VLAN_TAG="${PROXMOX_NETWORK_UPDATE_VLAN_TAG:-}"
+PROXMOX_NETWORK_UPDATE_VLAN_TAG="${PROXMOX_NETWORK_UPDATE_VLAN_TAG-1}"
 PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS="${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS:-}"
 PROXMOX_NETWORK_UPDATE_VM_MODEL="${PROXMOX_NETWORK_UPDATE_VM_MODEL:-virtio}"
 PROXMOX_NETWORK_UPDATE_LXCS="${PROXMOX_NETWORK_UPDATE_LXCS:-}"
 PROXMOX_NETWORK_UPDATE_VMS="${PROXMOX_NETWORK_UPDATE_VMS:-}"
+PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY:-highspeed_only}"
 
 TMP_DIR="/tmp/pve-feature-network"
 PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
@@ -161,15 +162,17 @@ Optional environment overrides:
   PROXMOX_NETWORK_VMIDS=200,201
   PROXMOX_NETWORK_UPDATE_MODE=check|apply
   PROXMOX_NETWORK_UPDATE_AUTO_APPLY=0|1
-  PROXMOX_NETWORK_UPDATE_VLAN_TAG=<vid>
+  PROXMOX_NETWORK_UPDATE_VLAN_TAG=<vid>   # defaults to 1 when unset
   PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=10;20;30
   PROXMOX_NETWORK_UPDATE_VM_MODEL=virtio
   PROXMOX_NETWORK_UPDATE_LXCS=100,101
   PROXMOX_NETWORK_UPDATE_VMS=200,201
+  PROXMOX_NETWORK_UPDATE_LXC_STRATEGY=highspeed_only|add_data_nic
 
 Safety:
   Preflight/report remain read-only. Update mode changes guest NIC config
-  through Ansible with an explicit check -> apply gate.
+  through Ansible with an explicit check -> apply gate. Samba hardening is
+  intentionally out of scope here and belongs in a separate script.
 EOF
 }
 
@@ -445,6 +448,43 @@ extract.csv.kv() {
     fi
   done
   return 1
+}
+
+drop.csv.kv() {
+  local body="${1:-}"
+  local key="${2:-}"
+  local entry=""
+  local first=1
+  local output=""
+  IFS=',' read -r -a __entries <<< "${body}"
+  for entry in "${__entries[@]}"; do
+    entry="$(trim.space "${entry}")"
+    [[ -n "${entry}" ]] || continue
+    if [[ "${entry}" == "${key}="* ]]; then
+      continue
+    fi
+    if [[ "${first}" -eq 0 ]]; then
+      output+=","
+    fi
+    output+="${entry}"
+    first=0
+  done
+  printf '%s' "${output}"
+}
+
+upsert.csv.kv() {
+  local body="${1:-}"
+  local key="${2:-}"
+  local value="${3:-}"
+  local output=""
+  output="$(drop.csv.kv "${body}" "${key}")"
+  if [[ -n "${value}" ]]; then
+    if [[ -n "${output}" ]]; then
+      output+=","
+    fi
+    output+="${key}=${value}"
+  fi
+  printf '%s' "${output}"
 }
 
 append.tsv.row() {
@@ -1488,6 +1528,31 @@ lxc.has.admin.nic() {
     "${LXC_TSV_PATH}" 2>/dev/null
 }
 
+lxc.net.body.by.slot() {
+  local config_path="${1:-}"
+  local slot="${2:-}"
+  [[ -f "${config_path}" ]] || return 1
+  sed -n "s/^${slot}: //p" "${config_path}" 2>/dev/null | head -n1
+}
+
+build.lxc.highspeed.only.body() {
+  local current_body="${1:-}"
+  local desired=""
+  desired="${current_body}"
+  desired="$(upsert.csv.kv "${desired}" "bridge" "${EXPECTED_DATA_BRIDGE}")"
+  if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
+    desired="$(drop.csv.kv "${desired}" "trunks")"
+    desired="$(upsert.csv.kv "${desired}" "tag" "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")"
+  elif [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}" ]]; then
+    desired="$(drop.csv.kv "${desired}" "tag")"
+    desired="$(upsert.csv.kv "${desired}" "trunks" "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")"
+  else
+    desired="$(drop.csv.kv "${desired}" "tag")"
+    desired="$(drop.csv.kv "${desired}" "trunks")"
+  fi
+  printf '%s' "${desired}"
+}
+
 vm.has.any.nic() {
   local id="$1"
   awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {found=1} END {exit(found ? 0 : 1)}' "${VM_TSV_PATH}" 2>/dev/null
@@ -1544,7 +1609,7 @@ load.update.candidates() {
 }
 
 collect.update.selection() {
-  local candidate_lxc_csv candidate_vm_csv choice manual_lxc manual_vm
+  local candidate_lxc_csv candidate_vm_csv choice manual_lxc manual_vm selected_lxc
   candidate_lxc_csv="$(csv.from.id.list UPDATE_LXC_IDS)"
   candidate_vm_csv="$(csv.from.id.list UPDATE_VM_IDS)"
 
@@ -1585,11 +1650,19 @@ collect.update.selection() {
   printf '  Default data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
   printf '\n' >&3
 
-  choice="$(menu.tty "Select update scope:" "all candidates" "manual IDs" "abort")"
+  choice="$(menu.tty "Select update scope:" "selected LXC fix" "all candidates" "manual IDs" "abort")"
   case "${choice}" in
     1)
+      selected_lxc="$(prompt.tty "Enter LXC ID to fix" "${candidate_lxc_csv%%,*}")"
+      UPDATE_LXC_IDS=()
+      UPDATE_VM_IDS=()
+      while IFS= read -r choice; do
+        append.unique.id UPDATE_LXC_IDS "${choice}"
+      done < <(parse.id.filter "${selected_lxc}")
       ;;
     2)
+      ;;
+    3)
       manual_lxc="$(prompt.tty "Enter LXC IDs to update (blank = none)" "${candidate_lxc_csv}")"
       manual_vm="$(prompt.tty "Enter VM IDs to update (blank = none)" "${candidate_vm_csv}")"
       UPDATE_LXC_IDS=()
@@ -1608,7 +1681,16 @@ collect.update.selection() {
   esac
 
   EXPECTED_DATA_BRIDGE="$(prompt.tty "Enter target high-speed bridge" "${EXPECTED_DATA_BRIDGE}")"
-  PROXMOX_NETWORK_UPDATE_VLAN_TAG="$(trim.space "$(prompt.tty "Enter VLAN tag (blank = none)" "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")")"
+  if ((${#UPDATE_LXC_IDS[@]} > 0)); then
+    choice="$(menu.tty "Select LXC network strategy:" "high-speed only on VLAN 1 (replace net0)" "keep admin NIC and add data NIC")"
+    case "${choice}" in
+      1) PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="highspeed_only" ;;
+      2) PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="add_data_nic" ;;
+      *) log.error "Invalid LXC strategy selection."; exit 1 ;;
+    esac
+  fi
+
+  PROXMOX_NETWORK_UPDATE_VLAN_TAG="$(trim.space "$(prompt.tty "Enter VLAN tag (blank = none, default = 1)" "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")")"
   if [[ -z "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
     PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS="$(trim.space "$(prompt.tty "Enter VLAN trunks (blank = none)" "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")")"
   else
@@ -1633,7 +1715,7 @@ collect.update.selection() {
 }
 
 build.network.update.plan() {
-  local id name conf_path slot desired current_bridge
+  local id name conf_path slot desired current_body
   local row_count=0
   set.stage "build.network.update.plan"
   mkdir -p "${FACTS_DIR}"
@@ -1642,6 +1724,31 @@ build.network.update.plan() {
 
   for id in "${UPDATE_LXC_IDS[@]}"; do
     [[ -n "${id}" ]] || continue
+    conf_path="${RAW_LXC_DIR}/${id}/config.txt"
+    if [[ ! -f "${conf_path}" ]]; then
+      mkdir -p "$(dirname "${conf_path}")"
+      capture.cmd "${conf_path}" "pct config ${id}" "pct config ${id}"
+    fi
+    name="$(awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {print $3; exit}' "${LXC_TSV_PATH}" 2>/dev/null || true)"
+    [[ -n "${name}" ]] || name="ct${id}"
+
+    if [[ "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}" == "highspeed_only" ]]; then
+      current_body="$(lxc.net.body.by.slot "${conf_path}" "net0" || true)"
+      if [[ -z "${current_body}" ]]; then
+        log.warn "Skipping LXC ${id}: high-speed-only mode requires existing net0."
+        continue
+      fi
+      if lxc.has.data.nic "${id}" && ! lxc.has.admin.nic "${id}"; then
+        log "Skipping LXC ${id}: it already appears to be data-only."
+        continue
+      fi
+      slot="net0"
+      desired="$(build.lxc.highspeed.only.body "${current_body}")"
+      append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "selected_lxc_highspeed_only"
+      row_count=$((row_count + 1))
+      continue
+    fi
+
     if ! lxc.has.admin.nic "${id}"; then
       log.warn "Skipping LXC ${id}: no admin NIC on ${EXPECTED_ADMIN_BRIDGE}."
       continue
@@ -1650,25 +1757,18 @@ build.network.update.plan() {
       log "Skipping LXC ${id}: already has a data NIC on ${EXPECTED_DATA_BRIDGE}."
       continue
     fi
-    conf_path="${RAW_LXC_DIR}/${id}/config.txt"
-    if [[ ! -f "${conf_path}" ]]; then
-      mkdir -p "$(dirname "${conf_path}")"
-      capture.cmd "${conf_path}" "pct config ${id}" "pct config ${id}"
-    fi
     slot="$(pick.free.net.slot "${conf_path}")"
     if [[ -z "${slot}" ]]; then
       log.warn "Skipping LXC ${id}: no free net slot from net1..net9."
       continue
     fi
-    name="$(awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {print $3; exit}' "${LXC_TSV_PATH}" 2>/dev/null || true)"
-    [[ -n "${name}" ]] || name="ct${id}"
     desired="name=${EXPECTED_GUEST_DATA_IF},bridge=${EXPECTED_DATA_BRIDGE},ip=dhcp"
     if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
       desired="${desired},tag=${PROXMOX_NETWORK_UPDATE_VLAN_TAG}"
     elif [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}" ]]; then
       desired="${desired},trunks=${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}"
     fi
-    append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "missing_data_nic"
+    append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "missing_data_nic_add_data_nic"
     row_count=$((row_count + 1))
   done
 
@@ -1732,6 +1832,7 @@ proxmox_network_update:
   selected:
     lxc_ids_csv: $(yaml.quote "${lxc_csv}")
     vm_ids_csv: $(yaml.quote "${vm_csv}")
+    lxc_strategy: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}")
     vlan_tag: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")
     vlan_trunks: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")
     vm_model: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_VM_MODEL}")
@@ -1783,6 +1884,7 @@ run.network.update.flow() {
   fi
 
   write.network.intent.file
+  log "Network update scope is limited to guest NIC config. Samba hardening stays in a separate script."
 
   ensure.network.ansible
   prepare.feature.files
