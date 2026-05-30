@@ -46,6 +46,7 @@ ansible_python_interpreter_managed: "{{ managed_target_python_path }}"
 
 # Shared default accounts. Passwords default to the username when not overridden.
 user_defs:
+  - name: app	
   - name: agent
   - name: proxmox
   - name: root

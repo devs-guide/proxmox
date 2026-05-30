@@ -287,7 +287,7 @@ collect.operator.selection() {
     fi
     printf '  mode:     %s\n\n' "${FEATURE_MODE}" >&3
 
-    profile_choice="$(menu.tty 'Access profile' '1) local_only' '2) test_access' '3) builder')"
+    profile_choice="$(menu.tty 'Access profile' 'local_only' 'test_access' 'builder')"
     case "${profile_choice}" in
       1) FEATURE_ACCESS_PROFILE="local_only" ;;
       2) FEATURE_ACCESS_PROFILE="test_access" ;;

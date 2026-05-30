@@ -624,24 +624,24 @@
                 enable_fuse_client: {{ proxmox_lxc_network_enable_fuse_client | bool | lower }}
                 enable_avahi: {{ proxmox_lxc_network_enable_avahi | bool | lower }}
                 access_users:
-{{ proxmox_lxc_network_access_users | to_nice_yaml(indent=4) | indent(2, false) }}
+                  {{ proxmox_lxc_network_access_users | to_nice_yaml(indent=4) | indent(2, true) }}
                 ssh_port: "{{ proxmox_lxc_network_ssh_port }}"
                 allow_subnets:
-{{ proxmox_lxc_network_allow_subnets | to_nice_yaml(indent=4) | indent(2, false) }}
+                  {{ proxmox_lxc_network_allow_subnets | to_nice_yaml(indent=4) | indent(2, true) }}
                 expected_dns: "{{ proxmox_lxc_network_expected_dns }}"
                 expected_dns_present: {{ (proxmox_lxc_network_nameservers.stdout_lines | default([]) | select('equalto', proxmox_lxc_network_expected_dns) | list | length) > 0 }}
                 ipv4:
-{{ proxmox_lxc_network_ipv4.stdout_lines | to_nice_yaml(indent=4) | indent(2, false) }}
+                  {{ proxmox_lxc_network_ipv4.stdout_lines | to_nice_yaml(indent=4) | indent(2, true) }}
                 default_route:
-{{ proxmox_lxc_network_default_route.stdout_lines | to_nice_yaml(indent=4) | indent(2, false) }}
+                  {{ proxmox_lxc_network_default_route.stdout_lines | to_nice_yaml(indent=4) | indent(2, true) }}
                 nameservers:
-{{ proxmox_lxc_network_nameservers.stdout_lines | to_nice_yaml(indent=4) | indent(2, false) }}
+                  {{ proxmox_lxc_network_nameservers.stdout_lines | to_nice_yaml(indent=4) | indent(2, true) }}
                 internet_probe_ipv4: "{{ proxmox_lxc_network_internet_probe_ipv4 }}"
                 internet_probe_ok: {{ (proxmox_lxc_network_internet_probe_apply.rc | default(1)) == 0 }}
                 dns_probe_ok: {{ (proxmox_lxc_network_dns_probe_apply.rc | default(1)) == 0 }}
                 package_count: {{ proxmox_lxc_network_packages_effective | length }}
                 package_list:
-{{ proxmox_lxc_network_packages_effective | to_nice_yaml(indent=4) | indent(2, false) }}
+                  {{ proxmox_lxc_network_packages_effective | to_nice_yaml(indent=4) | indent(2, true) }}
                 fuse_available: {{ proxmox_lxc_network_fuse_device.stat.exists | default(false) | bool | lower }}
 
         - name: Report apply summary
