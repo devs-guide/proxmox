@@ -175,35 +175,33 @@
       set_fact:
         proxmox_lxc_network_operator_selection: "{{ proxmox_lxc_network_operator_selection | default({}) }}"
         proxmox_lxc_network_selector_hardening: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true) }}"
-        proxmox_lxc_network_selector_ssh: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).ssh | default({}, true) }}"
+        proxmox_lxc_network_selector_ssh: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).ssh | default({}, true) }}"
         proxmox_lxc_network_selector_optional_packages: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).optional_packages | default({}, true) }}"
+        proxmox_lxc_network_selector_access_users: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).access_users | default([], true) }}"
+        proxmox_lxc_network_selector_allow_subnets: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).allow_subnets | default([], true) }}"
 
-    - name: Build effective access profile and allow-lists
+    - name: Build effective access profile
       set_fact:
         proxmox_lxc_network_access_profile: >-
           {{
             proxmox_lxc_network_selector_hardening.access_profile
             | default(proxmox_lxc_network_defaults_effective.hardening.access_profile, true)
           }}
-        proxmox_lxc_network_selector_access_users: >-
-          {{
-            proxmox_lxc_network_selector_hardening.access_users
-            | default([], true)
-          }}
+
+    - name: Build effective access user allow-lists
+      set_fact:
         proxmox_lxc_network_access_users: >-
           {{
             (
-              proxmox_lxc_network_defaults_effective.hardening.access_users
-              | default([], true)
-              + proxmox_lxc_network_selector_access_users
+              (proxmox_lxc_network_defaults_effective.hardening.access_users | default([], true))
+              + (proxmox_lxc_network_selector_access_users | default([], true))
             ) | unique
           }}
         proxmox_lxc_network_access_users_non_root: >-
           {{
             (
-              proxmox_lxc_network_defaults_effective.hardening.access_users
-              | default([], true)
-              + proxmox_lxc_network_selector_access_users
+              (proxmox_lxc_network_defaults_effective.hardening.access_users | default([], true))
+              + (proxmox_lxc_network_selector_access_users | default([], true))
             )
             | reject('equalto', 'root')
             | unique
@@ -215,10 +213,8 @@
         proxmox_lxc_network_allow_subnets: >-
           {{
             (
-              proxmox_lxc_network_defaults_effective.hardening.allow_subnets
-              | default([], true)
-              + proxmox_lxc_network_selector_hardening.allow_subnets
-              | default([], true)
+              (proxmox_lxc_network_defaults_effective.hardening.allow_subnets | default([], true))
+              + (proxmox_lxc_network_selector_allow_subnets | default([], true))
             ) | unique
           }}
         proxmox_lxc_network_expected_dns: >-
