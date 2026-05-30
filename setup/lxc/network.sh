@@ -64,8 +64,8 @@ FEATURE_ENABLE_AVAHI="${PROXMOX_LXC_NETWORK_ENABLE_AVAHI:-0}"
 FEATURE_EXPECTED_DNS="${PROXMOX_LXC_NETWORK_EXPECTED_DNS:-10.0.0.1}"
 FEATURE_INTERNET_PROBE_IPV4="${PROXMOX_LXC_NETWORK_INTERNET_PROBE_IPV4:-1.1.1.1}"
 FEATURE_ACCESS_PROFILE="${PROXMOX_LXC_NETWORK_ACCESS_PROFILE:-local_only}"
-FEATURE_ALLOW_SUBNETS="${PROXMOX_LXC_NETWORK_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
-FEATURE_ACCESS_USERS="${PROXMOX_LXC_NETWORK_ACCESS_USERS:-agent proxmox root}"
+FEATURE_ALLOW_SUBNETS="${PROXMOX_LXC_NETWORK_ALLOW_SUBNETS:-}"
+FEATURE_ACCESS_USERS="${PROXMOX_LXC_NETWORK_ACCESS_USERS:-}"
 FEATURE_SSH_PORT="${PROXMOX_LXC_NETWORK_SSH_PORT:-22}"
 
 CONTAINER_HOSTNAME=""
@@ -77,6 +77,8 @@ OPEN_TTY=0
 
 declare -a NETWORK_ALLOW_SUBNET_LIST=()
 declare -a NETWORK_ACCESS_USERS=()
+declare -a DISCOVERED_ACCESS_USERS=()
+declare -a DISCOVERED_ALLOW_SUBNETS=()
 declare -a CONTAINER_IPV4=()
 
 source.release.common() {
@@ -249,25 +251,110 @@ require.container.not.host() {
 parse.allow.subnets() {
   local raw="${1:-}"
   NETWORK_ALLOW_SUBNET_LIST=()
-  for entry in ${raw}; do
-    NETWORK_ALLOW_SUBNET_LIST+=("${entry}")
-  done
 
-  if ((${#NETWORK_ALLOW_SUBNET_LIST[@]} == 0)); then
-    NETWORK_ALLOW_SUBNET_LIST=("10.0.0.0/24" "192.168.0.0/16")
+  if [[ -n "${raw}" ]]; then
+    for entry in ${raw}; do
+      NETWORK_ALLOW_SUBNET_LIST+=("${entry}")
+    done
+  else
+    discover.allow.subnets
+    NETWORK_ALLOW_SUBNET_LIST=("${DISCOVERED_ALLOW_SUBNETS[@]}")
   fi
 }
 
 parse.access.users() {
   local raw="${1:-}"
   NETWORK_ACCESS_USERS=()
-  for entry in ${raw}; do
-    NETWORK_ACCESS_USERS+=("${entry}")
-  done
 
-  if ((${#NETWORK_ACCESS_USERS[@]} == 0)); then
-    NETWORK_ACCESS_USERS=("agent" "proxmox" "root")
+  if [[ -n "${raw}" ]]; then
+    for entry in ${raw}; do
+      NETWORK_ACCESS_USERS+=("${entry}")
+    done
+  else
+    discover.access.users
+    NETWORK_ACCESS_USERS=("${DISCOVERED_ACCESS_USERS[@]}")
   fi
+}
+
+discover.access.users() {
+  local uid_min="1000"
+  DISCOVERED_ACCESS_USERS=()
+
+  if [[ -r /etc/login.defs ]]; then
+    uid_min="$(awk '$1=="UID_MIN" && $2 ~ /^[0-9]+$/ {print $2; exit}' /etc/login.defs 2>/dev/null || true)"
+    uid_min="${uid_min:-1000}"
+  fi
+
+  while IFS=: read -r username _ uid _ _ _ shell; do
+    [[ -n "${username}" ]] || continue
+    [[ "${uid}" =~ ^[0-9]+$ ]] || continue
+
+    case "${shell}" in
+      *nologin|*false)
+        continue
+        ;;
+    esac
+
+    if [[ "${uid}" == "0" ]] || ((uid >= uid_min)); then
+      DISCOVERED_ACCESS_USERS+=("${username}")
+    fi
+  done < /etc/passwd
+
+  if ((${#DISCOVERED_ACCESS_USERS[@]} == 0)); then
+    DISCOVERED_ACCESS_USERS=("root")
+  fi
+}
+
+set.default.access.users() {
+  if [[ -n "${FEATURE_ACCESS_USERS}" ]]; then
+    return 0
+  fi
+
+  discover.access.users
+  FEATURE_ACCESS_USERS="${DISCOVERED_ACCESS_USERS[*]}"
+}
+
+discover.allow.subnets() {
+  DISCOVERED_ALLOW_SUBNETS=()
+
+  while IFS= read -r cidr; do
+    [[ -n "${cidr}" ]] || continue
+    case "${cidr}" in
+      127.*|169.254.*)
+        continue
+        ;;
+    esac
+    DISCOVERED_ALLOW_SUBNETS+=("${cidr}")
+  done < <(
+    ip -o -4 route show proto kernel scope link 2>/dev/null \
+      | awk '{print $1}' \
+      | sort -u
+  )
+
+  if ((${#DISCOVERED_ALLOW_SUBNETS[@]} == 0)); then
+    while IFS= read -r cidr; do
+      [[ -n "${cidr}" ]] || continue
+      case "${cidr}" in
+        127.*|169.254.*)
+          continue
+          ;;
+      esac
+      DISCOVERED_ALLOW_SUBNETS+=("${cidr}")
+    done < <(
+      ip -o -4 addr show scope global 2>/dev/null \
+        | awk '{print $4}' \
+        | sort -u
+    )
+  fi
+}
+
+set.default.allow.subnets() {
+  if [[ -n "${FEATURE_ALLOW_SUBNETS}" ]]; then
+    return 0
+  fi
+
+  discover.allow.subnets
+  FEATURE_ALLOW_SUBNETS="${DISCOVERED_ALLOW_SUBNETS[*]}"
 }
 
 detect.container.identity() {
@@ -277,6 +364,9 @@ detect.container.identity() {
 }
 
 collect.operator.selection() {
+  set.default.access.users
+  set.default.allow.subnets
+
   if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
     local profile_choice
     printf '\nDetected container:\n' >&3
@@ -322,7 +412,7 @@ collect.operator.selection() {
         echo no
       fi
     )")"
-    FEATURE_ALLOW_SUBNETS="$(prompt.tty 'Allowed local subnets for SSH (space-separated CIDR)' "${FEATURE_ALLOW_SUBNETS}")"
+    FEATURE_ALLOW_SUBNETS="$(prompt.tty 'Allowed local subnets for SSH (space-separated CIDR, detected by default)' "${FEATURE_ALLOW_SUBNETS}")"
     FEATURE_ACCESS_USERS="$(prompt.tty 'Access users (space-separated)' "${FEATURE_ACCESS_USERS}")"
     FEATURE_INTERNET_PROBE_IPV4="$(prompt.tty 'Internet IPv4 probe target' "${FEATURE_INTERNET_PROBE_IPV4}")"
     FEATURE_EXPECTED_DNS="$(prompt.tty 'Expected DNS resolver (quick check)' "${FEATURE_EXPECTED_DNS}")"
@@ -363,7 +453,10 @@ collect.operator.selection() {
   parse.access.users "${FEATURE_ACCESS_USERS}"
 
   if ((${#NETWORK_ACCESS_USERS[@]} == 0)); then
-    NETWORK_ACCESS_USERS=("agent" "proxmox" "root")
+    NETWORK_ACCESS_USERS=("root")
+  fi
+  if ((${#NETWORK_ALLOW_SUBNET_LIST[@]} == 0)); then
+    log.warn "No local IPv4 subnets were discovered. UFW SSH allow rules may require explicit PROXMOX_LXC_NETWORK_ALLOW_SUBNETS."
   fi
 }
 

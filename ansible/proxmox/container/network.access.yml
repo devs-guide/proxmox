@@ -56,13 +56,8 @@
             - lsof
         hardening:
           access_profile: "local_only"
-          access_users:
-            - agent
-            - proxmox
-            - root
-          allow_subnets:
-            - "10.0.0.0/24"
-            - "192.168.0.0/16"
+          access_users: []
+          allow_subnets: []
           expected_dns: "10.0.0.1"
           internet_probe_ipv4: "1.1.1.1"
           enable_ssh: true
@@ -188,20 +183,102 @@
             | default(proxmox_lxc_network_defaults_effective.hardening.access_profile, true)
           }}
 
-    - name: Build effective access user allow-lists
+    - name: Discover login-capable container users for access policy fallback
+      command:
+        argv:
+          - sh
+          - -c
+          - |
+            uid_min="$(awk '$1=="UID_MIN" && $2 ~ /^[0-9]+$/ {print $2; exit}' /etc/login.defs 2>/dev/null || true)"
+            uid_min="${uid_min:-1000}"
+            getent passwd | awk -F: -v uid_min="${uid_min}" '
+              ($3 == 0 || $3 >= uid_min) && $7 !~ /(nologin|false)$/ { print $1 }
+            '
+      register: proxmox_lxc_network_discovered_access_users_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Normalize discovered container access users
       set_fact:
-        proxmox_lxc_network_access_users: >-
+        proxmox_lxc_network_discovered_access_users: >-
+          {{
+            (
+              proxmox_lxc_network_discovered_access_users_cmd.stdout_lines
+              | default([], true)
+              | map('trim')
+              | reject('equalto', '')
+              | list
+            ) | unique
+          }}
+
+    - name: Ensure discovered container access users fallback includes root
+      set_fact:
+        proxmox_lxc_network_discovered_access_users: ['root']
+      when: proxmox_lxc_network_discovered_access_users | length == 0
+
+    - name: Build requested access user allow-list
+      set_fact:
+        proxmox_lxc_network_requested_access_users: >-
           {{
             (
               (proxmox_lxc_network_defaults_effective.hardening.access_users | default([], true))
               + (proxmox_lxc_network_selector_access_users | default([], true))
             ) | unique
           }}
+
+    - name: Discover local IPv4 subnets for firewall access fallback
+      command:
+        argv:
+          - sh
+          - -c
+          - |
+            {
+              ip -o -4 route show proto kernel scope link 2>/dev/null | awk '{print $1}';
+              ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}';
+            } | awk 'NF' | sort -u
+      register: proxmox_lxc_network_discovered_subnets_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Normalize discovered local IPv4 subnet list
+      set_fact:
+        proxmox_lxc_network_discovered_subnets: >-
+          {{
+            (
+              proxmox_lxc_network_discovered_subnets_cmd.stdout_lines
+              | default([], true)
+              | map('trim')
+              | reject('equalto', '')
+              | reject('match', '^127\\.')
+              | reject('match', '^169\\.254\\.')
+              | list
+            ) | unique
+          }}
+
+    - name: Build requested local subnet allow-list
+      set_fact:
+        proxmox_lxc_network_requested_allow_subnets: >-
+          {{
+            (
+              (proxmox_lxc_network_defaults_effective.hardening.allow_subnets | default([], true))
+              + (proxmox_lxc_network_selector_allow_subnets | default([], true))
+            ) | unique
+          }}
+
+    - name: Build effective access user allow-lists
+      set_fact:
+        proxmox_lxc_network_access_users: >-
+          {{
+            proxmox_lxc_network_requested_access_users
+            if (proxmox_lxc_network_requested_access_users | length > 0)
+            else proxmox_lxc_network_discovered_access_users
+          }}
         proxmox_lxc_network_access_users_non_root: >-
           {{
             (
-              (proxmox_lxc_network_defaults_effective.hardening.access_users | default([], true))
-              + (proxmox_lxc_network_selector_access_users | default([], true))
+              proxmox_lxc_network_requested_access_users
+              if (proxmox_lxc_network_requested_access_users | length > 0)
+              else proxmox_lxc_network_discovered_access_users
             )
             | reject('equalto', 'root')
             | unique
@@ -212,10 +289,9 @@
         proxmox_lxc_network_effective_mode: "{{ proxmox_feature_defaults_effective.mode }}"
         proxmox_lxc_network_allow_subnets: >-
           {{
-            (
-              (proxmox_lxc_network_defaults_effective.hardening.allow_subnets | default([], true))
-              + (proxmox_lxc_network_selector_allow_subnets | default([], true))
-            ) | unique
+            proxmox_lxc_network_requested_allow_subnets
+            if (proxmox_lxc_network_requested_allow_subnets | length > 0)
+            else proxmox_lxc_network_discovered_subnets
           }}
         proxmox_lxc_network_expected_dns: >-
           {{
@@ -241,6 +317,16 @@
         proxmox_lxc_network_enable_ufw: "{{ (proxmox_lxc_network_enable_ufw or proxmox_lxc_network_access_profile == 'builder') | bool }}"
         proxmox_lxc_network_enable_fuse_client: "{{ (proxmox_lxc_network_enable_fuse_client or proxmox_lxc_network_access_profile == 'builder') | bool }}"
         proxmox_lxc_network_enable_avahi: "{{ (proxmox_lxc_network_enable_avahi or proxmox_lxc_network_access_profile == 'builder') | bool }}"
+
+    - name: Require local subnet allow-list when UFW is enabled
+      assert:
+        that:
+          - proxmox_lxc_network_allow_subnets | length > 0
+        fail_msg: >-
+          UFW is enabled but no local IPv4 subnets were discovered. Set
+          proxmox_lxc_network.hardening.allow_subnets or
+          PROXMOX_LXC_NETWORK_ALLOW_SUBNETS explicitly.
+      when: proxmox_lxc_network_enable_ufw | bool
 
     - name: Build effective package set
       set_fact:

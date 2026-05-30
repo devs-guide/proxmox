@@ -244,13 +244,8 @@ proxmox_lxc_network:
       - lsof
   hardening:
     access_profile: "local_only"
-    access_users:
-      - agent
-      - proxmox
-      - root
-    allow_subnets:
-      - "10.0.0.0/24"
-      - "192.168.0.0/16"
+    access_users: []
+    allow_subnets: []
     expected_dns: "10.0.0.1"
     internet_probe_ipv4: "1.1.1.1"
     enable_ssh: true
