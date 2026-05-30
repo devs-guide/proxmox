@@ -7,8 +7,14 @@
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     default_password_hash_algo: sha512
+    managed_sudo_users: "{{ user_defs | rejectattr('name', 'equalto', 'root') | list }}"
 
   tasks:
+    - name: Ensure sudo is installed
+      apt:
+        name: sudo
+        state: present
+
     - name: Ensure users exist with initial passwords
       user:
         name: "{{ item.name }}"
@@ -17,6 +23,33 @@
         state: present
         update_password: always
       loop: "{{ user_defs }}"
+
+    - name: Ensure sudoers drop-in directory exists
+      file:
+        path: /etc/sudoers.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Ensure managed non-root users have sudo access
+      copy:
+        dest: /etc/sudoers.d/90-debian-users
+        owner: root
+        group: root
+        mode: "0440"
+        content: |
+          {% for user in managed_sudo_users %}
+          {{ user.name }} ALL=(ALL:ALL) ALL
+          {% endfor %}
+        validate: /usr/sbin/visudo -cf %s
+      when: managed_sudo_users | length > 0
+
+    - name: Remove managed sudoers drop-in when no non-root users are defined
+      file:
+        path: /etc/sudoers.d/90-debian-users
+        state: absent
+      when: managed_sudo_users | length == 0
 
     - name: Clear password expiry and inactivity requirements
       command: >
