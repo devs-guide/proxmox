@@ -261,6 +261,12 @@ proxmox_lxc_network:
     use_pam: "yes"
     x11_forwarding: "no"
     pubkey_authentication: null
+  sftp:
+    enabled: true
+    subsystem_name: "sftp"
+    subsystem_path: "/usr/lib/openssh/sftp-server"
+    require_subsystem: true
+    validate_binary: true
   optional_packages:
     avahi:
       enabled: false

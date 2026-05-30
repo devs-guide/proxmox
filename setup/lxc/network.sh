@@ -64,6 +64,11 @@ FEATURE_ENABLE_AVAHI="${PROXMOX_LXC_NETWORK_ENABLE_AVAHI:-0}"
 FEATURE_EXPECTED_DNS="${PROXMOX_LXC_NETWORK_EXPECTED_DNS:-10.0.0.1}"
 FEATURE_INTERNET_PROBE_IPV4="${PROXMOX_LXC_NETWORK_INTERNET_PROBE_IPV4:-1.1.1.1}"
 FEATURE_ACCESS_PROFILE="${PROXMOX_LXC_NETWORK_ACCESS_PROFILE:-local_only}"
+FEATURE_SFTP_ENABLED="${PROXMOX_LXC_NETWORK_SFTP_ENABLED:-1}"
+FEATURE_SFTP_REQUIRE_SUBSYSTEM="${PROXMOX_LXC_NETWORK_SFTP_REQUIRE_SUBSYSTEM:-1}"
+FEATURE_SFTP_VALIDATE_BINARY="${PROXMOX_LXC_NETWORK_SFTP_VALIDATE_BINARY:-1}"
+FEATURE_SFTP_SUBSYSTEM_NAME="${PROXMOX_LXC_NETWORK_SFTP_SUBSYSTEM_NAME:-sftp}"
+FEATURE_SFTP_SUBSYSTEM_PATH="${PROXMOX_LXC_NETWORK_SFTP_SUBSYSTEM_PATH:-/usr/lib/openssh/sftp-server}"
 FEATURE_ALLOW_SUBNETS="${PROXMOX_LXC_NETWORK_ALLOW_SUBNETS:-}"
 FEATURE_ACCESS_USERS="${PROXMOX_LXC_NETWORK_ACCESS_USERS:-}"
 FEATURE_SSH_PORT="${PROXMOX_LXC_NETWORK_SSH_PORT:-22}"
@@ -401,6 +406,13 @@ collect.operator.selection() {
         echo no
       fi
     )")"
+    FEATURE_SFTP_ENABLED="$(prompt.tty 'Enable SFTP over SSH?' "$(
+      if is.true "${FEATURE_SFTP_ENABLED}"; then
+        echo yes
+      else
+        echo no
+      fi
+    )")"
     FEATURE_ENABLE_UFW="$(prompt.tty 'Enable UFW and restrict SSH to local subnets?' "$(
       if is.true "${FEATURE_ENABLE_UFW}"; then
         echo yes
@@ -433,6 +445,21 @@ collect.operator.selection() {
   else
     FEATURE_ENABLE_SSH=0
   fi
+  if is.true "${FEATURE_SFTP_ENABLED}"; then
+    FEATURE_SFTP_ENABLED=1
+  else
+    FEATURE_SFTP_ENABLED=0
+  fi
+  if is.true "${FEATURE_SFTP_REQUIRE_SUBSYSTEM}"; then
+    FEATURE_SFTP_REQUIRE_SUBSYSTEM=1
+  else
+    FEATURE_SFTP_REQUIRE_SUBSYSTEM=0
+  fi
+  if is.true "${FEATURE_SFTP_VALIDATE_BINARY}"; then
+    FEATURE_SFTP_VALIDATE_BINARY=1
+  else
+    FEATURE_SFTP_VALIDATE_BINARY=0
+  fi
   if is.true "${FEATURE_ENABLE_UFW}"; then
     FEATURE_ENABLE_UFW=1
   else
@@ -457,6 +484,9 @@ collect.operator.selection() {
     FEATURE_ENABLE_UFW=1
     FEATURE_ENABLE_FUSE_CLIENT=1
     FEATURE_ENABLE_AVAHI=1
+  fi
+  if is.true "${FEATURE_SFTP_ENABLED}"; then
+    FEATURE_ENABLE_SSH=1
   fi
 
   parse.allow.subnets "${FEATURE_ALLOW_SUBNETS}"
@@ -491,6 +521,12 @@ $(for entry in "${CONTAINER_IPV4[@]:-}"; do printf '      - %s\n' "$(yaml.quote 
     enable_ufw: $(bool.yaml "${FEATURE_ENABLE_UFW}")
     enable_fuse_client: $(bool.yaml "${FEATURE_ENABLE_FUSE_CLIENT}")
     enable_avahi: $(bool.yaml "${FEATURE_ENABLE_AVAHI}")
+    sftp:
+      enabled: $(bool.yaml "${FEATURE_SFTP_ENABLED}")
+      require_subsystem: $(bool.yaml "${FEATURE_SFTP_REQUIRE_SUBSYSTEM}")
+      validate_binary: $(bool.yaml "${FEATURE_SFTP_VALIDATE_BINARY}")
+      subsystem_name: $(yaml.quote "${FEATURE_SFTP_SUBSYSTEM_NAME}")
+      subsystem_path: $(yaml.quote "${FEATURE_SFTP_SUBSYSTEM_PATH}")
     access_users:
 $(for user in "${NETWORK_ACCESS_USERS[@]}"; do printf '      - %s\n' "$(yaml.quote "${user}")"; done)
     allow_subnets:
@@ -525,6 +561,12 @@ proxmox_lxc_network:
     enable_ufw: $(bool.yaml "${FEATURE_ENABLE_UFW}")
     enable_fuse_client: $(bool.yaml "${FEATURE_ENABLE_FUSE_CLIENT}")
     enable_avahi: $(bool.yaml "${FEATURE_ENABLE_AVAHI}")
+    sftp:
+      enabled: $(bool.yaml "${FEATURE_SFTP_ENABLED}")
+      require_subsystem: $(bool.yaml "${FEATURE_SFTP_REQUIRE_SUBSYSTEM}")
+      validate_binary: $(bool.yaml "${FEATURE_SFTP_VALIDATE_BINARY}")
+      subsystem_name: $(yaml.quote "${FEATURE_SFTP_SUBSYSTEM_NAME}")
+      subsystem_path: $(yaml.quote "${FEATURE_SFTP_SUBSYSTEM_PATH}")
     access_users:
 $(for user in "${NETWORK_ACCESS_USERS[@]}"; do printf '      - %s\n' "$(yaml.quote "${user}")"; done)
     allow_subnets:

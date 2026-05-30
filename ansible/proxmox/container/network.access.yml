@@ -73,6 +73,12 @@
           use_pam: "yes"
           x11_forwarding: "no"
           pubkey_authentication: null
+        sftp:
+          enabled: true
+          subsystem_name: "sftp"
+          subsystem_path: "/usr/lib/openssh/sftp-server"
+          require_subsystem: true
+          validate_binary: true
         optional_packages:
           avahi:
             enabled: false
@@ -171,6 +177,7 @@
         proxmox_lxc_network_operator_selection: "{{ proxmox_lxc_network_operator_selection | default({}) }}"
         proxmox_lxc_network_selector_hardening: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true) }}"
         proxmox_lxc_network_selector_ssh: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).ssh | default({}, true) }}"
+        proxmox_lxc_network_selector_sftp: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).sftp | default({}, true) }}"
         proxmox_lxc_network_selector_optional_packages: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).optional_packages | default({}, true) }}"
         proxmox_lxc_network_selector_access_users: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).access_users | default([], true) }}"
         proxmox_lxc_network_selector_allow_subnets: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).allow_subnets | default([], true) }}"
@@ -303,6 +310,11 @@
             proxmox_lxc_network_selector_hardening.internet_probe_ipv4
             | default(proxmox_lxc_network_defaults_effective.hardening.internet_probe_ipv4, true)
           }}
+        proxmox_lxc_network_sftp_enabled: "{{ proxmox_lxc_network_selector_sftp.enabled | default(proxmox_lxc_network_defaults_effective.sftp.enabled, true) | bool }}"
+        proxmox_lxc_network_sftp_subsystem_name: "{{ proxmox_lxc_network_selector_sftp.subsystem_name | default(proxmox_lxc_network_defaults_effective.sftp.subsystem_name, true) }}"
+        proxmox_lxc_network_sftp_subsystem_path: "{{ proxmox_lxc_network_selector_sftp.subsystem_path | default(proxmox_lxc_network_defaults_effective.sftp.subsystem_path, true) }}"
+        proxmox_lxc_network_sftp_require_subsystem: "{{ proxmox_lxc_network_selector_sftp.require_subsystem | default(proxmox_lxc_network_defaults_effective.sftp.require_subsystem, true) | bool }}"
+        proxmox_lxc_network_sftp_validate_binary: "{{ proxmox_lxc_network_selector_sftp.validate_binary | default(proxmox_lxc_network_defaults_effective.sftp.validate_binary, true) | bool }}"
         proxmox_lxc_network_ssh_port: "{{ proxmox_lxc_network_selector_ssh.port | default(proxmox_lxc_network.ssh.port | default(proxmox_lxc_network_defaults_safe.ssh.port, true), true) }}"
         proxmox_lxc_network_include_path: "{{ proxmox_lxc_network.ssh.include_path | default(proxmox_lxc_network_defaults_effective.ssh.include_path, true) }}"
         proxmox_lxc_network_enable_ssh: "{{ proxmox_lxc_network_selector_hardening.enable_ssh | default(proxmox_lxc_network_defaults_effective.hardening.enable_ssh, true) | bool }}"
@@ -313,7 +325,7 @@
 
     - name: Apply access profile behavior overrides
       set_fact:
-        proxmox_lxc_network_enable_ssh: "{{ (proxmox_lxc_network_enable_ssh or proxmox_lxc_network_access_profile == 'test_access' or proxmox_lxc_network_access_profile == 'builder') | bool }}"
+        proxmox_lxc_network_enable_ssh: "{{ (proxmox_lxc_network_enable_ssh or proxmox_lxc_network_sftp_enabled | bool or proxmox_lxc_network_access_profile == 'test_access' or proxmox_lxc_network_access_profile == 'builder') | bool }}"
         proxmox_lxc_network_enable_ufw: "{{ (proxmox_lxc_network_enable_ufw or proxmox_lxc_network_access_profile == 'builder') | bool }}"
         proxmox_lxc_network_enable_fuse_client: "{{ (proxmox_lxc_network_enable_fuse_client or proxmox_lxc_network_access_profile == 'builder') | bool }}"
         proxmox_lxc_network_enable_avahi: "{{ (proxmox_lxc_network_enable_avahi or proxmox_lxc_network_access_profile == 'builder') | bool }}"
@@ -353,6 +365,8 @@
           access_users: "{{ proxmox_lxc_network_access_users }}"
           non_root_access_users: "{{ proxmox_lxc_network_access_users_non_root }}"
           enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
+          sftp_enabled: "{{ proxmox_lxc_network_sftp_enabled }}"
+          sftp_subsystem: "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}"
           enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
           enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
           enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"
@@ -497,6 +511,90 @@
           changed_when: false
           when: proxmox_lxc_network_access_profile == 'test_access'
 
+        - name: Detect existing SSH SFTP subsystem declaration
+          shell: |
+            set -eu
+            grep -hE "^[[:space:]]*Subsystem[[:space:]]+{{ proxmox_lxc_network_sftp_subsystem_name }}([[:space:]]|$)" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort -u || true
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_existing_sftp_subsystem
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Detect exact SSH SFTP subsystem declaration
+          shell: |
+            set -eu
+            grep -hE "^[[:space:]]*Subsystem[[:space:]]+{{ proxmox_lxc_network_sftp_subsystem_name }}[[:space:]]+{{ proxmox_lxc_network_sftp_subsystem_path }}([[:space:]]|$)" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort -u || true
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_existing_sftp_subsystem_match
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Normalize SFTP subsystem detection state
+          set_fact:
+            proxmox_lxc_network_sftp_subsystem_present: "{{ (proxmox_lxc_network_existing_sftp_subsystem.stdout_lines | default([], true) | length) > 0 }}"
+            proxmox_lxc_network_sftp_subsystem_exact_match: "{{ (proxmox_lxc_network_existing_sftp_subsystem_match.stdout_lines | default([], true) | length) > 0 }}"
+            proxmox_lxc_network_sftp_subsystem_conflict: "{{ (proxmox_lxc_network_existing_sftp_subsystem.stdout_lines | default([], true) | length > 0) and (not (proxmox_lxc_network_existing_sftp_subsystem_match.stdout_lines | default([], true) | length > 0)) }}"
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Require valid SSH SFTP subsystem declaration
+          assert:
+            that:
+              - not proxmox_lxc_network_sftp_subsystem_conflict
+            fail_msg: >-
+              A different "Subsystem {{ proxmox_lxc_network_sftp_subsystem_name }}" directive already exists.
+              Update it to match "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}",
+              or disable this conflict and rerun.
+          when:
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_require_subsystem | bool
+
+        - name: Validate SFTP subsystem binary exists
+          stat:
+            path: "{{ proxmox_lxc_network_sftp_subsystem_path }}"
+          register: proxmox_lxc_network_sftp_binary
+          changed_when: false
+          when:
+            - proxmox_lxc_network_enable_ssh | bool
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_validate_binary | bool
+
+        - name: Fail if required SFTP subsystem binary is missing
+          assert:
+            that:
+              - proxmox_lxc_network_sftp_binary.stat.exists
+            fail_msg: >-
+              SFTP subsystem binary {{ proxmox_lxc_network_sftp_subsystem_path }} is not present.
+              Install openssh-server or set a valid path.
+          when:
+            - proxmox_lxc_network_enable_ssh | bool
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_validate_binary | bool
+
+        - name: Ensure managed SFTP subsystem declaration exists
+          register: proxmox_lxc_network_managed_sftp_subsystem
+          copy:
+            dest: /etc/ssh/sshd_config.d/90-proxmox-lxc-network.sftp.conf
+            mode: "0644"
+            content: "Subsystem {{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}\n"
+          when:
+            - proxmox_lxc_network_enable_ssh | bool
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_require_subsystem | bool
+            - not proxmox_lxc_network_sftp_subsystem_exact_match
+
+        - name: Normalize managed SFTP subsystem presence state
+          set_fact:
+            proxmox_lxc_network_sftp_subsystem_present: >-
+              {{
+                proxmox_lxc_network_sftp_subsystem_exact_match
+                or (proxmox_lxc_network_managed_sftp_subsystem.changed | default(false))
+              }}
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
         - name: Ensure /etc/ssh/sshd_config includes managed include directory
           lineinfile:
             path: /etc/ssh/sshd_config
@@ -549,7 +647,7 @@
             executable: /bin/bash
           register: proxmox_lxc_network_sshd_test
           changed_when: false
-          failed_when: false
+          failed_when: proxmox_lxc_network_sshd_test.rc != 0
           when: proxmox_lxc_network_enable_ssh | bool
 
         - name: Resolve SSH service name
@@ -574,6 +672,18 @@
             name: "{{ proxmox_lxc_network_ssh_service_name.stdout | trim }}"
             enabled: true
             state: restarted
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Capture SSH service active state
+          command:
+            argv:
+              - systemctl
+              - is-active
+              - --quiet
+              - "{{ proxmox_lxc_network_ssh_service_name.stdout | trim }}"
+          register: proxmox_lxc_network_ssh_service_active
+          changed_when: false
+          failed_when: false
           when: proxmox_lxc_network_enable_ssh | bool
 
         - name: Capture SSH listener state
@@ -644,6 +754,17 @@
           changed_when: false
           when: proxmox_lxc_network_enable_ufw | bool
 
+        - name: Capture UFW SSH allow rule summary
+          shell: |
+            set -eu
+            ufw status | awk '/ALLOW/ {count++} END {print count+0}'
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_ufw_rule_count
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ufw | bool
+
         - name: Ensure /etc/fuse.conf allows unprivileged file ownership overrides
           lineinfile:
             path: /etc/fuse.conf
@@ -705,12 +826,19 @@
                 mode: "{{ proxmox_lxc_network_effective_mode }}"
                 access_profile: "{{ proxmox_lxc_network_access_profile }}"
                 enable_ssh: {{ proxmox_lxc_network_enable_ssh | bool | lower }}
+                sftp_enabled: {{ proxmox_lxc_network_sftp_enabled | bool | lower }}
                 enable_ufw: {{ proxmox_lxc_network_enable_ufw | bool | lower }}
                 enable_fuse_client: {{ proxmox_lxc_network_enable_fuse_client | bool | lower }}
                 enable_avahi: {{ proxmox_lxc_network_enable_avahi | bool | lower }}
+                ssh_service_active: {{ (proxmox_lxc_network_ssh_service_active.rc | default(1)) == 0 | bool | lower }}
+                sshd_config_valid: {{ (proxmox_lxc_network_sshd_test.rc | default(1)) == 0 | bool | lower }}
                 access_users:
                   {{ proxmox_lxc_network_access_users | to_nice_yaml(indent=4) | indent(2, true) }}
                 ssh_port: "{{ proxmox_lxc_network_ssh_port }}"
+                sftp_subsystem_name: "{{ proxmox_lxc_network_sftp_subsystem_name }}"
+                sftp_subsystem_path: "{{ proxmox_lxc_network_sftp_subsystem_path }}"
+                sftp_subsystem_present: {{ proxmox_lxc_network_sftp_subsystem_present | default(false) | bool | lower }}
+                sftp_binary_exists: {{ proxmox_lxc_network_sftp_binary.stat.exists | default(false) | bool | lower }}
                 allow_subnets:
                   {{ proxmox_lxc_network_allow_subnets | to_nice_yaml(indent=4) | indent(2, true) }}
                 expected_dns: "{{ proxmox_lxc_network_expected_dns }}"
@@ -728,21 +856,24 @@
                 package_list:
                   {{ proxmox_lxc_network_packages_effective | to_nice_yaml(indent=4) | indent(2, true) }}
                 fuse_available: {{ proxmox_lxc_network_fuse_device.stat.exists | default(false) | bool | lower }}
+                ufw_rule_count: "{{ proxmox_lxc_network_ufw_rule_count.stdout | default(0) }}"
 
-        - name: Report apply summary
-          debug:
-            msg:
-              mode: "{{ proxmox_lxc_network_effective_mode }}"
-              profile: "{{ proxmox_lxc_network_access_profile }}"
-              enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
-              enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
-              enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
-              enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"
-              access_users: "{{ proxmox_lxc_network_access_users }}"
-              allow_subnets: "{{ proxmox_lxc_network_allow_subnets }}"
-              ssh_listener: "{{ proxmox_lxc_network_ssh_listener_state.stdout_lines | default([]) }}"
-              internet_probe_ok: "{{ (proxmox_lxc_network_internet_probe_apply.rc | default(1)) == 0 }}"
-              dns_probe_ok: "{{ (proxmox_lxc_network_dns_probe_apply.rc | default(1)) == 0 }}"
+    - name: Report apply summary
+      debug:
+        msg:
+          mode: "{{ proxmox_lxc_network_effective_mode }}"
+          profile: "{{ proxmox_lxc_network_access_profile }}"
+          enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
+          sftp_enabled: "{{ proxmox_lxc_network_sftp_enabled }}"
+          sftp_subsystem: "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}"
+          enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
+          enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
+          enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"
+          access_users: "{{ proxmox_lxc_network_access_users }}"
+          allow_subnets: "{{ proxmox_lxc_network_allow_subnets }}"
+          ssh_listener: "{{ proxmox_lxc_network_ssh_listener_state.stdout_lines | default([]) }}"
+          internet_probe_ok: "{{ (proxmox_lxc_network_internet_probe_apply.rc | default(1)) == 0 }}"
+          dns_probe_ok: "{{ (proxmox_lxc_network_dns_probe_apply.rc | default(1)) == 0 }}"
 
     - name: Report preflight summary
       debug:
@@ -750,6 +881,7 @@
           mode: "{{ proxmox_lxc_network_effective_mode }}"
           profile: "{{ proxmox_lxc_network_access_profile }}"
           planned_enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
+          planned_enable_sftp: "{{ proxmox_lxc_network_sftp_enabled }}"
           planned_enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
           planned_enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
           planned_enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"

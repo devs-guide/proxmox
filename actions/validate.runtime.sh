@@ -1261,3 +1261,26 @@ ANSIBLE_FORCE_COLOR=0 \
   ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/cli.codex.yml"
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."
+
+echo "[validate.runtime] checking LXC network/SFTP policy markers..."
+if ! grep -q 'FEATURE_SFTP_ENABLED' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must expose FEATURE_SFTP_ENABLED"
+  missing=1
+fi
+if ! grep -q 'proxmox_lxc_network_selector_sftp' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must normalize selector.sftp"
+  missing=1
+fi
+if ! grep -q 'Ensure managed SFTP subsystem declaration exists' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must manage SSH SFTP subsystem declaration"
+  missing=1
+fi
+if ! grep -q 'Detect exact SSH SFTP subsystem declaration' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must validate exact subsystem config for SFTP"
+  missing=1
+fi
+if [[ "${missing:-0}" -ne 0 ]]; then
+  echo "[validate.runtime] LXC network SFTP policy checks failed"
+  exit 1
+fi
+echo "[validate.runtime][ok] LXC network script/playbook include SFTP markers"

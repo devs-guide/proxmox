@@ -456,5 +456,51 @@ check_published_samba_playbook_policy
 check_published_network_runner_policy
 check_published_network_playbook_policy
 
+check_published_lxc_network_runner_policy() {
+  local published_runner="${TMPDIR}/setup/lxc/network.sh"
+  local published_playbook="${TMPDIR}/ansible/proxmox/container/network.access.yml"
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/lxc/network.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'FEATURE_SFTP_ENABLED' \
+    'Enable SFTP over SSH' \
+    'sftp:' \
+    'sftp_enabled' ; do
+    if ! grep -q -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup/lxc/network.sh is missing marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if [[ ! -f "${published_playbook}" ]]; then
+    local playbook_url="${BASE_URL}/ansible/proxmox/container/network.access.yml"
+    echo "[validate.pages] fetch ${playbook_url}"
+    if ! curl -fsSL "${playbook_url}" -o "${published_playbook}"; then
+      echo "[validate.pages][error] failed to fetch published ansible/proxmox/container/network.access.yml"
+      rc=1
+      return
+    fi
+  fi
+
+  for needle in \
+    'proxmox_lxc_network_selector_sftp' \
+    'proxmox_lxc_network_sftp_enabled' \
+    'Ensure managed SFTP subsystem declaration exists' \
+    'Detect exact SSH SFTP subsystem declaration' \
+    'sshd_config_valid' ; do
+    if ! grep -q -- "${needle}" "${published_playbook}"; then
+      echo "[validate.pages][error] published network.access.yml is missing marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
+check_published_lxc_network_runner_policy
+
 rm -rf "${TMPDIR}"
 exit "${rc}"
