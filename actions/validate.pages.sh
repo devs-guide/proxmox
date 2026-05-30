@@ -14,9 +14,11 @@ FILES=(
   "setup.cli.codex.sh:setup/cli.codex.sh"
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
   "setup/lxc/samba.sh:setup/lxc/samba.sh"
+  "setup/lxc/network.sh:setup/lxc/network.sh"
   "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.base.yml:ansible/proxmox/container/debian.base.yml"
   "ansible/proxmox/container/samba.file.share.yml:ansible/proxmox/container/samba.file.share.yml"
+  "ansible/proxmox/container/network.access.yml:ansible/proxmox/container/network.access.yml"
   "ansible/debian/install.packages.yml:ansible/debian/install.packages.yml"
   "ansible/debian/netboot.yml:ansible/debian/netboot.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
@@ -168,6 +170,7 @@ check_setup_feature_refs "setup/network.sh"
 check_setup_feature_refs "setup/cli.codex.sh"
 check_setup_feature_refs "setup/lxc/debian.sh"
 check_setup_feature_refs "setup/lxc/samba.sh"
+check_setup_feature_refs "setup/lxc/network.sh"
 
 check_published_samba_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/samba.sh"
@@ -380,12 +383,78 @@ check_published_samba_playbook_policy() {
   done
 }
 
+check_published_network_runner_policy() {
+  local published_runner="${TMPDIR}/setup/lxc/network.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/lxc/network.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'ensure.container.ansible' \
+    'FEATURE_PLAYBOOKS=' \
+    'NETWORK_EXTRA_VARS_PATH' \
+    'write.network.extra.vars.file()' \
+    'lxc.network.selection.yml' \
+    'proxmox_feature_defaults:' \
+    '  lxc_network:' \
+    'This network feature must run inside a Debian LXC container, not on the Proxmox host.' \
+    'run.feature.playbook "${NETWORK_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"'; do
+    if ! grep -q -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup/lxc/network.sh is stale or missing marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if grep -q 'ensure.managed.ansible' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/network.sh still uses managed-target Ansible bootstrap path"
+    rc=1
+  fi
+}
+
+check_published_network_playbook_policy() {
+  local published_playbook="${TMPDIR}/ansible/proxmox/container/network.access.yml"
+  local needle
+
+  if [[ ! -f "${published_playbook}" ]]; then
+    echo "[validate.pages][error] published ansible/proxmox/container/network.access.yml was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'proxmox_lxc_network_defaults_safe:' \
+    'Fail if run on a Proxmox host' \
+    'Build effective access profile and allow-lists' \
+    'Apply access profile behavior overrides' \
+    'Install local-LAN access packages' \
+    'Ensure non-root access users can use sudo' \
+    'Write managed SSH policy include' \
+    'Probe outbound connectivity in preflight' \
+    'Configure UFW local-subnet SSH allow rules' \
+    'Enable UFW' \
+    'Validate FUSE device for container client tooling' \
+    'Persist LXC network runtime facts' \
+    'Report apply summary' \
+    'Report preflight summary'; do
+    if ! grep -q -- "${needle}" "${published_playbook}"; then
+      echo "[validate.pages][error] published network.access.yml is stale or missing marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
 check_published_samba_runner_policy
 check_published_release91_bootstrap_policy
 check_published_debian_lxc_policy
 check_published_debian_lxc_playbook_policy
 check_published_debian_base_bootstrap
 check_published_samba_playbook_policy
+check_published_network_runner_policy
+check_published_network_playbook_policy
 
 rm -rf "${TMPDIR}"
 exit "${rc}"

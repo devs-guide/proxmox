@@ -25,6 +25,11 @@ proxmox_feature_defaults:
   network:
     enabled: false
     mode: "check"  # check | apply
+  lxc_network:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
+    require_operator_selection: true
 
 proxmox_vlan_ui:
   enabled: true
@@ -199,6 +204,81 @@ proxmox_samba:
       - "/tmp"
       - "/var"
     explicit: []
+
+proxmox_lxc_network:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  container_facts_path: "/etc/ansible/proxmox/facts/container.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.network.yml"
+  selection_path: "/etc/ansible/proxmox/facts/lxc.network.selection.yml"
+  packages:
+    base:
+      - sudo
+      - ca-certificates
+      - gnupg
+      - curl
+      - wget
+      - python3
+      - python3-venv
+      - python3-apt
+      - net-tools
+      - iproute2
+      - util-linux
+      - rsync
+      - tmux
+      - less
+      - vim-tiny
+      - git
+      - openssh-client
+    file_clients:
+      - openssh-server
+      - openssh-client
+      - sshfs
+      - fuse3
+      - cifs-utils
+      - nfs-common
+    debug:
+      - dnsutils
+      - ethtool
+      - tcpdump
+      - iperf3
+      - lsof
+  hardening:
+    access_profile: "local_only"
+    access_users:
+      - agent
+      - proxmox
+      - root
+    allow_subnets:
+      - "10.0.0.0/24"
+      - "192.168.0.0/16"
+    expected_dns: "10.0.0.1"
+    internet_probe_ipv4: "1.1.1.1"
+    enable_ssh: true
+    enable_ufw: false
+    enable_fuse_client: false
+    enable_avahi: false
+  ssh:
+    include_path: "/etc/ssh/sshd_config.d/90-proxmox-lxc-network.conf"
+    port: 22
+    permit_root_login: "yes"
+    password_authentication: "yes"
+    kbd_interactive_authentication: "no"
+    use_pam: "yes"
+    x11_forwarding: "no"
+    pubkey_authentication: null
+  optional_packages:
+    avahi:
+      enabled: false
+      packages:
+        - avahi-daemon
+    ufw:
+      enabled: false
+      packages:
+        - ufw
+    ssh:
+      enabled: true
+      packages:
+        - openssh-server
 
 proxmox_cli_codex:
   facts_dir: "/etc/ansible/proxmox/facts"

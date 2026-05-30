@@ -20,6 +20,7 @@ files=(
   "setup/cli.codex.sh"
   "setup/lxc/debian.sh"
   "setup/lxc/samba.sh"
+  "setup/lxc/network.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
@@ -39,6 +40,7 @@ files=(
   "ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.base.yml"
   "ansible/proxmox/container/samba.file.share.yml"
+  "ansible/proxmox/container/network.access.yml"
   "ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml"
 )
@@ -294,6 +296,71 @@ if ! grep -q 'shares: \[\]' "${ROOT}/setup/lxc/samba.sh"; then
   exit 1
 fi
 echo "[validate.runtime][ok] setup/lxc/samba.sh exposes the structured Samba runner contract"
+
+echo "[validate.runtime] checking Proxmox LXC Network runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"proxmox/container/network.access.yml"' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh FEATURE_PLAYBOOKS is missing proxmox/container/network.access.yml"
+  exit 1
+fi
+if ! grep -q '/dev/tty' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh is missing TTY input handling (/dev/tty)"
+  exit 1
+fi
+if ! grep -q 'lxc.network.selection.yml' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh is missing lxc.network.selection.yml usage"
+  exit 1
+fi
+if ! grep -q 'NETWORK_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh is missing NETWORK_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'write.network.extra.vars.file()' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh is missing write.network.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${NETWORK_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'This network feature must run inside a Debian LXC container, not on the Proxmox host.' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must reject Proxmox host execution by default"
+  exit 1
+fi
+if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must use the container-safe Ansible bootstrap helper"
+  exit 1
+fi
+if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must not force the managed-target Python bootstrap path inside the LXC"
+  exit 1
+fi
+if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! awk '
+  BEGIN {
+    found_defaults=0
+    found_lxc_network=0
+  }
+  /^proxmox_feature_defaults:/ {
+    found_defaults=1
+  }
+  found_defaults && /^[[:space:]]+lxc_network:/ {
+    found_lxc_network=1
+  }
+  END {
+    exit !(found_defaults && found_lxc_network)
+  }
+' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must set proxmox_feature_defaults.lxc_network in generated vars"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/lxc/network.sh exposes the structured LXC network runner contract"
 
 echo "[validate.runtime] checking Proxmox Debian LXC runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/debian.sh"; then
@@ -659,6 +726,85 @@ if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/samba.file.shar
 fi
 echo "[validate.runtime][ok] samba.file.share.yml includes container/Samba/SSH/firewall safeguards"
 
+echo "[validate.runtime] checking LXC network playbook safety contract..."
+if ! grep -q 'This LXC network feature must run inside a Debian LXC container, not on the Proxmox host.' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must fail when run on a Proxmox host"
+  exit 1
+fi
+if ! grep -q 'proxmox_lxc_network_container_facts_path' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must expose container_facts path override"
+  exit 1
+fi
+if ! grep -q 'proxmox_lxc_network_runtime_facts_path' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must expose runtime_facts path override"
+  exit 1
+fi
+if ! grep -q 'proxmox_lxc_network_selection_path' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must expose selection path override"
+  exit 1
+fi
+if ! grep -q 'Build effective runtime configuration' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must build effective configuration"
+  exit 1
+fi
+if ! grep -q 'Apply access profile behavior overrides' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must enforce access profile overrides"
+  exit 1
+fi
+if ! grep -q 'Ensure sudoers drop-in directory exists' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must persist managed sudoers for non-root users"
+  exit 1
+fi
+if ! grep -q 'Install local-LAN access packages' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must install local-LAN access packages"
+  exit 1
+fi
+if ! grep -q 'Write managed SSH policy include' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must write SSH include policy"
+  exit 1
+fi
+if ! grep -q 'Resolve SSH service name' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must resolve SSH service name"
+  exit 1
+fi
+if ! grep -q 'Enable and restart SSH service' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must start SSH service when enabled"
+  exit 1
+fi
+if ! grep -q 'Configure UFW local-subnet SSH allow rules' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must apply UFW local-subnet allow rules"
+  exit 1
+fi
+if ! grep -q 'Enable UFW' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must enable UFW when enabled"
+  exit 1
+fi
+if ! grep -q 'Validate FUSE device for container client tooling' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must validate /dev/fuse availability when FUSE tooling is enabled"
+  exit 1
+fi
+if ! grep -q 'Persist LXC network runtime facts' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must persist runtime facts"
+  exit 1
+fi
+if ! grep -q 'Report apply summary' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must print an apply summary"
+  exit 1
+fi
+if ! grep -q 'Report preflight summary' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must print preflight summary"
+  exit 1
+fi
+if ! grep -q 'Probe DNS resolution' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must include DNS probe"
+  exit 1
+fi
+if ! grep -q 'Probe internet IPv4' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml must include internet probe"
+  exit 1
+fi
+echo "[validate.runtime][ok] network.access.yml includes container networking hardening and runtime reporting safeguards"
+
 echo "[validate.runtime] checking Debian LXC playbook safety contract..."
 if ! grep -q 'This Debian LXC feature must run on the Proxmox host.' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml must fail when not run on the Proxmox host"
@@ -832,12 +978,28 @@ if ! grep -q 'access_profile: "local_only"' "${ROOT}/ansible/group_vars/proxmox.
   echo "[validate.runtime][error] proxmox LXC hardening defaults must include access_profile"
   exit 1
 fi
+if ! grep -q 'lxc_network:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox feature defaults must define lxc_network"
+  exit 1
+fi
+if ! grep -q 'lxc_network:' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
+  echo "[validate.runtime][error] network.access.yml safe defaults must define lxc_network"
+  exit 1
+fi
 if ! grep -q 'expected_dns: "10.0.0.1"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] proxmox LXC hardening defaults must include expected_dns"
   exit 1
 fi
+if ! grep -q 'internet_probe_ipv4' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox LXC defaults must include internet_probe_ipv4"
+  exit 1
+fi
 if ! grep -q 'python3-venv' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] proxmox Debian LXC package defaults must include python3-venv"
+  exit 1
+fi
+if ! grep -q 'facts_dir: "/etc/ansible/proxmox/facts"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox LXC network defaults must define facts_dir"
   exit 1
 fi
 if ! grep -q 'ensure.container.ansible()' "${ROOT}/bootstrap/release.common.sh"; then
@@ -963,6 +1125,10 @@ if ! grep -q 'load.setup.samba.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/samba.sh feature playbook refs"
   exit 1
 fi
+if ! grep -q 'load.setup.lxc_network.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/network.sh feature playbook refs"
+  exit 1
+fi
 if ! grep -q 'load.setup.debian_lxc.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/debian.sh feature playbook refs"
   exit 1
@@ -991,6 +1157,10 @@ if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Debian LXC runner path"
   exit 1
 fi
+if ! grep -q 'setup/lxc/network.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC network runner path"
+  exit 1
+fi
 if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
   echo "[validate.runtime][error] setup/vlan.playbooks.txt should not exist (array model is source-of-truth)"
   exit 1
@@ -1007,6 +1177,7 @@ bash -n "${ROOT}/setup/network.sh"
 bash -n "${ROOT}/setup/cli.codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
 bash -n "${ROOT}/setup/lxc/samba.sh"
+bash -n "${ROOT}/setup/lxc/network.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
@@ -1074,6 +1245,9 @@ run_proxmox_feature_check() {
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/debian.base.yml"
+
+  ANSIBLE_FORCE_COLOR=0 \
+    ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/network.access.yml"
 }
 
 run_proxmox_feature_check "proxmox feature playbooks" -e @${ROOT}/ansible/group_vars/proxmox.yml

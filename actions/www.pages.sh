@@ -18,6 +18,7 @@ SETUP_NETWORK_RUNNER="setup/network.sh"
 SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
 SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
 SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
+SETUP_LXC_NETWORK_RUNNER="setup/lxc/network.sh"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -224,6 +225,28 @@ load.setup.samba.playbooks() {
   PKGS[setup_samba]="${_setup_samba_items[*]}"
 }
 
+load.setup.lxc_network.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_LXC_NETWORK_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_LXC_NETWORK_RUNNER} not found; skipping setup-lxc-network playbook refs"
+    PKGS[setup_lxc_network]=""
+    return 0
+  }
+
+  mapfile -t _setup_lxc_network_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_lxc_network_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_LXC_NETWORK_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_lxc_network]="${_setup_lxc_network_items[*]}"
+}
+
 load.setup.debian_lxc.playbooks() {
   local runner="${PATH_TO[root]}/${SETUP_DEBIAN_LXC_RUNNER}"
   [[ -f "${runner}" ]] || {
@@ -369,6 +392,14 @@ publish.setup.features() {
   else
     log.warn "[www.pages] ${SETUP_DEBIAN_LXC_RUNNER} not found; skipping structured Debian LXC runner publish"
   fi
+
+  if [[ -f "${SETUP_LXC_NETWORK_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_LXC_NETWORK_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/lxc"
+    install -m 0755 "${SETUP_LXC_NETWORK_RUNNER}" "${PATH_TO[publish]}/${SETUP_LXC_NETWORK_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_LXC_NETWORK_RUNNER} not found; skipping structured LXC network runner publish"
+  fi
 }
 
 publish.ansible() {
@@ -419,6 +450,11 @@ publish.ansible() {
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
   done
 
+  load.setup.lxc_network.playbooks
+  for playbook_to_run in ${PKGS[setup_lxc_network]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
   load.setup.debian_lxc.playbooks
   for playbook_to_run in ${PKGS[setup_debian_lxc]:-}; do
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
@@ -442,6 +478,9 @@ publish.ansible() {
   fi
   if [[ -n "${PKGS[setup_samba]:-}" ]]; then
     log.info "[www.pages] setup samba entries: ${PKGS[setup_samba]}"
+  fi
+  if [[ -n "${PKGS[setup_lxc_network]:-}" ]]; then
+    log.info "[www.pages] setup lxc network entries: ${PKGS[setup_lxc_network]}"
   fi
   if [[ -n "${PKGS[setup_debian_lxc]:-}" ]]; then
     log.info "[www.pages] setup debian lxc entries: ${PKGS[setup_debian_lxc]}"
