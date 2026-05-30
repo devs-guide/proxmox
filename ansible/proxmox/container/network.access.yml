@@ -448,7 +448,10 @@
           when: proxmox_lxc_network_enable_ssh | bool
 
         - name: Ensure SSH host keys exist
-          command: [ssh-keygen, -A]
+          command:
+            argv:
+              - ssh-keygen
+              - -A
           changed_when: false
           when: proxmox_lxc_network_enable_ssh | bool
 
