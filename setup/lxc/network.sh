@@ -264,15 +264,25 @@ parse.allow.subnets() {
 
 parse.access.users() {
   local raw="${1:-}"
+  local entry candidate exists
   NETWORK_ACCESS_USERS=()
+  discover.access.users
+  NETWORK_ACCESS_USERS=("${DISCOVERED_ACCESS_USERS[@]}")
 
   if [[ -n "${raw}" ]]; then
     for entry in ${raw}; do
-      NETWORK_ACCESS_USERS+=("${entry}")
+      [[ -n "${entry}" ]] || continue
+      exists=0
+      for candidate in "${NETWORK_ACCESS_USERS[@]}"; do
+        if [[ "${candidate}" == "${entry}" ]]; then
+          exists=1
+          break
+        fi
+      done
+      if ((exists == 0)); then
+        NETWORK_ACCESS_USERS+=("${entry}")
+      fi
     done
-  else
-    discover.access.users
-    NETWORK_ACCESS_USERS=("${DISCOVERED_ACCESS_USERS[@]}")
   fi
 }
 

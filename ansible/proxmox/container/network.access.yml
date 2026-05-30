@@ -269,16 +269,16 @@
       set_fact:
         proxmox_lxc_network_access_users: >-
           {{
-            proxmox_lxc_network_requested_access_users
-            if (proxmox_lxc_network_requested_access_users | length > 0)
-            else proxmox_lxc_network_discovered_access_users
+            (
+              (proxmox_lxc_network_discovered_access_users | default([], true))
+              + (proxmox_lxc_network_requested_access_users | default([], true))
+            ) | unique
           }}
         proxmox_lxc_network_access_users_non_root: >-
           {{
             (
-              proxmox_lxc_network_requested_access_users
-              if (proxmox_lxc_network_requested_access_users | length > 0)
-              else proxmox_lxc_network_discovered_access_users
+              (proxmox_lxc_network_discovered_access_users | default([], true))
+              + (proxmox_lxc_network_requested_access_users | default([], true))
             )
             | reject('equalto', 'root')
             | unique
