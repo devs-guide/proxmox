@@ -290,6 +290,14 @@
             | reject('equalto', 'root')
             | unique
           }}
+        proxmox_lxc_network_sudo_users_non_root: >-
+          {{
+            (
+              proxmox_lxc_network_discovered_access_users | default([], true)
+            )
+            | reject('equalto', 'root')
+            | unique
+          }}
 
     - name: Build effective runtime configuration
       set_fact:
@@ -364,6 +372,7 @@
           profile: "{{ proxmox_lxc_network_access_profile }}"
           access_users: "{{ proxmox_lxc_network_access_users }}"
           non_root_access_users: "{{ proxmox_lxc_network_access_users_non_root }}"
+          sudo_users_non_root: "{{ proxmox_lxc_network_sudo_users_non_root }}"
           enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
           sftp_enabled: "{{ proxmox_lxc_network_sftp_enabled }}"
           sftp_subsystem: "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}"
@@ -455,7 +464,7 @@
             group: root
             mode: "0750"
 
-        - name: Ensure non-root access users can use sudo
+        - name: Ensure all detected non-root login-capable users can use sudo
           copy:
             dest: /etc/sudoers.d/90-proxmox-lxc-network.users
             owner: root
@@ -463,16 +472,16 @@
             mode: "0440"
             validate: /usr/sbin/visudo -cf %s
             content: |
-              {% for user in proxmox_lxc_network_access_users_non_root %}
+              {% for user in proxmox_lxc_network_sudo_users_non_root %}
               {{ user }} ALL=(ALL:ALL) ALL
               {% endfor %}
-          when: proxmox_lxc_network_access_users_non_root | length > 0
+          when: proxmox_lxc_network_sudo_users_non_root | length > 0
 
-        - name: Remove managed sudoers file when no non-root users exist
+        - name: Remove managed sudoers file when no detected non-root login-capable users exist
           file:
             path: /etc/sudoers.d/90-proxmox-lxc-network.users
             state: absent
-          when: proxmox_lxc_network_access_users_non_root | length == 0
+          when: proxmox_lxc_network_sudo_users_non_root | length == 0
 
         - name: Ensure SSH access users exist for test_access profile
           user:
@@ -834,6 +843,8 @@
                 sshd_config_valid: {{ (proxmox_lxc_network_sshd_test.rc | default(1)) == 0 | bool | lower }}
                 access_users:
                   {{ proxmox_lxc_network_access_users | to_nice_yaml(indent=4) | indent(2, true) }}
+                sudo_users:
+                  {{ proxmox_lxc_network_sudo_users_non_root | to_nice_yaml(indent=4) | indent(2, true) }}
                 ssh_port: "{{ proxmox_lxc_network_ssh_port }}"
                 sftp_subsystem_name: "{{ proxmox_lxc_network_sftp_subsystem_name }}"
                 sftp_subsystem_path: "{{ proxmox_lxc_network_sftp_subsystem_path }}"

@@ -7,6 +7,13 @@ apt_cache_valid_time: 0
 bootstrap_mode: "direct_handoff"
 bootstrap_use_raw_only: false
 bootstrap_needs_target_python_build: false
+controller_python_version: "3.13.5"
+controller_python_major_minor: "3.13"
+managed_target_python_version: "3.13.5"
+managed_target_python_major_minor: "3.13"
+managed_target_python_home: "/opt/ansible/py313"
+managed_target_python_path: "{{ managed_target_python_home }}/bin/python"
+managed_target_handoff_marker: "{{ managed_target_python_home }}/.handoff-ready"
 package_overrides:
   monitoring_benchmark: {}  # use shared catalog (hddtemp already removed)
   archive_iso_tools: {}     # use shared catalog (hfsutils already removed)
