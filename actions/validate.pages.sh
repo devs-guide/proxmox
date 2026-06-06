@@ -220,9 +220,29 @@ check_published_release91_bootstrap_policy() {
     'disable.enterprise.sources()' \
     'Disabling Proxmox enterprise apt sources before bootstrap update' \
     "enterprise\\.proxmox\\.com/debian/(pve|ceph)" \
-    'ceph.release.gpg'; do
+    'ceph.release.gpg' \
+    'PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"' \
+    'SYSTEM_PYTHON_MIN_MINOR="12"' \
+    'select.ansible.bootstrap.python'; do
     if ! grep -q -- "${needle}" "${published_bootstrap}"; then
       echo "[validate.pages][error] published 9.1 bootstrap is stale or missing apt cleanup marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if [[ ! -f "${TMPDIR}/release.common.sh" ]]; then
+    echo "[validate.pages][error] published release.common.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'select.ansible.bootstrap.python()' \
+    'Using native system Python for Ansible bootstrap' \
+    'Installing venv support for system Python' \
+    'python${python_mm}-venv'; do
+    if ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
+      echo "[validate.pages][error] published release.common.sh is stale or missing native system Python bootstrap marker: ${needle}"
       rc=1
     fi
   done

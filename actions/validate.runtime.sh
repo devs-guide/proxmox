@@ -1018,6 +1018,26 @@ if ! grep -q 'Removing incomplete container Ansible venv before rebuild' "${ROOT
   echo "[validate.runtime][error] release.common.sh must clean up incomplete container venvs after failed bootstrap attempts"
   exit 1
 fi
+if ! grep -q 'select.ansible.bootstrap.python()' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must expose a shared bootstrap selector for native system Python Ansible installs"
+  exit 1
+fi
+if ! grep -q 'Using native system Python for Ansible bootstrap' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must prefer native system Python for supported host Ansible bootstrap flows"
+  exit 1
+fi
+if ! grep -q 'python${python_mm}-venv' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must install version-matched pythonX.Y-venv when system ensurepip is unavailable"
+  exit 1
+fi
+if ! grep -q 'PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must enable native system Python preference for Ansible bootstrap"
+  exit 1
+fi
+if ! grep -q 'SYSTEM_PYTHON_MIN_MINOR="12"' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must require system Python 3.12+ before skipping managed-target bootstrap"
+  exit 1
+fi
 if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
   echo "[validate.runtime][error] debian.lxc.yml must support official URL fallback template downloads"
   exit 1

@@ -22,6 +22,9 @@
 : "${MANAGED_TARGET_PYTHON_PATH:=${MANAGED_TARGET_PYTHON_HOME}/bin/python}"
 : "${MANAGED_TARGET_HANDOFF_MARKER:=${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready}"
 : "${PYTHON_BOOTSTRAP_BIN:=}"
+: "${PREFER_SYSTEM_PYTHON_FOR_ANSIBLE:=0}"
+: "${SYSTEM_PYTHON_MIN_MAJOR:=3}"
+: "${SYSTEM_PYTHON_MIN_MINOR:=12}"
 
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -35,6 +38,54 @@ require.apt() {
     log.error "apt-get not found; expected Proxmox/Debian-like system."
     exit 1
   fi
+}
+
+system.python.meets.minimum() {
+  local python_bin="${1:-}"
+  [[ -n "${python_bin}" && -x "${python_bin}" ]] || return 1
+
+  "${python_bin}" - "$SYSTEM_PYTHON_MIN_MAJOR" "$SYSTEM_PYTHON_MIN_MINOR" <<'PY' >/dev/null 2>&1
+import sys
+
+major = int(sys.argv[1])
+minor = int(sys.argv[2])
+sys.exit(0 if sys.version_info[:2] >= (major, minor) else 1)
+PY
+}
+
+ensure.python.venv.support() {
+  local python_bin="${1:-}"
+  local python_mm=""
+
+  [[ -n "${python_bin}" && -x "${python_bin}" ]] || return 1
+
+  if "${python_bin}" -m ensurepip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  python_mm="$("${python_bin}" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+  log "Installing venv support for system Python ${python_mm}..."
+  apt-get update -y
+  apt-get install -y --no-install-recommends \
+    "python${python_mm}-venv"
+
+  "${python_bin}" -m ensurepip --version >/dev/null 2>&1
+}
+
+select.ansible.bootstrap.python() {
+  local system_python=""
+
+  if [[ "${PREFER_SYSTEM_PYTHON_FOR_ANSIBLE}" == "1" ]] && command -v python3 >/dev/null 2>&1; then
+    system_python="$(command -v python3)"
+    if system.python.meets.minimum "${system_python}"; then
+      ensure.python.venv.support "${system_python}"
+      PYTHON_BOOTSTRAP_BIN="${system_python}"
+      log "Using native system Python for Ansible bootstrap: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+      return
+    fi
+  fi
+
+  ensure.managed.target.python
 }
 
 ensure.python312() {
@@ -147,7 +198,7 @@ ensure.managed.ansible() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
     if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q "core ${ANSIBLE_CORE_VERSION}\$"; then
-      ensure.managed.target.python
+      select.ansible.bootstrap.python
       log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return
     fi
@@ -155,7 +206,7 @@ ensure.managed.ansible() {
     rm -rf "${ANSIBLE_VENV}"
   fi
 
-  ensure.managed.target.python
+  select.ansible.bootstrap.python
   log "Creating managed Ansible venv..."
   mkdir -p "${ANSIBLE_VENV}"
   "${PYTHON_BOOTSTRAP_BIN}" -m venv "${ANSIBLE_VENV}"
