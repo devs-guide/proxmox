@@ -8,92 +8,581 @@
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
     node_enable: false
-    nvm_version: "v0.39.7"
-    nvm_dir: "/root/.nvm"
+    node_mode: "apply"   # preflight | apply | upgrade
+    node_nvm_version: "{{ nvm_version | default('v0.40.4') }}"
+    node_install_scope: "private"   # private | shared
+    node_shared_nvm_dir: "/usr/local/lib/nvm"
+    node_nvm_dir: "{{ nvm_dir | default('') }}"
     node_version: "lts/*"
+    node_min_major: 20
+    node_npm_min_major: 9
+    node_install_policy: "if_missing_or_too_old"   # always | if_missing_or_too_old
+    node_npm_policy: "bundled"   # bundled | pinned | latest
+    node_npm_version: ""
+    node_global_packages: []
+    node_create_system_symlinks: true
+    node_enable_corepack: false
+    node_runtime_facts_path: "/etc/ansible/debian/facts/node.yml"
+    node_nvm_profile_hook_path: "/etc/profile.d/nvm.sh"
+    node_nvm_installer_path: "/tmp/nvm-install.sh"
+    node_required_packages:
+      - curl
+      - wget
+      - ca-certificates
+      - bash
+
+  pre_tasks:
+    - name: Check Debian host marker
+      ansible.builtin.stat:
+        path: /etc/debian_version
+      register: debian_version_marker
+
+    - name: Assert Debian family host
+      ansible.builtin.assert:
+        that:
+          - debian_version_marker.stat.exists
+        fail_msg: "Node feature is supported only on Debian-family hosts."
+
+    - name: Normalize node mode and package inputs
+      ansible.builtin.set_fact:
+        node_mode_effective: "{{ node_mode | default('apply') | lower }}"
+        node_install_scope_effective: "{{ node_install_scope | default('private') | lower }}"
+        node_npm_policy_effective: "{{ node_npm_policy | default('bundled') | lower }}"
+        node_global_packages_effective: >-
+          {{
+            node_global_packages
+            if (node_global_packages is sequence and node_global_packages is not string)
+            else (
+              node_global_packages | default('') | string | split(' ')
+              | reject('equalto', '') | list
+            )
+          }}
+        node_nvm_dir_effective: >-
+          {{
+            (
+              node_nvm_dir
+              if (node_nvm_dir | default('') | string | length > 0)
+              else (
+                node_shared_nvm_dir
+                if ((node_install_scope | default('private') | lower) == 'shared')
+                else '/root/.nvm'
+              )
+            )
+          }}
+
+    - name: Validate node mode
+      ansible.builtin.assert:
+        that:
+          - node_mode_effective in ['preflight', 'apply', 'upgrade']
+        fail_msg: "Unsupported node_mode={{ node_mode_effective }}. Use preflight, apply, or upgrade."
+
+    - name: Validate npm policy
+      ansible.builtin.assert:
+        that:
+          - node_npm_policy_effective in ['bundled', 'pinned', 'latest']
+        fail_msg: "Unsupported node_npm_policy={{ node_npm_policy_effective }}. Use bundled, pinned, or latest."
+
+    - name: Validate install scope
+      ansible.builtin.assert:
+        that:
+          - node_install_scope_effective in ['private', 'shared']
+        fail_msg: "Unsupported node_install_scope={{ node_install_scope_effective }}. Use private or shared."
+
+    - name: Validate install policy
+      ansible.builtin.assert:
+        that:
+          - node_install_policy in ['always', 'if_missing_or_too_old']
+        fail_msg: "Unsupported node_install_policy={{ node_install_policy }}. Use always or if_missing_or_too_old."
+
+    - name: Validate pinned npm version when policy is pinned
+      ansible.builtin.assert:
+        that:
+          - (node_npm_policy_effective != 'pinned') or (node_npm_version | default('') | length > 0)
+        fail_msg: "node_npm_version must be set when node_npm_policy is pinned."
+
+    - name: Check required package installability
+      ansible.builtin.command:
+        argv:
+          - apt-cache
+          - policy
+          - "{{ item }}"
+      register: node_required_pkg_check
+      changed_when: false
+      loop: "{{ node_required_packages }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Capture current node runtime state
+      ansible.builtin.shell: |
+        set -euo pipefail
+        node_path="$(command -v node 2>/dev/null || true)"
+        npm_path="$(command -v npm 2>/dev/null || true)"
+        npx_path="$(command -v npx 2>/dev/null || true)"
+        node_realpath="$(readlink -f "${node_path}" 2>/dev/null || true)"
+        npm_realpath="$(readlink -f "${npm_path}" 2>/dev/null || true)"
+        npx_realpath="$(readlink -f "${npx_path}" 2>/dev/null || true)"
+        node_v="$(node --version 2>/dev/null || true)"
+        npm_v="$(npm --version 2>/dev/null || true)"
+        npx_v="$(npx --version 2>/dev/null || true)"
+        printf 'node_version=%s\n' "${node_v:-missing}"
+        printf 'npm_version=%s\n' "${npm_v:-missing}"
+        printf 'npx_version=%s\n' "${npx_v:-missing}"
+        printf 'node_path=%s\n' "${node_path:-missing}"
+        printf 'node_realpath=%s\n' "${node_realpath:-missing}"
+        printf 'npm_path=%s\n' "${npm_path:-missing}"
+        printf 'npm_realpath=%s\n' "${npm_realpath:-missing}"
+        printf 'npx_path=%s\n' "${npx_path:-missing}"
+        printf 'npx_realpath=%s\n' "${npx_realpath:-missing}"
+      args:
+        executable: /bin/bash
+      register: node_preflight_versions
+      changed_when: false
+
+    - name: Probe Node version suitability
+      ansible.builtin.shell: |
+        set -euo pipefail
+        major_or_zero() {
+          local raw="${1:-}"
+          raw="${raw#v}"
+          raw="${raw%%.*}"
+          case "${raw}" in
+            ''|*[!0-9]*) printf '0' ;;
+            *) printf '%s' "${raw}" ;;
+          esac
+        }
+        scope_path_ok() {
+          local scope="${1:-private}"
+          local resolved="${2:-missing}"
+          if [[ -z "${resolved}" || "${resolved}" == "missing" ]]; then
+            return 1
+          fi
+          case "${scope}" in
+            shared)
+              [[ "${resolved}" != /root/* ]]
+              ;;
+            *)
+              return 0
+              ;;
+          esac
+        }
+        node_path="$(command -v node 2>/dev/null || true)"
+        npm_path="$(command -v npm 2>/dev/null || true)"
+        npx_path="$(command -v npx 2>/dev/null || true)"
+        node_realpath="$(readlink -f "${node_path}" 2>/dev/null || true)"
+        npm_realpath="$(readlink -f "${npm_path}" 2>/dev/null || true)"
+        npx_realpath="$(readlink -f "${npx_path}" 2>/dev/null || true)"
+        node_version="$(node --version 2>/dev/null || true)"
+        npm_version="$(npm --version 2>/dev/null || true)"
+        [[ -n "${node_version}" ]] || node_version="missing"
+        [[ -n "${npm_version}" ]] || npm_version="missing"
+        [[ -n "${node_path}" ]] || node_path="missing"
+        [[ -n "${npm_path}" ]] || npm_path="missing"
+        [[ -n "${npx_path}" ]] || npx_path="missing"
+        [[ -n "${node_realpath}" ]] || node_realpath="missing"
+        [[ -n "${npm_realpath}" ]] || npm_realpath="missing"
+        [[ -n "${npx_realpath}" ]] || npx_realpath="missing"
+        node_major="$(major_or_zero "${node_version}")"
+        npm_major="$(major_or_zero "${npm_version}")"
+        node_ok=0
+        npm_ok=0
+        node_scope_ok=0
+        npm_scope_ok=0
+        node_install_needed=1
+        if [[ "${node_version}" != "missing" && "${node_major}" -ge "{{ node_min_major | int }}" ]]; then
+          node_ok=1
+        fi
+        if [[ "${npm_version}" != "missing" && "${npm_major}" -ge "{{ node_npm_min_major | int }}" ]]; then
+          npm_ok=1
+        fi
+        if scope_path_ok "{{ node_install_scope_effective }}" "${node_realpath}"; then
+          node_scope_ok=1
+        fi
+        if scope_path_ok "{{ node_install_scope_effective }}" "${npm_realpath}"; then
+          npm_scope_ok=1
+        fi
+        if [[ "${node_ok}" -eq 1 && "${npm_ok}" -eq 1 && "${node_scope_ok}" -eq 1 && "${npm_scope_ok}" -eq 1 ]]; then
+          node_install_needed=0
+        fi
+        printf 'node_version=%s\n' "${node_version}"
+        printf 'node_path=%s\n' "${node_path}"
+        printf 'node_realpath=%s\n' "${node_realpath}"
+        printf 'node_major=%s\n' "${node_major}"
+        printf 'node_min_major=%s\n' "{{ node_min_major }}"
+        printf 'node_ok=%s\n' "${node_ok}"
+        printf 'npm_version=%s\n' "${npm_version}"
+        printf 'npm_path=%s\n' "${npm_path}"
+        printf 'npm_realpath=%s\n' "${npm_realpath}"
+        printf 'npm_major=%s\n' "${npm_major}"
+        printf 'npm_min_major=%s\n' "{{ node_npm_min_major }}"
+        printf 'npm_ok=%s\n' "${npm_ok}"
+        printf 'npx_path=%s\n' "${npx_path}"
+        printf 'npx_realpath=%s\n' "${npx_realpath}"
+        printf 'node_install_scope=%s\n' "{{ node_install_scope_effective }}"
+        printf 'node_scope_ok=%s\n' "${node_scope_ok}"
+        printf 'npm_scope_ok=%s\n' "${npm_scope_ok}"
+        if [[ "${node_ok}" -eq 1 && "${npm_ok}" -eq 1 && "${node_scope_ok}" -eq 1 && "${npm_scope_ok}" -eq 1 ]]; then
+          printf 'node_runtime_ok=1\n'
+        else
+          printf 'node_runtime_ok=0\n'
+        fi
+        printf 'node_install_needed=%s\n' "${node_install_needed}"
+      args:
+        executable: /bin/bash
+      register: node_version_probe
+      changed_when: false
+
+    - name: Resolve effective Node install flag
+      ansible.builtin.set_fact:
+        node_install_needed: >-
+          {{
+            (node_install_policy == 'always')
+            or not ((node_version_probe.stdout | default('')) is search('(?m)^node_runtime_ok=1$'))
+          }}
+
+    - name: Show preflight runtime versions
+      ansible.builtin.debug:
+        msg:
+          versions: "{{ node_preflight_versions.stdout_lines | default([]) }}"
+          probe: "{{ node_version_probe.stdout_lines | default([]) }}"
+          install_needed: "{{ node_install_needed | bool }}"
+          install_policy: "{{ node_install_policy }}"
+          install_scope: "{{ node_install_scope_effective }}"
+          nvm_dir: "{{ node_nvm_dir_effective }}"
+
+    - name: End play in preflight mode
+      ansible.builtin.meta: end_play
+      when: node_mode_effective == 'preflight'
 
   tasks:
     - name: Check if nvm is already installed
-      stat:
-        path: "{{ nvm_dir }}/nvm.sh"
+      ansible.builtin.stat:
+        path: "{{ node_nvm_dir_effective }}/nvm.sh"
       register: nvm_sh
-
-    - name: Download nvm installer (if missing)
-      get_url:
-        url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh"
-        dest: /tmp/nvm-install.sh
-        mode: "0755"
-      when: not nvm_sh.stat.exists
-
-    - name: Install nvm (if missing)
-      shell: |
-        set -e
-        export NVM_DIR="{{ nvm_dir }}"
-        /bin/bash /tmp/nvm-install.sh
-      args:
-        creates: "{{ nvm_dir }}/nvm.sh"
       when:
         - node_enable | bool
+        - node_install_needed | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Download nvm installer when missing
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ node_nvm_version }}/install.sh"
+        dest: "{{ node_nvm_installer_path }}"
+        mode: "0755"
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - node_mode_effective in ['apply', 'upgrade']
         - not nvm_sh.stat.exists
 
-    - name: Install Node.js via nvm
-      shell: |
-        set -e
-        export NVM_DIR="{{ nvm_dir }}"
-        . "{{ nvm_dir }}/nvm.sh"
-        if ! nvm ls "{{ node_version }}" >/dev/null 2>&1; then
-          nvm install "{{ node_version }}"
-          changed=1
-        else
-          changed=0
-        fi
-        nvm alias default "{{ node_version }}"
-        echo "changed=${changed}"
-      register: node_install_result
-      changed_when: "'changed=1' in node_install_result.stdout"
-      when: node_enable | bool
-
-    - name: Ensure nvm profile hook is available
-      copy:
-        dest: /etc/profile.d/nvm.sh
-        mode: "0644"
-        content: |
-          export NVM_DIR="{{ nvm_dir }}"
-          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-          [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
-      when: node_enable | bool
-
-    - name: Ensure root bashrc sources nvm
-      lineinfile:
-        path: /root/.bashrc
-        create: yes
-        line: '[ -s /etc/profile.d/nvm.sh ] && . /etc/profile.d/nvm.sh'
-        state: present
-      when: node_enable | bool
-
-    - name: Symlink node and npm for non-login shells
-      shell: |
-        set -e
-        export NVM_DIR="{{ nvm_dir }}"
-        . "{{ nvm_dir }}/nvm.sh"
-        node_path="$(nvm which default)"
-        npm_path="$(dirname "$node_path")/npm"
-        changed=0
-        if [ -x "$node_path" ]; then
-          if [ "$(readlink /usr/local/bin/node 2>/dev/null || true)" != "$node_path" ]; then
-            changed=1
-          fi
-          ln -sf "$node_path" /usr/local/bin/node
-        fi
-        if [ -x "$npm_path" ]; then
-          if [ "$(readlink /usr/local/bin/npm 2>/dev/null || true)" != "$npm_path" ]; then
-            changed=1
-          fi
-          ln -sf "$npm_path" /usr/local/bin/npm
-        fi
-        echo "changed=${changed}"
-      register: node_symlink_result
-      changed_when: "'changed=1' in node_symlink_result.stdout"
+    - name: Ensure target nvm directory exists before installation
+      ansible.builtin.file:
+        path: "{{ node_nvm_dir_effective }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
       when:
         - node_enable | bool
-        - nvm_sh.stat.exists
+        - node_install_needed | bool
+        - node_mode_effective in ['apply', 'upgrade']
+        - not nvm_sh.stat.exists
+
+    - name: Install nvm when missing
+      ansible.builtin.shell: |
+        set -e
+        export NVM_DIR="{{ node_nvm_dir_effective }}"
+        export PROFILE="/dev/null"
+        /bin/bash "{{ node_nvm_installer_path }}"
+      args:
+        executable: /bin/bash
+        creates: "{{ node_nvm_dir_effective }}/nvm.sh"
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - node_mode_effective in ['apply', 'upgrade']
+        - not nvm_sh.stat.exists
+
+    - name: Refresh nvm status after installation
+      ansible.builtin.stat:
+        path: "{{ node_nvm_dir_effective }}/nvm.sh"
+      register: nvm_sh_after
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Install and select requested Node.js version via nvm
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export NVM_DIR="{{ node_nvm_dir_effective }}"
+        . "{{ node_nvm_dir_effective }}/nvm.sh"
+        nvm install "{{ node_version }}"
+        nvm alias default "{{ node_version }}" >/dev/null
+        nvm use default >/dev/null
+        printf 'resolved_node=%s\n' "$(nvm current)"
+        printf 'node_path=%s\n' "$(nvm which default)"
+        printf 'node_version=%s\n' "$(node --version 2>/dev/null || true)"
+        printf 'npm_version=%s\n' "$(npm --version 2>/dev/null || true)"
+        printf 'npx_version=%s\n' "$(npx --version 2>/dev/null || true)"
+      args:
+        executable: /bin/bash
+      register: node_install_result
+      changed_when: true
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists))
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Apply npm policy
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export NVM_DIR="{{ node_nvm_dir_effective }}"
+        . "{{ node_nvm_dir_effective }}/nvm.sh"
+        nvm use default >/dev/null
+        changed=0
+        case "{{ node_npm_policy_effective }}" in
+          bundled)
+            ;;
+          pinned)
+            current="$(npm --version 2>/dev/null || true)"
+            target="{{ node_npm_version }}"
+            if [ "${current}" != "${target}" ]; then
+              npm install -g "npm@${target}"
+              changed=1
+            fi
+            ;;
+          latest)
+            npm install -g npm@latest
+            changed=1
+            ;;
+        esac
+        printf 'changed=%s\n' "${changed}"
+      args:
+        executable: /bin/bash
+      register: node_npm_policy_result
+      changed_when: "'changed=1' in (node_npm_policy_result.stdout | default(''))"
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Install optional global npm packages
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export NVM_DIR="{{ node_nvm_dir_effective }}"
+        . "{{ node_nvm_dir_effective }}/nvm.sh"
+        nvm use default >/dev/null
+        if npm list -g --depth=0 "{{ item }}" >/dev/null 2>&1; then
+          echo "changed=0"
+        else
+          npm install -g "{{ item }}"
+          echo "changed=1"
+        fi
+      args:
+        executable: /bin/bash
+      register: node_global_pkg_result
+      changed_when: "'changed=1' in (node_global_pkg_result.stdout | default(''))"
+      loop: "{{ node_global_packages_effective }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - node_global_packages_effective | length > 0
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Enable corepack when requested
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if [ "{{ node_install_needed | bool }}" = "True" ] || [ "{{ node_install_needed | bool }}" = "true" ]; then
+          export NVM_DIR="{{ node_nvm_dir_effective }}"
+          . "{{ node_nvm_dir_effective }}/nvm.sh"
+          nvm use default >/dev/null
+        fi
+        corepack enable
+      args:
+        executable: /bin/bash
+      changed_when: true
+      when:
+        - node_enable | bool
+        - node_enable_corepack | bool
+        - node_mode_effective in ['apply', 'upgrade']
+        - (node_version_probe.stdout | default('')) is search('(?m)^node_ok=1$') or (node_install_needed | bool)
+
+    - name: Ensure nvm profile hook is available for all users
+      ansible.builtin.copy:
+        dest: "{{ node_nvm_profile_hook_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          export NVM_DIR="{{ node_nvm_dir_effective }}"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists))
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Configure system symlinks for node/npm/npx
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export NVM_DIR="{{ node_nvm_dir_effective }}"
+        . "{{ node_nvm_dir_effective }}/nvm.sh"
+        nvm use default >/dev/null
+        node_path="$(nvm which default)"
+        bin_dir="$(dirname "${node_path}")"
+        npm_path="${bin_dir}/npm"
+        npx_path="${bin_dir}/npx"
+        changed=0
+        if [ -x "${node_path}" ]; then
+          if [ "$(readlink /usr/local/bin/node 2>/dev/null || true)" != "${node_path}" ]; then
+            changed=1
+          fi
+          ln -sf "${node_path}" /usr/local/bin/node
+        fi
+        if [ -x "${npm_path}" ]; then
+          if [ "$(readlink /usr/local/bin/npm 2>/dev/null || true)" != "${npm_path}" ]; then
+            changed=1
+          fi
+          ln -sf "${npm_path}" /usr/local/bin/npm
+        fi
+        if [ -x "${npx_path}" ]; then
+          if [ "$(readlink /usr/local/bin/npx 2>/dev/null || true)" != "${npx_path}" ]; then
+            changed=1
+          fi
+          ln -sf "${npx_path}" /usr/local/bin/npx
+        fi
+        printf 'node_path=%s\n' "${node_path}"
+        printf 'npm_path=%s\n' "${npm_path}"
+        printf 'npx_path=%s\n' "${npx_path}"
+        printf 'changed=%s\n' "${changed}"
+      args:
+        executable: /bin/bash
+      register: node_symlink_result
+      changed_when: "'changed=1' in (node_symlink_result.stdout | default(''))"
+      when:
+        - node_enable | bool
+        - node_install_needed | bool
+        - node_create_system_symlinks | bool
+        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists))
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Capture final Node runtime details
+      ansible.builtin.shell: |
+        set -euo pipefail
+        node_path="$(command -v node 2>/dev/null || true)"
+        npm_path="$(command -v npm 2>/dev/null || true)"
+        npx_path="$(command -v npx 2>/dev/null || true)"
+        node_realpath="$(readlink -f "${node_path}" 2>/dev/null || true)"
+        npm_realpath="$(readlink -f "${npm_path}" 2>/dev/null || true)"
+        npx_realpath="$(readlink -f "${npx_path}" 2>/dev/null || true)"
+        printf 'node_version=%s\n' "$(node --version 2>/dev/null || true)"
+        printf 'npm_version=%s\n' "$(npm --version 2>/dev/null || true)"
+        printf 'npx_version=%s\n' "$(npx --version 2>/dev/null || true)"
+        printf 'node_path=%s\n' "${node_path}"
+        printf 'node_realpath=%s\n' "${node_realpath}"
+        printf 'npm_path=%s\n' "${npm_path}"
+        printf 'npm_realpath=%s\n' "${npm_realpath}"
+        printf 'npx_path=%s\n' "${npx_path}"
+        printf 'npx_realpath=%s\n' "${npx_realpath}"
+      args:
+        executable: /bin/bash
+      register: node_runtime_info
+      changed_when: false
+      when:
+        - node_enable | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Validate final Node runtime details
+      ansible.builtin.assert:
+        that:
+          - node_runtime_info.stdout | default('') is search('(?m)^node_version=v[0-9]+')
+          - node_runtime_info.stdout | default('') is search('(?m)^npm_version=[0-9]+')
+          - node_runtime_info.stdout | default('') is search('(?m)^npx_version=[0-9]+')
+          - node_runtime_info.stdout | default('') is search('(?m)^node_path=/.+')
+          - node_runtime_info.stdout | default('') is search('(?m)^node_realpath=/.+')
+          - node_runtime_info.stdout | default('') is search('(?m)^npm_path=/.+')
+          - node_runtime_info.stdout | default('') is search('(?m)^npm_realpath=/.+')
+          - node_runtime_info.stdout | default('') is search('(?m)^npx_path=/.+')
+          - node_runtime_info.stdout | default('') is search('(?m)^npx_realpath=/.+')
+          - (node_install_scope_effective != 'shared') or not (node_runtime_info.stdout | default('') is search('(?m)^node_realpath=/root/'))
+          - (node_install_scope_effective != 'shared') or not (node_runtime_info.stdout | default('') is search('(?m)^npm_realpath=/root/'))
+        fail_msg: >-
+          Node runtime capture was incomplete.
+          stdout={{ node_runtime_info.stdout | default('') }}
+      when:
+        - node_enable | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Normalize final Node runtime facts
+      ansible.builtin.set_fact:
+        node_runtime_fact_node_version: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^node_version=(.*)$') | first | default('unknown')) }}"
+        node_runtime_fact_npm_version: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^npm_version=(.*)$') | first | default('unknown')) }}"
+        node_runtime_fact_npx_version: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^npx_version=(.*)$') | first | default('unknown')) }}"
+        node_runtime_fact_node_path: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^node_path=(.*)$') | first | default('')) }}"
+        node_runtime_fact_node_realpath: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^node_realpath=(.*)$') | first | default('')) }}"
+        node_runtime_fact_npm_path: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^npm_path=(.*)$') | first | default('')) }}"
+        node_runtime_fact_npm_realpath: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^npm_realpath=(.*)$') | first | default('')) }}"
+        node_runtime_fact_npx_path: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^npx_path=(.*)$') | first | default('')) }}"
+        node_runtime_fact_npx_realpath: "{{ ((node_runtime_info.stdout | default('')) | regex_findall('(?m)^npx_realpath=(.*)$') | first | default('')) }}"
+      when:
+        - node_enable | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Ensure node facts directory exists
+      ansible.builtin.file:
+        path: "{{ node_runtime_facts_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - node_enable | bool
+        - node_mode_effective in ['apply', 'upgrade']
+
+    - name: Write node runtime facts
+      ansible.builtin.copy:
+        dest: "{{ node_runtime_facts_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          ---
+          node:
+            enabled: true
+            install_requested: {{ node_enable | bool | lower }}
+            install_scope: "{{ node_install_scope_effective }}"
+            install_policy: "{{ node_install_policy }}"
+            install_needed: {{ node_install_needed | bool | lower }}
+            existing_node_version: "{{ ((node_version_probe.stdout | default('')) | regex_findall('(?m)^node_version=(.*)$') | first | default('missing')) }}"
+            existing_node_path: "{{ ((node_version_probe.stdout | default('')) | regex_findall('(?m)^node_path=(.*)$') | first | default('missing')) }}"
+            existing_node_realpath: "{{ ((node_version_probe.stdout | default('')) | regex_findall('(?m)^node_realpath=(.*)$') | first | default('missing')) }}"
+            existing_npm_path: "{{ ((node_version_probe.stdout | default('')) | regex_findall('(?m)^npm_path=(.*)$') | first | default('missing')) }}"
+            existing_npm_realpath: "{{ ((node_version_probe.stdout | default('')) | regex_findall('(?m)^npm_realpath=(.*)$') | first | default('missing')) }}"
+            node_min_major: {{ node_min_major | int }}
+            install_method: "{{ 'nvm' if (node_install_needed | bool) else 'existing' }}"
+            nvm_dir: "{{ node_nvm_dir_effective }}"
+            requested_version: "{{ node_version }}"
+            node_version: "{{ node_runtime_fact_node_version }}"
+            npm_version: "{{ node_runtime_fact_npm_version }}"
+            npx_version: "{{ node_runtime_fact_npx_version }}"
+            node_path: "{{ node_runtime_fact_node_path }}"
+            node_realpath: "{{ node_runtime_fact_node_realpath }}"
+            npm_path: "{{ node_runtime_fact_npm_path }}"
+            npm_realpath: "{{ node_runtime_fact_npm_realpath }}"
+            npx_path: "{{ node_runtime_fact_npx_path }}"
+            npx_realpath: "{{ node_runtime_fact_npx_realpath }}"
+            visibility:
+              node_scope_ok: {{ ((node_version_probe.stdout | default('')) is search('(?m)^node_scope_ok=1$')) | lower }}
+              npm_scope_ok: {{ ((node_version_probe.stdout | default('')) is search('(?m)^npm_scope_ok=1$')) | lower }}
+              runtime_ok: {{ ((node_version_probe.stdout | default('')) is search('(?m)^node_runtime_ok=1$')) | lower }}
+            system_symlinks:
+              node: "/usr/local/bin/node"
+              npm: "/usr/local/bin/npm"
+              npx: "/usr/local/bin/npx"
+      when:
+        - node_enable | bool
+        - node_mode_effective in ['apply', 'upgrade']

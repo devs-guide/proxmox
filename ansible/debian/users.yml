@@ -1,57 +1,108 @@
 ---
-- name: "[debian]: baseline users (customize for production)"
+- name: "[debian]: baseline users"
   hosts: all
   become: true
   gather_facts: true
 
   vars:
-    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     default_password_hash_algo: sha512
-    managed_sudo_users: "{{ user_defs | rejectattr('name', 'equalto', 'root') | list }}"
 
   tasks:
-    - name: Ensure sudo is installed
-      apt:
-        name: sudo
+    - name: Ensure sudo group exists
+      ansible.builtin.group:
+        name: "{{ bootstrap_default_sudo_group | default('sudo') }}"
         state: present
 
-    - name: Ensure users exist with initial passwords
-      user:
+    - name: Ensure users exist with expected shell, password, and groups
+      ansible.builtin.user:
         name: "{{ item.name }}"
-        password: "{{ (item.password | default(item.name, true)) | password_hash(default_password_hash_algo) }}"
-        shell: /bin/bash
+        password: >-
+          {{
+            item.password_hash
+            if (item.password_hash | default('') | length > 0)
+            else (
+              item.password | default(item.name, true)
+            )
+            | password_hash(default_password_hash_algo)
+          }}
+        password_lock: "{{ item.password_lock | default(false) }}"
+        groups: >-
+          {{
+            (
+              item.groups
+              if (item.groups is defined)
+              else (
+                [bootstrap_default_sudo_group | default('sudo')]
+                if (
+                  item.name != 'root'
+                  and (bootstrap_default_nonroot_sudo | default(true) | bool)
+                )
+                else []
+              )
+            ) | join(',')
+          }}
+        append: >-
+          {{
+            (
+              item.groups is defined
+              and (item.groups | length > 0)
+            )
+            or (
+              item.name != 'root'
+              and (bootstrap_default_nonroot_sudo | default(true) | bool)
+            )
+          }}
+        shell: "{{ item.shell | default('/bin/bash') }}"
+        create_home: true
         state: present
-        update_password: always
+        update_password: "{{ item.update_password | default(bootstrap_default_user_update_password | default('always')) }}"
       loop: "{{ user_defs }}"
 
-    - name: Ensure sudoers drop-in directory exists
-      file:
-        path: /etc/sudoers.d
-        state: directory
-        owner: root
-        group: root
-        mode: "0750"
-
-    - name: Ensure managed non-root users have sudo access
-      copy:
-        dest: /etc/sudoers.d/90-debian-users
+    - name: Ensure sudo policy file for managed bootstrap users is valid
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/90-debian-bootstrap-managed-users
         owner: root
         group: root
         mode: "0440"
+        validate: "visudo -cf %s"
         content: |
-          {% for user in managed_sudo_users %}
-          {{ user.name }} ALL=(ALL:ALL) ALL
-          {% endfor %}
-        validate: /usr/sbin/visudo -cf %s
-      when: managed_sudo_users | length > 0
-
-    - name: Remove managed sudoers drop-in when no non-root users are defined
-      file:
-        path: /etc/sudoers.d/90-debian-users
-        state: absent
-      when: managed_sudo_users | length == 0
+          # Ansible managed: Debian bootstrap sudo policy.
+          %{{ bootstrap_default_sudo_group | default('sudo') }} ALL=(ALL:ALL) ALL
+          {% if bootstrap_passwordless_sudo | default(false) | bool %}
+          %{{ bootstrap_default_sudo_group | default('sudo') }} ALL=(ALL) NOPASSWD:ALL
+          {% endif %}
 
     - name: Clear password expiry and inactivity requirements
-      command: >
+      ansible.builtin.command: >
         chage -I -1 -m 0 -M 99999 -E -1 -d {{ ansible_facts["date_time"]["date"] }} {{ item.name }}
       loop: "{{ user_defs }}"
+      changed_when: true
+
+    - name: Verify managed non-root users have sudo membership
+      ansible.builtin.command: "id -nG {{ item.name }}"
+      register: managed_user_groups
+      changed_when: false
+      loop: "{{ user_defs | rejectattr('name', 'equalto', 'root') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - bootstrap_managed_users_require_sudo | default(true) | bool
+
+    - name: Assert managed non-root users can use sudo group
+      ansible.builtin.assert:
+        that:
+          - item.rc | default(1) == 0
+          - "(bootstrap_default_sudo_group | default('sudo')) in ((item.stdout | default('')).split())"
+        fail_msg: "Managed user {{ item.item.name | default('unknown') }} is missing sudo group membership."
+      loop: >-
+        {{
+          managed_user_groups.results | default([])
+          | rejectattr('skipped', 'defined')
+          | list
+        }}
+      loop_control:
+        label: "{{ item.item.name | default('unknown') }}"
+      when:
+        - bootstrap_managed_users_require_sudo | default(true) | bool
+        - item.stdout is defined

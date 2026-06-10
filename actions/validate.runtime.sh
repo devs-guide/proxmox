@@ -21,6 +21,8 @@ files=(
   "setup/lxc/debian.sh"
   "setup/lxc/samba.sh"
   "setup/lxc/network.sh"
+  "setup/lxc/codex.sh"
+  "setup/lxc/users.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
@@ -230,6 +232,108 @@ if ! grep -q 'setup.cli.codex.sh' "${ROOT}/setup/cli.codex.sh"; then
 fi
 echo "[validate.runtime][ok] setup/cli.codex.sh exposes the minimal CLI/Codex runner contract"
 
+echo "[validate.runtime] checking Proxmox LXC Codex runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"debian/node.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing debian/node.yml"
+  exit 1
+fi
+if ! grep -q '"debian/cli.codex.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing debian/cli.codex.yml"
+  exit 1
+fi
+if ! grep -q 'LXC_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh is missing LXC_CODEX_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'write.lxc.codex.extra.vars.file()' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh is missing write.lxc.codex.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${LXC_CODEX_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must use the lightweight container-style Ansible bootstrap helper"
+  exit 1
+fi
+if ! grep -q 'ensure.root.or.sudo.reexec' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must support sudo re-entry instead of requiring the operator to start as root"
+  exit 1
+fi
+if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must not require the full managed-target bootstrap path"
+  exit 1
+fi
+if ! grep -q 'require.container.not.host()' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must refuse host execution by default"
+  exit 1
+fi
+if ! grep -q 'setup/lxc/codex.sh' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must advertise its published setup/lxc/codex.sh URL"
+  exit 1
+fi
+if ! grep -q 'NODE_INSTALL_SCOPE="${PROXMOX_LXC_CODEX_NODE_INSTALL_SCOPE:-shared}"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must default to shared Node install scope for multi-user containers"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/lxc/codex.sh exposes the Debian-in-LXC Codex runner contract"
+
+echo "[validate.runtime] checking Proxmox LXC users runner contract..."
+if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh does not define FEATURE_PLAYBOOKS array"
+  exit 1
+fi
+if ! grep -q '"debian/users.yml"' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh FEATURE_PLAYBOOKS is missing debian/users.yml"
+  exit 1
+fi
+if ! grep -q 'LXC_USERS_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh is missing LXC_USERS_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'write.lxc.users.extra.vars.file()' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh is missing write.lxc.users.extra.vars.file()"
+  exit 1
+fi
+if ! grep -q -- '-e "@${LXC_USERS_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must use the lightweight container-style Ansible bootstrap helper"
+  exit 1
+fi
+if ! grep -q 'ensure.root.or.sudo.reexec' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must support sudo re-entry instead of requiring the operator to start as root"
+  exit 1
+fi
+if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must not require the full managed-target bootstrap path"
+  exit 1
+fi
+if ! grep -q 'require.container.not.host()' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must refuse host execution by default"
+  exit 1
+fi
+if ! grep -q 'setup/lxc/users.sh' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must advertise its published setup/lxc/users.sh URL"
+  exit 1
+fi
+if ! grep -q 'MANAGED_USERS=(root app agent)' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must manage the default root/app/agent users"
+  exit 1
+fi
+if ! grep -q 'verify.managed.users()' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must verify managed users after apply"
+  exit 1
+fi
+echo "[validate.runtime][ok] setup/lxc/users.sh exposes the Debian-in-LXC default users runner contract"
+
 echo "[validate.runtime] checking Proxmox LXC Samba runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh does not define FEATURE_PLAYBOOKS array"
@@ -283,6 +387,10 @@ if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must use the container-safe Ansible bootstrap helper"
   exit 1
 fi
+if ! grep -q 'ensure.root.or.sudo.reexec' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must support sudo re-entry instead of requiring the operator to start as root"
+  exit 1
+fi
 if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must not force the managed-target Python bootstrap path inside the LXC"
   exit 1
@@ -332,6 +440,10 @@ if ! grep -q 'This network feature must run inside a Debian LXC container, not o
 fi
 if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/network.sh"; then
   echo "[validate.runtime][error] setup/lxc/network.sh must use the container-safe Ansible bootstrap helper"
+  exit 1
+fi
+if ! grep -q 'ensure.root.or.sudo.reexec' "${ROOT}/setup/lxc/network.sh"; then
+  echo "[validate.runtime][error] setup/lxc/network.sh must support sudo re-entry instead of requiring the operator to start as root"
   exit 1
 fi
 if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/network.sh"; then
@@ -445,6 +557,10 @@ if ! grep -q 'This Debian LXC feature must be run on a Proxmox host, not inside 
 fi
 if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must use /etc/ansible/proxmox/facts"
+  exit 1
+fi
+if ! grep -q 'ensure.root.or.sudo.reexec' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must support sudo re-entry instead of requiring the operator to start as root"
   exit 1
 fi
 if ! grep -q 'minimal: debian only' "${ROOT}/setup/lxc/debian.sh"; then
@@ -1149,6 +1265,14 @@ if ! grep -q 'load.setup.lxc_network.playbooks' "${ROOT}/actions/www.pages.sh"; 
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/network.sh feature playbook refs"
   exit 1
 fi
+if ! grep -q 'load.setup.lxc_codex.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/codex.sh feature playbook refs"
+  exit 1
+fi
+if ! grep -q 'load.setup.lxc_users.playbooks' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/users.sh feature playbook refs"
+  exit 1
+fi
 if ! grep -q 'load.setup.debian_lxc.playbooks' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/debian.sh feature playbook refs"
   exit 1
@@ -1181,6 +1305,14 @@ if ! grep -q 'setup/lxc/network.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC network runner path"
   exit 1
 fi
+if ! grep -q 'setup/lxc/codex.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC Codex runner path"
+  exit 1
+fi
+if ! grep -q 'setup/lxc/users.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC users runner path"
+  exit 1
+fi
 if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
   echo "[validate.runtime][error] setup/vlan.playbooks.txt should not exist (array model is source-of-truth)"
   exit 1
@@ -1198,6 +1330,8 @@ bash -n "${ROOT}/setup/cli.codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
 bash -n "${ROOT}/setup/lxc/samba.sh"
 bash -n "${ROOT}/setup/lxc/network.sh"
+bash -n "${ROOT}/setup/lxc/codex.sh"
+bash -n "${ROOT}/setup/lxc/users.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then

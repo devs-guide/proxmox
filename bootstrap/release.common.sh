@@ -33,6 +33,71 @@ require.root() {
   fi
 }
 
+current.script.path() {
+  local source_path="${BASH_SOURCE[1]:-${BASH_SOURCE[0]:-}}"
+
+  case "${source_path}" in
+    ""|-|/dev/fd/*|/proc/self/fd/*)
+      return 1
+      ;;
+  esac
+
+  if [[ -r "${source_path}" ]]; then
+    readlink -f "${source_path}" 2>/dev/null || printf '%s\n' "${source_path}"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure.root.or.sudo.reexec() {
+  local sudo_reexec_flag="${1:-0}"
+  local self_url="${2:-}"
+  shift 2 || true
+
+  local script_path=""
+  local -a sudo_env=()
+
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "${sudo_reexec_flag}" == "1" ]]; then
+    log.error "sudo re-entry was requested but the script is still not running as root."
+    exit 1
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    log.error "This setup requires root privileges. Install sudo or run as root."
+    exit 1
+  fi
+
+  log "Root privileges required; requesting sudo..."
+  if ! sudo -v; then
+    log.error "sudo authentication failed or was cancelled."
+    exit 1
+  fi
+
+  if declare -F collect.sudo.env.args >/dev/null 2>&1; then
+    collect.sudo.env.args sudo_env
+  fi
+
+  if script_path="$(current.script.path)"; then
+    exec sudo -E env "${sudo_env[@]}" bash "${script_path}" "$@"
+  fi
+
+  if [[ -n "${self_url}" ]] && command -v wget >/dev/null 2>&1; then
+    exec sudo -E env "${sudo_env[@]}" bash -c 'wget -qO- "$1" | bash -s -- "${@:2}"' bash "${self_url}" "$@"
+  fi
+
+  if [[ -n "${self_url}" ]] && command -v curl >/dev/null 2>&1; then
+    exec sudo -E env "${sudo_env[@]}" bash -c 'curl -fsSL "$1" | bash -s -- "${@:2}"' bash "${self_url}" "$@"
+  fi
+
+  log.error "Cannot re-enter with sudo from stdin because no readable local script path or fetch helper was available."
+  exit 1
+}
+
 require.apt() {
   if ! command -v apt-get >/dev/null 2>&1; then
     log.error "apt-get not found; expected Proxmox/Debian-like system."

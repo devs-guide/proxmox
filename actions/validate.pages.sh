@@ -15,6 +15,8 @@ FILES=(
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
   "setup/lxc/samba.sh:setup/lxc/samba.sh"
   "setup/lxc/network.sh:setup/lxc/network.sh"
+  "setup/lxc/codex.sh:setup/lxc/codex.sh"
+  "setup/lxc/users.sh:setup/lxc/users.sh"
   "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.base.yml:ansible/proxmox/container/debian.base.yml"
   "ansible/proxmox/container/samba.file.share.yml:ansible/proxmox/container/samba.file.share.yml"
@@ -171,6 +173,8 @@ check_setup_feature_refs "setup/cli.codex.sh"
 check_setup_feature_refs "setup/lxc/debian.sh"
 check_setup_feature_refs "setup/lxc/samba.sh"
 check_setup_feature_refs "setup/lxc/network.sh"
+check_setup_feature_refs "setup/lxc/codex.sh"
+check_setup_feature_refs "setup/lxc/users.sh"
 
 check_published_samba_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/samba.sh"

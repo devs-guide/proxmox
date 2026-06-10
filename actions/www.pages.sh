@@ -19,6 +19,8 @@ SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
 SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
 SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
 SETUP_LXC_NETWORK_RUNNER="setup/lxc/network.sh"
+SETUP_LXC_CODEX_RUNNER="setup/lxc/codex.sh"
+SETUP_LXC_USERS_RUNNER="setup/lxc/users.sh"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -247,6 +249,50 @@ load.setup.lxc_network.playbooks() {
   PKGS[setup_lxc_network]="${_setup_lxc_network_items[*]}"
 }
 
+load.setup.lxc_codex.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_LXC_CODEX_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_LXC_CODEX_RUNNER} not found; skipping setup-lxc-codex playbook refs"
+    PKGS[setup_lxc_codex]=""
+    return 0
+  }
+
+  mapfile -t _setup_lxc_codex_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_lxc_codex_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_LXC_CODEX_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_lxc_codex]="${_setup_lxc_codex_items[*]}"
+}
+
+load.setup.lxc_users.playbooks() {
+  local runner="${PATH_TO[root]}/${SETUP_LXC_USERS_RUNNER}"
+  [[ -f "${runner}" ]] || {
+    log.warn "[www.pages] ${SETUP_LXC_USERS_RUNNER} not found; skipping setup-lxc-users playbook refs"
+    PKGS[setup_lxc_users]=""
+    return 0
+  }
+
+  mapfile -t _setup_lxc_users_items < <(
+    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#_setup_lxc_users_items[@]} == 0)); then
+    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_LXC_USERS_RUNNER}"
+    exit 1
+  fi
+
+  PKGS[setup_lxc_users]="${_setup_lxc_users_items[*]}"
+}
+
 load.setup.debian_lxc.playbooks() {
   local runner="${PATH_TO[root]}/${SETUP_DEBIAN_LXC_RUNNER}"
   [[ -f "${runner}" ]] || {
@@ -400,6 +446,22 @@ publish.setup.features() {
   else
     log.warn "[www.pages] ${SETUP_LXC_NETWORK_RUNNER} not found; skipping structured LXC network runner publish"
   fi
+
+  if [[ -f "${SETUP_LXC_CODEX_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_LXC_CODEX_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/lxc"
+    install -m 0755 "${SETUP_LXC_CODEX_RUNNER}" "${PATH_TO[publish]}/${SETUP_LXC_CODEX_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_LXC_CODEX_RUNNER} not found; skipping structured LXC Codex runner publish"
+  fi
+
+  if [[ -f "${SETUP_LXC_USERS_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_LXC_USERS_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/lxc"
+    install -m 0755 "${SETUP_LXC_USERS_RUNNER}" "${PATH_TO[publish]}/${SETUP_LXC_USERS_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_LXC_USERS_RUNNER} not found; skipping structured LXC users runner publish"
+  fi
 }
 
 publish.ansible() {
@@ -455,6 +517,16 @@ publish.ansible() {
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
   done
 
+  load.setup.lxc_codex.playbooks
+  for playbook_to_run in ${PKGS[setup_lxc_codex]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
+  load.setup.lxc_users.playbooks
+  for playbook_to_run in ${PKGS[setup_lxc_users]:-}; do
+    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
+  done
+
   load.setup.debian_lxc.playbooks
   for playbook_to_run in ${PKGS[setup_debian_lxc]:-}; do
     shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
@@ -481,6 +553,12 @@ publish.ansible() {
   fi
   if [[ -n "${PKGS[setup_lxc_network]:-}" ]]; then
     log.info "[www.pages] setup lxc network entries: ${PKGS[setup_lxc_network]}"
+  fi
+  if [[ -n "${PKGS[setup_lxc_codex]:-}" ]]; then
+    log.info "[www.pages] setup lxc codex entries: ${PKGS[setup_lxc_codex]}"
+  fi
+  if [[ -n "${PKGS[setup_lxc_users]:-}" ]]; then
+    log.info "[www.pages] setup lxc users entries: ${PKGS[setup_lxc_users]}"
   fi
   if [[ -n "${PKGS[setup_debian_lxc]:-}" ]]; then
     log.info "[www.pages] setup debian lxc entries: ${PKGS[setup_debian_lxc]}"

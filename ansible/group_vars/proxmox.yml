@@ -30,6 +30,14 @@ proxmox_feature_defaults:
     mode: "apply"  # preflight | apply
     require_container: true
     require_operator_selection: true
+  lxc_codex:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
+  lxc_users:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
 
 proxmox_vlan_ui:
   enabled: true
@@ -412,3 +420,37 @@ proxmox_lxc_debian:
       - "/sys"
       - "/tmp"
       - "/var"
+
+proxmox_lxc_codex:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  node_runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.codex.node.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.codex.yml"
+  node_install_scope: "shared"
+  node_shared_nvm_dir: "/usr/local/lib/nvm"
+  node_nvm_version: "v0.40.4"
+  node_version: "lts/*"
+  node_npm_policy: "bundled"
+  node_npm_version: ""
+  node_create_system_symlinks: true
+  node_enable_corepack: false
+  codex_npm_package: "@openai/codex"
+  codex_version: "latest"
+  codex_install_docs_mcp: true
+  codex_docs_mcp_name: "openaiDeveloperDocs"
+  codex_docs_mcp_url: "https://developers.openai.com/mcp"
+
+proxmox_lxc_users:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.users.yml"
+  default_sudo_group: "sudo"
+  default_nonroot_sudo: true
+  passwordless_sudo: false
+  default_user_update_password: "always"
+  managed_users_require_sudo: true
+  user_defs:
+    - name: "root"
+      password: "root"
+    - name: "app"
+      password: "app"
+    - name: "agent"
+      password: "agent"
