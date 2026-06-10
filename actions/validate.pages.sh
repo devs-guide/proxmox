@@ -334,10 +334,9 @@ check_published_release91_bootstrap_policy() {
     "enterprise\\.proxmox\\.com/debian/(pve|ceph)" \
     'ceph.release.gpg' \
     'PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"' \
-    'SYSTEM_PYTHON_MIN_MINOR="12"' \
-    'select.ansible.bootstrap.python'; do
-    if ! grep -q -- "${needle}" "${published_bootstrap}"; then
-      echo "[validate.pages][error] published 9.1 bootstrap is stale or missing apt cleanup marker: ${needle}"
+    'SYSTEM_PYTHON_MIN_MINOR="12"'; do
+    if ! grep -Fq -- "${needle}" "${published_bootstrap}"; then
+      echo "[validate.pages][error] published 9.1 bootstrap is stale or missing bootstrap policy marker: ${needle}"
       rc=1
     fi
   done
@@ -353,7 +352,7 @@ check_published_release91_bootstrap_policy() {
     'Using native system Python for Ansible bootstrap' \
     'Installing venv support for system Python' \
     'python${python_mm}-venv'; do
-    if ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
+    if ! grep -Fq -- "${needle}" "${TMPDIR}/release.common.sh"; then
       echo "[validate.pages][error] published release.common.sh is stale or missing native system Python bootstrap marker: ${needle}"
       rc=1
     fi
@@ -560,10 +559,12 @@ check_published_network_playbook_policy() {
   for needle in \
     'proxmox_lxc_network_defaults_safe:' \
     'Fail if run on a Proxmox host' \
-    'Build effective access profile and allow-lists' \
+    'Build effective access profile' \
+    'Build effective access user allow-lists' \
     'Apply access profile behavior overrides' \
     'Install local-LAN access packages' \
-    'Ensure non-root access users can use sudo' \
+    'proxmox_lxc_network_sudo_users_non_root' \
+    'Ensure all detected non-root login-capable users can use sudo' \
     'Write managed SSH policy include' \
     'Probe outbound connectivity in preflight' \
     'Configure UFW local-subnet SSH allow rules' \
@@ -601,9 +602,9 @@ check_published_lxc_network_runner_policy() {
 
   for needle in \
     'FEATURE_SFTP_ENABLED' \
+    'PROXMOX_LXC_NETWORK_SFTP_ENABLED' \
     'Enable SFTP over SSH' \
-    'sftp:' \
-    'sftp_enabled' ; do
+    'sftp:' ; do
     if ! grep -q -- "${needle}" "${published_runner}"; then
       echo "[validate.pages][error] published setup/lxc/network.sh is missing marker: ${needle}"
       rc=1
