@@ -77,8 +77,11 @@ FILES=(
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
-  "ansible/release/9.1/group_vars/all.yml:ansible/release/9.1/group_vars/all.yml"
   "ansible/release/9.1/enterprise.yml:ansible/release/9.1/enterprise.yml"
+)
+
+GENERATED_FILES=(
+  "ansible/release/9.1/group_vars/all.yml:ansible/release/9.1/group_vars/all.yml"
 )
 
 rc=0
@@ -139,9 +142,9 @@ check_setup_feature_refs() {
 
   for feature_ref in "${_setup_feature_refs[@]}"; do
     local local_playbook="ansible/${feature_ref}"
-  local local_playbook="ansible/${feature_ref}"
-  local remote_playbook="${local_playbook}"
-  local tmp_playbook="${TMPDIR}/${remote_playbook}"
+    local remote_playbook="${local_playbook}"
+    local tmp_playbook="${TMPDIR}/${remote_playbook}"
+    local compare_hint
 
   if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
     echo "[validate.pages][error] ${runner_rel} references missing local playbook: ${local_playbook}"
@@ -149,18 +152,71 @@ check_setup_feature_refs() {
     continue
   fi
 
-  if ! fetch_artifact "${remote_playbook}" "${tmp_playbook}"; then
-    echo "[validate.pages][error] failed to fetch setup dependency ${BASE_URL}/${remote_playbook}"
-    rc=1
-    continue
-  fi
+    if ! fetch_artifact "${remote_playbook}" "${tmp_playbook}"; then
+      if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+        echo "[validate.pages][error] failed to fetch setup dependency ${STATIC_DIR}/${remote_playbook}"
+      else
+        echo "[validate.pages][error] failed to fetch setup dependency ${BASE_URL}/${remote_playbook}"
+      fi
+      rc=1
+      continue
+    fi
+
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      compare_hint="${STATIC_DIR}/${remote_playbook}"
+    else
+      compare_hint="${BASE_URL}/${remote_playbook}"
+    fi
 
     if ! diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" >/dev/null; then
-      echo "[validate.pages][diff] ${local_playbook} differs from published ${playbook_url}"
+      echo "[validate.pages][diff] ${local_playbook} differs from ${compare_hint}"
       diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" || true
       rc=1
     else
-      echo "[validate.pages][ok] ${local_playbook} matches published ${playbook_url}"
+      echo "[validate.pages][ok] ${local_playbook} matches ${compare_hint}"
+    fi
+  done
+}
+
+check_generated_file_artifacts() {
+  local entry
+  local remote_path
+  local local_path
+  local tmp_artifact
+
+  for entry in "${GENERATED_FILES[@]}"; do
+    remote_path="${entry%%:*}"
+    local_path="${entry#*:}"
+    tmp_artifact="${TMPDIR}/${remote_path}"
+
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      local artifact_path="${STATIC_DIR}/${remote_path}"
+      if [[ ! -f "${artifact_path}" ]]; then
+        echo "[validate.pages][error] missing generated static artifact: ${artifact_path}"
+        rc=1
+      fi
+      if [[ ! -f "${artifact_path}" ]]; then
+        continue
+      fi
+      mkdir -p "$(dirname "${tmp_artifact}")"
+      if ! cp "${artifact_path}" "${tmp_artifact}"; then
+        echo "[validate.pages][error] failed to read generated static artifact: ${artifact_path}"
+        rc=1
+        continue
+      fi
+      echo "[validate.pages][ok] generated artifact exists in static build: ${artifact_path}"
+    else
+      if ! fetch_artifact "${remote_path}" "${tmp_artifact}"; then
+        rc=1
+        continue
+      fi
+      echo "[validate.pages][ok] generated artifact exists on published Pages: ${BASE_URL}/${remote_path}"
+    fi
+
+    if [[ ! -f "${WORKDIR}/${local_path}" ]]; then
+      echo "[validate.pages][error] missing local source for generated artifact: ${local_path}"
+      rc=1
+      continue
     fi
   done
 }
@@ -531,6 +587,7 @@ check_published_debian_base_bootstrap
 check_published_samba_playbook_policy
 check_published_network_runner_policy
 check_published_network_playbook_policy
+check_generated_file_artifacts
 
 check_published_lxc_network_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/network.sh"
