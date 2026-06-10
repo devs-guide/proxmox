@@ -42,7 +42,10 @@ jobs:
           PUBLISH_DIR: static       # optional; defaults to "static" anyway
         run: ./actions/www.pages.sh
 
-      - name: Validate Pages publish artifacts
+      - name: Validate local Pages artifacts before deploy
+        env:
+          VALIDATE_PAGES_MODE: local
+          STATIC_DIR: ./static
         run: ./actions/validate.pages.sh
 
       - name: Deploy static/ to www branch (GitHub Pages)
@@ -52,3 +55,6 @@ jobs:
           publish_dir: ./static
           publish_branch: www
           force_orphan: true
+
+      - name: Validate published Pages artifacts after deploy
+        run: ./actions/validate.pages.sh

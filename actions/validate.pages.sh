@@ -1,10 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Simple artifact drift check: fetch published Pages artifacts and diff against working tree.
+# Artifact drift check supports two modes:
+#   remote (default): fetch published Pages artifacts and diff against working tree.
+#   local: compare working tree against generated static/ artifacts.
 BASE_URL="${BASE_URL:-https://devs-guide.github.io/proxmox}"
 WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATIC_DIR="${STATIC_DIR:-${WORKDIR}/static}"
+VALIDATE_PAGES_MODE="${VALIDATE_PAGES_MODE:-remote}"
 TMPDIR="$(mktemp -d)"
+if [[ "${VALIDATE_PAGES_MODE}" != "local" && "${VALIDATE_PAGES_MODE}" != "remote" ]]; then
+  echo "[validate.pages][error] invalid VALIDATE_PAGES_MODE=${VALIDATE_PAGES_MODE}; must be local|remote"
+  exit 1
+fi
+
+fetch_artifact() {
+  local remote_path="$1"
+  local dest="$2"
+
+  mkdir -p "$(dirname "${dest}")"
+
+  if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+    local local_path="${STATIC_DIR}/${remote_path}"
+    if [[ ! -f "${local_path}" ]]; then
+      echo "[validate.pages][error] missing generated static artifact: ${local_path}"
+      return 1
+    fi
+    cp "${local_path}" "${dest}"
+    return 0
+  fi
+
+  local url="${BASE_URL}/${remote_path}"
+  echo "[validate.pages] fetch ${url}"
+  if ! curl -fsSL "${url}" -o "${dest}"; then
+    echo "[validate.pages][error] failed to fetch ${url}"
+    return 1
+  fi
+}
+
+echo "[validate.pages] mode: ${VALIDATE_PAGES_MODE}"
+if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+  echo "[validate.pages] static dir: ${STATIC_DIR}"
+else
+  echo "[validate.pages] using BASE_URL=${BASE_URL}"
+fi
+echo "[validate.pages] temp dir: ${TMPDIR}"
+
+# Keep this list synced with runner dependencies and pages publish expectations.
 FILES=(
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
@@ -36,10 +78,8 @@ FILES=(
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml:ansible/release/9.1/group_vars/all.yml"
+  "ansible/release/9.1/enterprise.yml:ansible/release/9.1/enterprise.yml"
 )
-
-echo "[validate.pages] using BASE_URL=${BASE_URL}"
-echo "[validate.pages] temp dir: ${TMPDIR}"
 
 rc=0
 for entry in "${FILES[@]}"; do
@@ -48,20 +88,25 @@ for entry in "${FILES[@]}"; do
   dest="${TMPDIR}/${remote_path}"
   mkdir -p "$(dirname "${dest}")"
 
-  url="${BASE_URL}/${remote_path}"
-  echo "[validate.pages] fetch ${url}"
-  if ! curl -fsSL "${url}" -o "${dest}"; then
-    echo "[validate.pages][error] failed to fetch ${url}"
+  if ! fetch_artifact "${remote_path}" "${dest}"; then
     rc=1
     continue
   fi
 
   if ! diff -u "${WORKDIR}/${local_path}" "${dest}" >/dev/null; then
-    echo "[validate.pages][diff] ${local_path} differs from published ${url}"
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      echo "[validate.pages][diff] ${local_path} differs from generated ${STATIC_DIR}/${remote_path}"
+    else
+      echo "[validate.pages][diff] ${local_path} differs from published ${BASE_URL}/${remote_path}"
+    fi
     diff -u "${WORKDIR}/${local_path}" "${dest}" || true
     rc=1
   else
-    echo "[validate.pages][ok] ${local_path} matches published ${url}"
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      echo "[validate.pages][ok] ${local_path} matches generated ${STATIC_DIR}/${remote_path}"
+    else
+      echo "[validate.pages][ok] ${local_path} matches published ${BASE_URL}/${remote_path}"
+    fi
   fi
 done
 
@@ -94,23 +139,21 @@ check_setup_feature_refs() {
 
   for feature_ref in "${_setup_feature_refs[@]}"; do
     local local_playbook="ansible/${feature_ref}"
-    local remote_playbook="ansible/${feature_ref}"
-    local tmp_playbook="${TMPDIR}/${remote_playbook}"
-    local playbook_url="${BASE_URL}/${remote_playbook}"
+  local local_playbook="ansible/${feature_ref}"
+  local remote_playbook="${local_playbook}"
+  local tmp_playbook="${TMPDIR}/${remote_playbook}"
 
-    if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
-      echo "[validate.pages][error] ${runner_rel} references missing local playbook: ${local_playbook}"
-      rc=1
-      continue
-    fi
+  if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
+    echo "[validate.pages][error] ${runner_rel} references missing local playbook: ${local_playbook}"
+    rc=1
+    continue
+  fi
 
-    mkdir -p "$(dirname "${tmp_playbook}")"
-    echo "[validate.pages] fetch ${playbook_url}"
-    if ! curl -fsSL "${playbook_url}" -o "${tmp_playbook}"; then
-      echo "[validate.pages][error] failed to fetch setup dependency ${playbook_url}"
-      rc=1
-      continue
-    fi
+  if ! fetch_artifact "${remote_playbook}" "${tmp_playbook}"; then
+    echo "[validate.pages][error] failed to fetch setup dependency ${BASE_URL}/${remote_playbook}"
+    rc=1
+    continue
+  fi
 
     if ! diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" >/dev/null; then
       echo "[validate.pages][diff] ${local_playbook} differs from published ${playbook_url}"
@@ -126,22 +169,27 @@ check_playlist_refs() {
   local playlist_path="$1"
   local remote_playlist="${playlist_path}"
   local tmp_playlist="${TMPDIR}/${remote_playlist}"
-  mkdir -p "$(dirname "${tmp_playlist}")"
 
-  local playlist_url="${BASE_URL}/${remote_playlist}"
-  echo "[validate.pages] fetch ${playlist_url}"
-  if ! curl -fsSL "${playlist_url}" -o "${tmp_playlist}"; then
-    echo "[validate.pages][error] failed to fetch ${playlist_url}"
+  if ! fetch_artifact "${remote_playlist}" "${tmp_playlist}"; then
+    echo "[validate.pages][error] failed to fetch ${BASE_URL}/${remote_playlist}"
     rc=1
     return
   fi
 
   if ! diff -u "${WORKDIR}/${playlist_path}" "${tmp_playlist}" >/dev/null; then
-    echo "[validate.pages][diff] ${playlist_path} differs from published ${playlist_url}"
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      echo "[validate.pages][diff] ${playlist_path} differs from generated ${STATIC_DIR}/${remote_playlist}"
+    else
+      echo "[validate.pages][diff] ${playlist_path} differs from published ${BASE_URL}/${remote_playlist}"
+    fi
     diff -u "${WORKDIR}/${playlist_path}" "${tmp_playlist}" || true
     rc=1
   else
-    echo "[validate.pages][ok] ${playlist_path} matches published ${playlist_url}"
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      echo "[validate.pages][ok] ${playlist_path} matches generated ${STATIC_DIR}/${remote_playlist}"
+    else
+      echo "[validate.pages][ok] ${playlist_path} matches published ${BASE_URL}/${remote_playlist}"
+    fi
   fi
 
   while IFS= read -r playbook_ref; do
@@ -161,11 +209,8 @@ check_playlist_refs() {
     fi
 
     local tmp_playbook="${TMPDIR}/${remote_playbook}"
-    mkdir -p "$(dirname "${tmp_playbook}")"
-    local playbook_url="${BASE_URL}/${remote_playbook}"
-    echo "[validate.pages] fetch ${playbook_url}"
-    if ! curl -fsSL "${playbook_url}" -o "${tmp_playbook}"; then
-      echo "[validate.pages][error] failed to fetch referenced playbook ${playbook_url}"
+    if ! fetch_artifact "${remote_playbook}" "${tmp_playbook}"; then
+      echo "[validate.pages][error] failed to fetch referenced playbook ${BASE_URL}/${remote_playbook}"
       rc=1
       continue
     fi

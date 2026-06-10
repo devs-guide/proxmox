@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Lightweight runtime sanity checklist for proxmox 9.1 (manual/offline friendly).
-# Does not perform network fetches; assumes the repo is already checked out locally.
+# Local contract check only: validates local repo artifacts and runtime-facing checks.
+# This is not a publish/drift validator and does not fetch from the live Pages URL.
+# Live Pages publish validation remains in actions/validate.pages.sh (remote or local modes).
 #
 # Steps:
 # 1) Confirm key files exist locally.
