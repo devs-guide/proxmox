@@ -494,6 +494,8 @@ publish.ansible() {
     "--include=debian/sources.trixie.yml" # Trixie sources play for 9.1+
     "--include=proxmox/common.yml"    # shared non-LXC Proxmox baseline for container imports
     "--include=proxmox/container/common.yml" # shared LXC container baseline defaults
+    "--include=proxmox/container/node.yml" # LXC Codex Node wrapper (sourced via setup/lxc/codex.sh)
+    "--include=proxmox/container/codex.yml" # LXC Codex wrapper (sourced via setup/lxc/codex.sh)
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do

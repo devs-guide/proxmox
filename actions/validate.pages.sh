@@ -23,6 +23,8 @@ FILES=(
   "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.yml:ansible/proxmox/container/debian.yml"
   "ansible/proxmox/container/debian.base.yml:ansible/proxmox/container/debian.base.yml"
+  "ansible/proxmox/container/node.yml:ansible/proxmox/container/node.yml"
+  "ansible/proxmox/container/codex.yml:ansible/proxmox/container/codex.yml"
   "ansible/proxmox/container/users.yml:ansible/proxmox/container/users.yml"
   "ansible/proxmox/container/samba.file.share.yml:ansible/proxmox/container/samba.file.share.yml"
   "ansible/proxmox/container/network.access.yml:ansible/proxmox/container/network.access.yml"

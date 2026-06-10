@@ -40,10 +40,12 @@ files=(
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
-"ansible/proxmox/common.yml"
-"ansible/proxmox/container/debian.lxc.yml"
-"ansible/proxmox/container/debian.yml"
-"ansible/proxmox/container/debian.base.yml"
+  "ansible/proxmox/common.yml"
+  "ansible/proxmox/container/debian.lxc.yml"
+  "ansible/proxmox/container/debian.yml"
+  "ansible/proxmox/container/debian.base.yml"
+  "ansible/proxmox/container/node.yml"
+  "ansible/proxmox/container/codex.yml"
   "ansible/proxmox/container/samba.file.share.yml"
   "ansible/proxmox/container/network.access.yml"
   "ansible/group_vars/trixie.yml"
@@ -242,12 +244,12 @@ if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/codex.sh"; then
   echo "[validate.runtime][error] setup/lxc/codex.sh does not define FEATURE_PLAYBOOKS array"
   exit 1
 fi
-if ! grep -q '"debian/node.yml"' "${ROOT}/setup/lxc/codex.sh"; then
-  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing debian/node.yml"
+if ! grep -q '"proxmox/container/node.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing proxmox/container/node.yml"
   exit 1
 fi
-if ! grep -q '"debian/cli.codex.yml"' "${ROOT}/setup/lxc/codex.sh"; then
-  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing debian/cli.codex.yml"
+if ! grep -q '"proxmox/container/codex.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing proxmox/container/codex.yml"
   exit 1
 fi
 if ! grep -q 'LXC_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/codex.sh"; then
@@ -286,7 +288,7 @@ if ! grep -q 'NODE_INSTALL_SCOPE="${PROXMOX_LXC_CODEX_NODE_INSTALL_SCOPE:-shared
   echo "[validate.runtime][error] setup/lxc/codex.sh must default to shared Node install scope for multi-user containers"
   exit 1
 fi
-echo "[validate.runtime][ok] setup/lxc/codex.sh exposes the Debian-in-LXC Codex runner contract"
+echo "[validate.runtime][ok] setup/lxc/codex.sh exposes the LXC wrapper entrypoint contract"
 
 echo "[validate.runtime] checking Proxmox LXC users runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/users.sh"; then
@@ -1444,6 +1446,12 @@ ANSIBLE_FORCE_COLOR=0 \
 ANSIBLE_NOCOLOR=1 \
 ANSIBLE_FORCE_COLOR=0 \
   ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/debian/cli.codex.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/container/node.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/container/codex.yml"
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."
 

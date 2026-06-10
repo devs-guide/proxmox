@@ -315,6 +315,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         export NVM_DIR="{{ node_nvm_dir_effective }}"
+        export HOME="${HOME:-/root}"
         . "{{ node_nvm_dir_effective }}/nvm.sh"
         nvm install "{{ node_version }}"
         nvm alias default "{{ node_version }}" >/dev/null
@@ -338,6 +339,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         export NVM_DIR="{{ node_nvm_dir_effective }}"
+        export HOME="${HOME:-/root}"
         . "{{ node_nvm_dir_effective }}/nvm.sh"
         nvm use default >/dev/null
         changed=0
@@ -371,6 +373,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         export NVM_DIR="{{ node_nvm_dir_effective }}"
+        export HOME="${HOME:-/root}"
         . "{{ node_nvm_dir_effective }}/nvm.sh"
         nvm use default >/dev/null
         if npm list -g --depth=0 "{{ item }}" >/dev/null 2>&1; then
@@ -397,6 +400,7 @@
         set -euo pipefail
         if [ "{{ node_install_needed | bool }}" = "True" ] || [ "{{ node_install_needed | bool }}" = "true" ]; then
           export NVM_DIR="{{ node_nvm_dir_effective }}"
+          export HOME="${HOME:-/root}"
           . "{{ node_nvm_dir_effective }}/nvm.sh"
           nvm use default >/dev/null
         fi
@@ -418,6 +422,7 @@
         mode: "0644"
         content: |
           export NVM_DIR="{{ node_nvm_dir_effective }}"
+          export HOME="${HOME:-/root}"
           [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
           [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
       when:
@@ -430,6 +435,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         export NVM_DIR="{{ node_nvm_dir_effective }}"
+        export HOME="${HOME:-/root}"
         . "{{ node_nvm_dir_effective }}/nvm.sh"
         nvm use default >/dev/null
         node_path="$(nvm which default)"

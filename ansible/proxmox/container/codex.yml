@@ -1,0 +1,17 @@
+---
+# Canonical LXC entrypoint for Codex in Proxmox containers.
+# Two-tier intent:
+# - project/proxmox baseline vs LXC-common baseline
+# - debian/proxmox implementation details delegated, not duplicated
+- import_playbook: ../debian/cli.codex.yml
+  vars:
+    proxmox_container_entrypoint: "lxc"
+    ansible_python_interpreter_managed: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    codex_enable: true
+    codex_mode: "{{ codex_mode | default('apply') }}"
+    codex_node_install_scope: "{{ codex_node_install_scope | default('shared') }}"
+    codex_node_shared_nvm_dir: "{{ codex_node_shared_nvm_dir | default('/usr/local/lib/nvm') }}"
+    codex_nvm_dir: "{{ codex_nvm_dir | default('') }}"
+    codex_version: "{{ codex_version | default('latest') }}"
+    codex_install_docs_mcp: "{{ codex_install_docs_mcp | default(true) | bool }}"
+    codex_runtime_facts_path: "{{ codex_runtime_facts_path | default('/etc/ansible/proxmox/facts/lxc.codex.yml') }}"
