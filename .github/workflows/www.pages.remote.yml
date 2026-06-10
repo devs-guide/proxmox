@@ -1,0 +1,53 @@
+# .github/workflows/www.pages.remote.yml
+
+name: Validate published Pages artifacts
+
+on:
+  workflow_run:
+    workflows: [ "Publish static assets to www (GitHub Pages)" ]
+    types: [ completed ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-published-pages:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success'
+      )
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Validate published Pages artifacts with retry
+        env:
+          VALIDATE_PAGES_MODE: remote
+        run: |
+          attempts=12
+          delay_seconds=15
+          attempt=1
+
+          while (( attempt <= attempts )); do
+            echo "[validate.pages.remote] attempt ${attempt}/${attempts}"
+            if ./actions/validate.pages.sh; then
+              exit 0
+            fi
+
+            if (( attempt == attempts )); then
+              echo "[validate.pages.remote][error] published Pages artifacts never converged after deploy"
+              exit 1
+            fi
+
+            sleep "${delay_seconds}"
+            attempt=$((attempt + 1))
+          done

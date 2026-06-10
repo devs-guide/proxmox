@@ -56,6 +56,3 @@ jobs:
           publish_dir: ./static
           publish_branch: www
           force_orphan: true
-
-      - name: Validate published Pages artifacts after deploy
-        run: ./actions/validate.pages.sh
