@@ -455,6 +455,14 @@ publish.setup.features() {
     log.warn "[www.pages] ${SETUP_LXC_CODEX_RUNNER} not found; skipping structured LXC Codex runner publish"
   fi
 
+  if [[ -f "setup/lxc/common.sh" ]]; then
+    log.info "[www.pages] installing setup/lxc/common.sh"
+    mkdir -p "${PATH_TO[publish]}/setup/lxc"
+    install -m 0755 "setup/lxc/common.sh" "${PATH_TO[publish]}/setup/lxc/common.sh"
+  else
+    log.warn "[www.pages] setup/lxc/common.sh not found; skipping common helper publish"
+  fi
+
   if [[ -f "${SETUP_LXC_USERS_RUNNER}" ]]; then
     log.info "[www.pages] installing ${SETUP_LXC_USERS_RUNNER}"
     mkdir -p "${PATH_TO[publish]}/setup/lxc"

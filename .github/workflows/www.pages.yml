@@ -42,6 +42,14 @@ jobs:
           PUBLISH_DIR: static       # optional; defaults to "static" anyway
         run: ./actions/www.pages.sh
 
+      - name: Verify Pages setup runner dependencies are present
+        run: |
+          if [[ ! -f static/setup/lxc/common.sh ]]; then
+            echo "[www.pages] ERROR: static/setup/lxc/common.sh is missing"
+            echo "[www.pages] This must be present for setup/lxc/* runners when invoked via wget | bash"
+            exit 1
+          fi
+
       - name: Deploy static/ to www branch (GitHub Pages)
         uses: peaceiris/actions-gh-pages@v4
         with:
