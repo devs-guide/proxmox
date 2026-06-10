@@ -23,7 +23,7 @@ GROUP_VARS_FILE="proxmox.yml"
 GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 FEATURE_PLAYBOOKS=(
-  "debian/users.yml"
+  "proxmox/container/users.yml"
 )
 USERS_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 USERS_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${USERS_PLAYBOOK_REL}"
@@ -366,6 +366,8 @@ else
   printf '  - name: %s\n    password: %s\n    shell: "/bin/bash"\n' "$(yaml.quote "app")" "$(yaml.quote "${FEATURE_APP_PASSWORD}")"
   printf '  - name: %s\n    password: %s\n    shell: "/bin/bash"\n' "$(yaml.quote "agent")" "$(yaml.quote "${FEATURE_AGENT_PASSWORD}")"
 fi)
+proxmox_users_scope: "lxc"
+proxmox_users_skip_container_safety_checks: true
 proxmox_lxc_users_managed_users_runner:
 $(if ((${#PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]} > 0)); then
   for user in "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}"; do

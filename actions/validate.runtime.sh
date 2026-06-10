@@ -48,6 +48,8 @@ files=(
   "ansible/proxmox/container/network.access.yml"
   "ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml"
+  "ansible/proxmox/container/common.yml"
+  "ansible/proxmox/container/users.yml"
 )
 
 echo "[validate.runtime] checking for required files..."
@@ -291,12 +293,16 @@ if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/users.sh"; then
   echo "[validate.runtime][error] setup/lxc/users.sh does not define FEATURE_PLAYBOOKS array"
   exit 1
 fi
-if ! grep -q '"debian/users.yml"' "${ROOT}/setup/lxc/users.sh"; then
-  echo "[validate.runtime][error] setup/lxc/users.sh FEATURE_PLAYBOOKS is missing debian/users.yml"
+if ! grep -q '"proxmox/container/users.yml"' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh FEATURE_PLAYBOOKS is missing proxmox/container/users.yml"
   exit 1
 fi
 if ! grep -q 'LXC_USERS_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/users.sh"; then
   echo "[validate.runtime][error] setup/lxc/users.sh is missing LXC_USERS_EXTRA_VARS_PATH"
+  exit 1
+fi
+if ! grep -q 'proxmox_users_skip_container_safety_checks: true' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh must force container-safe users flow"
   exit 1
 fi
 if ! grep -q 'write.lxc.users.extra.vars.file()' "${ROOT}/setup/lxc/users.sh"; then
@@ -1423,6 +1429,7 @@ run_proxmox_feature_check() {
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/debian.base.yml"
+  ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/users.yml"
 
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/network.access.yml"

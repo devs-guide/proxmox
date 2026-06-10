@@ -1,0 +1,14 @@
+---
+# Generic LXC boundary baseline for container runners.
+# Keep this file for LXC-only shared defaults (root/app/agent) and use it
+# only for container user-management / container runner contexts.
+proxmox_lxc_common_default_users:
+  - name: "root"
+    password: "root"
+    shell: "/bin/bash"
+  - name: "app"
+    password: "app"
+    shell: "/bin/bash"
+  - name: "agent"
+    password: "agent"
+    shell: "/bin/bash"

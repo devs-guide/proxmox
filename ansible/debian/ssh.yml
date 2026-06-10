@@ -1,6 +1,38 @@
 ---
 # Shared Debian SSH policy defaults used by host/bootstrap flows and
 # Proxmox-managed LXC hardening.
+
+# SSH policy defaults are user-driven first, then default to already-installed
+# baseline users. If none of the baseline users are present yet, this will
+# fall back to the baseline user list from ansible/proxmox/common.yml and
+# should be paired with installing those defaults when needed.
+debian_ssh_install_baseline_users_hint: "install baseline users from ansible/proxmox/common.yml (root/proxmox/agent)"
+debian_ssh_baseline_users_from_common: >-
+  {{
+    (
+      lookup('file', playbook_dir ~ '/../proxmox/common.yml')
+      | from_yaml
+    ).proxmox_common_baseline_users.access.default_users
+    | default([], true)
+    | map(attribute='name')
+    | list
+  }}
+debian_ssh_installed_user_names: >-
+  {{
+    (
+      lookup('pipe', 'getent passwd 2>/dev/null | awk -F: "{print $1}"')
+      | split('\n')
+      | reject('equalto', '')
+      | unique
+      | list
+    )
+  }}
+debian_ssh_detected_baseline_users: >-
+  {{
+    debian_ssh_baseline_users_from_common
+    | intersect(debian_ssh_installed_user_names)
+  }}
+
 debian_ssh_defaults:
   server:
     port: 22
@@ -13,9 +45,15 @@ debian_ssh_defaults:
     x11_forwarding: "no"
     pubkey_authentication: null
   access:
-    allow_users:
-      - root
-      - proxmox
-      - agent
+    allow_users: >-
+      {{
+        debian_ssh_allow_users
+        if (debian_ssh_allow_users | default([]) | length > 0)
+        else (
+          debian_ssh_detected_baseline_users
+          if (debian_ssh_detected_baseline_users | length > 0)
+          else debian_ssh_baseline_users_from_common
+        )
+      }}
   firewall:
     manage_ufw_ssh_rules: true

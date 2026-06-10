@@ -492,6 +492,8 @@ publish.ansible() {
     "--include=debian/netboot.yml"    # Debian web-reference catalog for container feature UI
     "--include=debian/ssh.yml"        # shared Debian SSH policy for LXC test-access hardening
     "--include=debian/sources.trixie.yml" # Trixie sources play for 9.1+
+    "--include=proxmox/common.yml"    # shared non-LXC Proxmox baseline for container imports
+    "--include=proxmox/container/common.yml" # shared LXC container baseline defaults
   )
   local playbook_to_run
   for playbook_to_run in ${PKGS[ansible]}; do
