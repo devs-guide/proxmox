@@ -11,6 +11,7 @@ on:
       - 'setup/**'
       - 'docs/**'
       - 'www/**'
+      - 'actions/validate.pages.sh'
       - 'actions/www.pages.sh'
       - '.github/workflows/www.pages.yml'
   workflow_dispatch:
