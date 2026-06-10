@@ -19,6 +19,7 @@ LOCAL_COMMON_HELPER="../../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
 COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
 COMMON_HELPER_PATH="${TMP_DIR}/${COMMON_HELPER_NAME}"
+LXC_COMMON_HELPER_NAME="common.sh"
 GROUP_VARS_FILE="proxmox.yml"
 GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
@@ -69,10 +70,21 @@ PROXMOX_SAMBA_PROFILE="${PROXMOX_SAMBA_PROFILE:-modern_mac}"
 PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
 PROXMOX_SAMBA_ALLOW_EMPTY_SHARES="${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES:-0}"
+# Two-tier baseline policy for this stack:
+# - Generic LXC common baseline: root, app, agent
+# Common baseline is shared with all non-project LXC runners.
+PROXMOX_SAMBA_BASELINE_USERS="${PROXMOX_SAMBA_BASELINE_USERS:-${PROXMOX_LXC_COMMON_BASELINE_USERS:-root app agent}}"
+PROXMOX_SAMBA_ALLOW_USERS="${PROXMOX_SAMBA_ALLOW_USERS:-}"
+PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE="${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE:-false}"
+if [[ -n "${PROXMOX_SAMBA_ALLOW_USERS:-}" ]]; then
+  PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE="true"
+fi
 SAMBA_SELF_URL="${PROXMOX_SAMBA_SELF_URL:-${PAGES_BASE_URL}/setup/lxc/samba.sh}"
 SAMBA_SUDO_REEXEC="${PROXMOX_SAMBA_SUDO_REEXEC:-0}"
 
 declare -a MOUNT_PATH=()
+declare -a PROXMOX_SAMBA_ALLOW_USERS_SELECTED=()
+declare -a PROXMOX_SAMBA_ALLOW_USERS_CLI=()
 declare -a MOUNT_SOURCE=()
 declare -a MOUNT_FSTYPE=()
 declare -a MOUNT_OPTIONS=()
@@ -93,6 +105,36 @@ CONTAINER_CTNAME="${PROXMOX_CTNAME:-}"
 OPEN_TTY=0
 ALLOW_EMPTY_SHARES="false"
 SHARE_SELECTION_ERROR=""
+
+source.lxc.common() {
+  local script_dir=""
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+
+  if [[ -n "${script_dir}" && -r "${script_dir}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${script_dir}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  mkdir -p "${TMP_DIR}"
+  if ! wget -qO "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" "${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"; then
+    log.error "Unable to fetch shared LXC baseline helper from ${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"
+    exit 1
+  fi
+
+  if [[ -r "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  log.error "Shared LXC baseline helper is missing: ${script_dir}/${LXC_COMMON_HELPER_NAME}"
+  exit 1
+}
+
+source.lxc.common
 
 source.release.common() {
   local script_dir=""
@@ -146,6 +188,7 @@ collect.sudo.env.args() {
     "PROXMOX_SAMBA_ALLOW_SUBNETS=${PROXMOX_SAMBA_ALLOW_SUBNETS}"
     "PROXMOX_SAMBA_SHARE_PATHS=${PROXMOX_SAMBA_SHARE_PATHS}"
     "PROXMOX_SAMBA_ALLOW_EMPTY_SHARES=${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES}"
+    "PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE=${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}"
     "PROXMOX_SAMBA_FACTS_DIR=${FACTS_DIR}"
     "PROXMOX_SAMBA_CONTAINER_FACTS_PATH=${CONTAINER_FACTS_PATH}"
     "PROXMOX_SAMBA_RUNTIME_FACTS_PATH=${SAMBA_FACTS_PATH}"
@@ -158,6 +201,10 @@ collect.sudo.env.args() {
     "PAGES_BASE_URL=${PAGES_BASE_URL}"
     "TMP_DIR=${TMP_DIR}"
   )
+
+  if is.true "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}" && [[ -n "${PROXMOX_SAMBA_ALLOW_USERS:-}" ]]; then
+    _out+=("PROXMOX_SAMBA_ALLOW_USERS=${PROXMOX_SAMBA_ALLOW_USERS}")
+  fi
 }
 
 is.true() {
@@ -626,6 +673,54 @@ normalize.allow.subnets() {
   read -r -a ALLOW_SUBNET_LIST <<< "${PROXMOX_SAMBA_ALLOW_SUBNETS}"
 }
 
+list.signature() {
+  printf '%s\n' "$@" | awk 'NF {print}' | sort -u | tr '\n' ',' | sed 's/,$//'
+}
+
+normalize.allow.users() {
+  local user
+  if is.true "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}"; then
+    PROXMOX_SAMBA_ALLOW_USERS_SELECTED=()
+    for user in ${PROXMOX_SAMBA_ALLOW_USERS}; do
+      [[ -n "${user}" ]] || continue
+      PROXMOX_SAMBA_ALLOW_USERS_SELECTED+=("${user}")
+    done
+  else
+    PROXMOX_SAMBA_ALLOW_USERS_SELECTED=()
+    for user in ${PROXMOX_SAMBA_BASELINE_USERS}; do
+      [[ -n "${user}" ]] || continue
+      PROXMOX_SAMBA_ALLOW_USERS_SELECTED+=("${user}")
+    done
+  fi
+
+  if ((${#PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]} == 0)); then
+    read -r -a PROXMOX_SAMBA_ALLOW_USERS_SELECTED <<< "${PROXMOX_SAMBA_BASELINE_USERS}"
+  fi
+
+  PROXMOX_SAMBA_ALLOW_USERS_CLI=()
+  if is.true "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}"; then
+    PROXMOX_SAMBA_ALLOW_USERS_CLI=(${PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]})
+  fi
+}
+
+assert.default.allow.users() {
+  local baseline_signature
+  local selected_signature
+
+  if is.true "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}"; then
+    return 0
+  fi
+
+  baseline_signature="$(list.signature ${PROXMOX_SAMBA_BASELINE_USERS})"
+  selected_signature="$(list.signature "${PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]}")"
+
+  if [[ "${selected_signature}" != "${baseline_signature}" ]]; then
+    log.error "Unexpected Samba user set. Baseline: ${PROXMOX_SAMBA_BASELINE_USERS}. Selected: ${PROXMOX_SAMBA_ALLOW_USERS_SELECTED[*]}"
+    log.error "Set PROXMOX_SAMBA_ALLOW_USERS explicitly to override."
+    exit 1
+  fi
+}
+
 validate.selection() {
   local path readable writable xattr
   ((${#MOUNT_PATH[@]} > 0)) || {
@@ -824,6 +919,8 @@ proxmox_samba:
 $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
   ssh:
     enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_SSH}")
+    allow_users:
+$(for user in ${PROXMOX_SAMBA_BASELINE_USERS}; do printf '      - %s\n' "$(yaml.quote "${user}")"; done)
   optional_packages:
     avahi:
       enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_AVAHI}")
@@ -839,6 +936,25 @@ $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quot
     force_user: $(yaml.scalar.or.null "${PROXMOX_SAMBA_FORCE_USER}")
     force_group: $(yaml.quote "${PROXMOX_SAMBA_FORCE_GROUP}")
     guest_mode: $(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")
+proxmox_samba_access_users_runner:
+$(if ((${#PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]} > 0)); then
+  for user in "${PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]}"; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+else
+  for user in ${PROXMOX_SAMBA_BASELINE_USERS}; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+fi)
+proxmox_samba_access_users_cli:
+$(if is.true "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}"; then
+  for user in "${PROXMOX_SAMBA_ALLOW_USERS_CLI[@]}"; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+else
+  printf '  -\n'
+fi)
+proxmox_samba_access_users_override: $(bool.yaml "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}")
 EOF
   if ((${#SELECTED_SHARES[@]} > 0)); then
     {
@@ -866,6 +982,8 @@ run.samba.feature() {
   discover.mounts
   require.unique.share.names
   collect.operator.selection
+  normalize.allow.users
+  assert.default.allow.users
   write.samba.extra.vars.file
   log "Running Proxmox LXC Samba feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${SAMBA_PLAYBOOK_PATH}" -e "@${SAMBA_EXTRA_VARS_PATH}"

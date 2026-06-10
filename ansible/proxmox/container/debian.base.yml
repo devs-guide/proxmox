@@ -9,6 +9,7 @@
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
     proxmox_debian_ssh_defaults_path: "{{ playbook_dir }}/../../debian/ssh.yml"
+    proxmox_common_defaults_path: "{{ playbook_dir }}/../common.yml"
     proxmox_feature_facts_dir: "{{ proxmox_feature_facts_dir | default('/etc/ansible/proxmox/facts') }}"
     proxmox_lxc_debian_selection_path: "{{ proxmox_lxc_debian.selection_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.selection.yml') }}"
     proxmox_lxc_debian_runtime_facts_path: "{{ proxmox_lxc_debian.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.yml') }}"
@@ -54,13 +55,15 @@
         ufw:
           - ufw
       access:
+        # Two-tier intent: proxmox/debian.base expects proxmox baseline users (root, proxmox, agent)
+        # unless a runner-provided user list or explicit CLI override is supplied.
         default_users:
-          - name: "agent"
-            password: "agent"
-          - name: "proxmox"
-            password: "proxmox"
           - name: "root"
             password: "root"
+          - name: "proxmox"
+            password: "proxmox"
+          - name: "agent"
+            password: "agent"
         expected_dns: "10.0.0.1"
         internet_probe_ipv4: "1.1.1.1"
 
@@ -68,6 +71,11 @@
     - name: Load manual Proxmox feature defaults
       include_vars:
         file: "{{ proxmox_feature_group_vars_path }}"
+
+    - name: Load non-LXC Proxmox baseline defaults for policy boundary clarity
+      include_vars:
+        file: "{{ proxmox_common_defaults_path }}"
+        ignore_unknown_extensions: true
 
     - name: Normalize Debian LXC base defaults
       set_fact:
@@ -158,12 +166,24 @@
           enable_ssh: "{{ proxmox_lxc_debian_selection.hardening.enable_ssh | default(proxmox_lxc_debian.hardening.enable_ssh | default(false), true) | bool }}"
           access_users: >-
             {{
-              proxmox_lxc_debian_selection.hardening.users
-              | default(
-                  proxmox_lxc_debian.hardening.access_users
-                  | default(proxmox_lxc_debian_defaults_safe.access.default_users, true),
-                  true
-                )
+              proxmox_lxc_debian_access_users_cli
+              | default([], true)
+              | flatten
+              if (proxmox_lxc_access_users_override | default(false) | bool)
+              else (
+                proxmox_lxc_access_users_runner
+                | default([], true)
+                | flatten
+              )
+              if (proxmox_lxc_access_users_runner | default([], true) | length > 0)
+              else (
+                proxmox_lxc_debian_selection.hardening.users
+                | default(
+                    proxmox_lxc_debian.hardening.access_users
+                    | default(proxmox_lxc_debian_defaults_safe.access.default_users, true),
+                    true
+                  )
+              )
             }}
           expected_dns: >-
             {{

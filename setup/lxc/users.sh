@@ -18,6 +18,7 @@ LOCAL_COMMON_HELPER="../../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
 COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
 COMMON_HELPER_PATH="${TMP_DIR}/${COMMON_HELPER_NAME}"
+LXC_COMMON_HELPER_NAME="common.sh"
 GROUP_VARS_FILE="proxmox.yml"
 GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
@@ -56,10 +57,50 @@ FEATURE_USER_UPDATE_PASSWORD="${PROXMOX_LXC_USERS_UPDATE_PASSWORD:-always}"
 FEATURE_ROOT_PASSWORD="${PROXMOX_LXC_USERS_ROOT_PASSWORD:-root}"
 FEATURE_APP_PASSWORD="${PROXMOX_LXC_USERS_APP_PASSWORD:-app}"
 FEATURE_AGENT_PASSWORD="${PROXMOX_LXC_USERS_AGENT_PASSWORD:-agent}"
+## Baseline policy:
+## - Generic LXC common baseline: root, app, agent
+## - No project-specific baseline in this runner; overrides must be explicit.
+PROXMOX_LXC_USERS_BASELINE_USERS="${PROXMOX_LXC_USERS_BASELINE_USERS:-${PROXMOX_LXC_COMMON_BASELINE_USERS:-root app agent}}"
+PROXMOX_LXC_USERS_MANAGED_USERS="${PROXMOX_LXC_USERS_MANAGED_USERS:-}"
+PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE="${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE:-false}"
+if [[ -n "${PROXMOX_LXC_USERS_MANAGED_USERS:-}" ]]; then
+  PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE="true"
+fi
 USERS_SELF_URL="${PROXMOX_LXC_USERS_SELF_URL:-${PAGES_BASE_URL}/setup/lxc/users.sh}"
 USERS_SUDO_REEXEC="${PROXMOX_LXC_USERS_SUDO_REEXEC:-0}"
 CONTAINER_OS_PRETTY=""
-declare -a MANAGED_USERS=(root app agent)
+declare -a PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS=()
+declare -a PROXMOX_LXC_USERS_MANAGED_USERS_CLI=()
+
+source.lxc.common() {
+  local script_dir=""
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+
+  if [[ -n "${script_dir}" && -r "${script_dir}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${script_dir}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  mkdir -p "${TMP_DIR}"
+  if ! wget -qO "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" "${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"; then
+    log.error "Unable to fetch shared LXC baseline helper from ${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"
+    exit 1
+  fi
+
+  if [[ -r "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  log.error "Shared LXC baseline helper is missing: ${script_dir}/${LXC_COMMON_HELPER_NAME}"
+  exit 1
+}
+
+source.lxc.common
 
 source.release.common() {
   local script_dir=""
@@ -104,6 +145,7 @@ collect.sudo.env.args() {
     "PROXMOX_LXC_USERS_ROOT_PASSWORD=${FEATURE_ROOT_PASSWORD}"
     "PROXMOX_LXC_USERS_APP_PASSWORD=${FEATURE_APP_PASSWORD}"
     "PROXMOX_LXC_USERS_AGENT_PASSWORD=${FEATURE_AGENT_PASSWORD}"
+    "PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE=${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}"
     "PROXMOX_LXC_USERS_FACTS_DIR=${FACTS_DIR}"
     "PROXMOX_LXC_USERS_RUNTIME_FACTS_PATH=${USERS_RUNTIME_FACTS_PATH}"
     "PROXMOX_LXC_USERS_SELF_URL=${USERS_SELF_URL}"
@@ -111,6 +153,10 @@ collect.sudo.env.args() {
     "PAGES_BASE_URL=${PAGES_BASE_URL}"
     "TMP_DIR=${TMP_DIR}"
   )
+
+  if is.true "${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}" && [[ -n "${PROXMOX_LXC_USERS_MANAGED_USERS:-}" ]]; then
+    _out+=("PROXMOX_LXC_USERS_MANAGED_USERS=${PROXMOX_LXC_USERS_MANAGED_USERS}")
+  fi
 }
 
 is.true() {
@@ -133,6 +179,60 @@ bool.yaml() {
     printf 'true'
   else
     printf 'false'
+  fi
+}
+
+list.signature() {
+  printf '%s\n' "$@" | awk 'NF {print}' | sort -u | tr '\n' ',' | sed 's/,$//'
+}
+
+user.password.for.name() {
+  local user="${1:-}"
+  case "${user}" in
+    root) printf '%s\n' "${FEATURE_ROOT_PASSWORD}" ;;
+    app) printf '%s\n' "${FEATURE_APP_PASSWORD}" ;;
+    agent) printf '%s\n' "${FEATURE_AGENT_PASSWORD}" ;;
+    *) printf '%s\n' "${user}" ;;
+  esac
+}
+
+normalize.managed.users() {
+  local user
+  PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS=()
+  if is.true "${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}"; then
+    read -r -a PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS <<< "${PROXMOX_LXC_USERS_MANAGED_USERS}"
+  else
+    for user in ${PROXMOX_LXC_USERS_BASELINE_USERS}; do
+      [[ -n "${user}" ]] || continue
+      PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS+=("${user}")
+    done
+  fi
+
+  if ((${#PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]} == 0)); then
+    read -r -a PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS <<< "${PROXMOX_LXC_USERS_BASELINE_USERS}"
+  fi
+
+  PROXMOX_LXC_USERS_MANAGED_USERS_CLI=()
+  if is.true "${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}"; then
+    PROXMOX_LXC_USERS_MANAGED_USERS_CLI=("${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}")
+  fi
+}
+
+assert.default.managed.users() {
+  local baseline_signature
+  local selected_signature
+
+  if is.true "${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}"; then
+    return 0
+  fi
+
+  baseline_signature="$(list.signature ${PROXMOX_LXC_USERS_BASELINE_USERS})"
+  selected_signature="$(list.signature "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}")"
+
+  if [[ "${selected_signature}" != "${baseline_signature}" ]]; then
+    log.error "Unexpected managed user set. Baseline: ${PROXMOX_LXC_USERS_BASELINE_USERS}. Selected: ${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[*]}"
+    log.error "Set PROXMOX_LXC_USERS_MANAGED_USERS explicitly to override."
+    exit 1
   fi
 }
 
@@ -255,25 +355,48 @@ bootstrap_default_user_update_password: $(yaml.quote "${FEATURE_USER_UPDATE_PASS
 bootstrap_managed_users_require_sudo: $(bool.yaml "${FEATURE_DEFAULT_NONROOT_SUDO}")
 
 user_defs:
-  - name: "root"
-    password: $(yaml.quote "${FEATURE_ROOT_PASSWORD}")
-    shell: "/bin/bash"
-  - name: "app"
-    password: $(yaml.quote "${FEATURE_APP_PASSWORD}")
-    shell: "/bin/bash"
-  - name: "agent"
-    password: $(yaml.quote "${FEATURE_AGENT_PASSWORD}")
-    shell: "/bin/bash"
+$(if ((${#PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]} > 0)); then
+  for user in "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}"; do
+    printf '  - name: %s\n    password: %s\n    shell: "/bin/bash"\n' \
+      "$(yaml.quote "${user}")" \
+      "$(yaml.quote "$(user.password.for.name "${user}")")"
+  done
+else
+  printf '  - name: %s\n    password: %s\n    shell: "/bin/bash"\n' "$(yaml.quote "root")" "$(yaml.quote "${FEATURE_ROOT_PASSWORD}")"
+  printf '  - name: %s\n    password: %s\n    shell: "/bin/bash"\n' "$(yaml.quote "app")" "$(yaml.quote "${FEATURE_APP_PASSWORD}")"
+  printf '  - name: %s\n    password: %s\n    shell: "/bin/bash"\n' "$(yaml.quote "agent")" "$(yaml.quote "${FEATURE_AGENT_PASSWORD}")"
+fi)
+proxmox_lxc_users_managed_users_runner:
+$(if ((${#PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]} > 0)); then
+  for user in "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}"; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+else
+  for user in ${PROXMOX_LXC_USERS_BASELINE_USERS}; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+fi)
+proxmox_lxc_users_managed_users_cli:
+$(if is.true "${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}"; then
+  for user in "${PROXMOX_LXC_USERS_MANAGED_USERS_CLI[@]}"; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+else
+  printf '  -\n'
+fi)
+proxmox_lxc_users_managed_users_override: $(bool.yaml "${PROXMOX_LXC_USERS_MANAGED_USERS_OVERRIDE}")
 EOF
   log "Prepared LXC users extra-vars: ${LXC_USERS_EXTRA_VARS_PATH}"
 }
 
 run.preflight() {
   local user passwd_entry shell home groups
+  normalize.managed.users
+  assert.default.managed.users
   log "Container OS: ${CONTAINER_OS_PRETTY}"
-  log "Managed users: ${MANAGED_USERS[*]}"
-  log "Default password policy: root/root app/app agent/agent (override with PROXMOX_LXC_USERS_*_PASSWORD)."
-  for user in "${MANAGED_USERS[@]}"; do
+  log "Managed users: ${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[*]}"
+  log "Default password policy: ${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[*]} (override with PROXMOX_LXC_USERS_*_PASSWORD)."
+  for user in "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}"; do
     passwd_entry="$(getent passwd "${user}" || true)"
     if [[ -n "${passwd_entry}" ]]; then
       shell="$(printf '%s' "${passwd_entry}" | awk -F: '{print $7}')"
@@ -290,7 +413,7 @@ run.preflight() {
 
 verify.managed.users() {
   local user groups
-  for user in "${MANAGED_USERS[@]}"; do
+  for user in "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}"; do
     if ! getent passwd "${user}" >/dev/null; then
       log.error "Managed user missing after apply: ${user}"
       exit 1
@@ -314,7 +437,7 @@ write.lxc.users.runtime.facts() {
     printf '  mode: %s\n' "$(yaml.quote "${FEATURE_MODE}")"
     printf '  sudo_group: %s\n' "$(yaml.quote "${FEATURE_DEFAULT_SUDO_GROUP}")"
     printf '%s\n' '  users:'
-    for user in "${MANAGED_USERS[@]}"; do
+    for user in "${PROXMOX_LXC_USERS_SELECTED_MANAGED_USERS[@]}"; do
       passwd_entry="$(getent passwd "${user}")"
       home="$(printf '%s' "${passwd_entry}" | awk -F: '{print $6}')"
       shell="$(printf '%s' "${passwd_entry}" | awk -F: '{print $7}')"
@@ -333,6 +456,8 @@ write.lxc.users.runtime.facts() {
 }
 
 run.lxc.users.feature() {
+  normalize.managed.users
+  assert.default.managed.users
   write.lxc.users.extra.vars.file
   log "Running Debian users feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${USERS_PLAYBOOK_PATH}" -e "@${LXC_USERS_EXTRA_VARS_PATH}"

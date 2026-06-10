@@ -384,9 +384,9 @@ proxmox_lxc_debian:
   hardening:
     access_profile: "local_only"
     access_users:
-      - name: "agent"
-      - name: "proxmox"
       - name: "root"
+      - name: "proxmox"
+      - name: "agent"
     ssh:
       port: 22
       include_path: "/etc/ssh/sshd_config.d/90-proxmox-debian.conf"

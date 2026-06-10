@@ -68,9 +68,11 @@
           include_path: "/etc/ssh/sshd_config.d/90-proxmox-samba.conf"
           permit_root_login: "yes"
           password_authentication: null
+          # Two-tier intent: container-common baseline users (root, app, agent)
+          # unless a runner-provided list or CLI override supplies alternatives.
           allow_users:
             - root
-            - proxmox
+            - app
             - agent
         firewall:
           enabled: false
@@ -199,6 +201,23 @@
           ssh: >-
             {{
               proxmox_samba_defaults_effective.ssh
+              | combine(
+                {
+                  'allow_users': (
+                    proxmox_samba_access_users_cli
+                    | default([], true)
+                    | flatten
+                    if (proxmox_samba_access_users_override | default(false) | bool)
+                    else (
+                      proxmox_samba_access_users_runner
+                      | default([], true)
+                      | flatten
+                    )
+                    if (proxmox_samba_access_users_runner | default([], true) | length > 0)
+                    else proxmox_samba_defaults_effective.ssh.allow_users
+                  )
+                }
+              )
             }}
           firewall: >-
             {{

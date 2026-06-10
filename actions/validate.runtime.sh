@@ -19,8 +19,9 @@ files=(
   "setup/network.sh"
   "setup/cli.codex.sh"
   "setup/lxc/debian.sh"
-  "setup/lxc/samba.sh"
-  "setup/lxc/network.sh"
+"setup/lxc/samba.sh"
+"setup/lxc/common.sh"
+"setup/lxc/network.sh"
   "setup/lxc/codex.sh"
   "setup/lxc/users.sh"
   "ansible/release/6.4/install.playbooks.txt"
@@ -39,8 +40,10 @@ files=(
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
-  "ansible/proxmox/container/debian.lxc.yml"
-  "ansible/proxmox/container/debian.base.yml"
+"ansible/proxmox/common.yml"
+"ansible/proxmox/container/debian.lxc.yml"
+"ansible/proxmox/container/debian.yml"
+"ansible/proxmox/container/debian.base.yml"
   "ansible/proxmox/container/samba.file.share.yml"
   "ansible/proxmox/container/network.access.yml"
   "ansible/group_vars/trixie.yml"
@@ -324,8 +327,8 @@ if ! grep -q 'setup/lxc/users.sh' "${ROOT}/setup/lxc/users.sh"; then
   echo "[validate.runtime][error] setup/lxc/users.sh must advertise its published setup/lxc/users.sh URL"
   exit 1
 fi
-if ! grep -q 'MANAGED_USERS=(root app agent)' "${ROOT}/setup/lxc/users.sh"; then
-  echo "[validate.runtime][error] setup/lxc/users.sh must manage the default root/app/agent users"
+if ! grep -q 'PROXMOX_LXC_COMMON_BASELINE_USERS=.*root app agent' "${ROOT}/setup/lxc/common.sh"; then
+  echo "[validate.runtime][error] setup/lxc/common.sh must define the LXC common baseline as root app agent"
   exit 1
 fi
 if ! grep -q 'verify.managed.users()' "${ROOT}/setup/lxc/users.sh"; then
@@ -483,8 +486,8 @@ if ! grep -q '"proxmox/container/debian.lxc.yml"' "${ROOT}/setup/lxc/debian.sh";
   echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_PLAYBOOKS is missing proxmox/container/debian.lxc.yml"
   exit 1
 fi
-if ! grep -q '"proxmox/container/debian.base.yml"' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_PLAYBOOKS is missing proxmox/container/debian.base.yml"
+if ! grep -Eq '"proxmox/container/debian(\.base)?\.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_PLAYBOOKS is missing proxmox/container/debian.yml"
   exit 1
 fi
 if ! grep -q '/dev/tty' "${ROOT}/setup/lxc/debian.sh"; then
@@ -1018,6 +1021,14 @@ if ! grep -q 'Load shared Debian SSH defaults' "${ROOT}/ansible/proxmox/containe
   echo "[validate.runtime][error] debian.base.yml must load shared Debian SSH defaults from ansible/debian/ssh.yml"
   exit 1
 fi
+if ! grep -q 'Load non-LXC Proxmox baseline defaults for policy boundary clarity' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must include boundary load for non-LXC baseline defaults"
+  exit 1
+fi
+if ! grep -q 'proxmox_common_defaults_path' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
+  echo "[validate.runtime][error] debian.base.yml must resolve proxmox_common_defaults_path"
+  exit 1
+fi
 if ! grep -q 'Ensure SSH host keys exist inside the container' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml must generate SSH host keys for Debian LXC access"
   exit 1
@@ -1060,6 +1071,18 @@ if ! grep -q 'Probe DNS resolution from the container' "${ROOT}/ansible/proxmox/
 fi
 if ! grep -q 'default_login_pairs' "${ROOT}/ansible/proxmox/container/debian.base.yml"; then
   echo "[validate.runtime][error] debian.base.yml runtime facts must include default login guidance"
+  exit 1
+fi
+if ! grep -q 'root' "${ROOT}/ansible/proxmox/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/common.yml must include root in its baseline user list"
+  exit 1
+fi
+if ! grep -q 'proxmox' "${ROOT}/ansible/proxmox/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/common.yml must include proxmox in its baseline user list"
+  exit 1
+fi
+if ! grep -q 'agent' "${ROOT}/ansible/proxmox/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/common.yml must include agent in its baseline user list"
   exit 1
 fi
 if ! grep -q 'template_policy:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
@@ -1395,6 +1418,7 @@ run_proxmox_feature_check() {
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/debian.lxc.yml"
+    ansible-playbook -i localhost, -c local "$@" --syntax-check "${ROOT}/ansible/proxmox/container/debian.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \

@@ -19,6 +19,7 @@ LOCAL_COMMON_HELPER="../../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
 COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
 COMMON_HELPER_PATH="${TMP_DIR}/${COMMON_HELPER_NAME}"
+LXC_COMMON_HELPER_NAME="common.sh"
 GROUP_VARS_FILE="proxmox.yml"
 GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
@@ -43,7 +44,7 @@ DEBIAN_LXC_TEMPLATE_NAME=(
 DEBIAN_LXC_TEMPLATE_STATUS=(legacy oldstable stable-minus-one current)
 FEATURE_PLAYBOOKS=(
   "proxmox/container/debian.lxc.yml"
-  "proxmox/container/debian.base.yml"
+  "proxmox/container/debian.yml"
 )
 DEBIAN_LXC_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 DEBIAN_BASE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
@@ -97,13 +98,52 @@ DEFAULT_NESTING="${PROXMOX_LXC_DEBIAN_NESTING:-0}"
 DEFAULT_FUSE="${PROXMOX_LXC_DEBIAN_FUSE:-0}"
 DEFAULT_HARDENING_PROFILE="${PROXMOX_LXC_DEBIAN_PROFILE:-minimal}"
 DEFAULT_ACCESS_PROFILE="${PROXMOX_LXC_DEBIAN_ACCESS_PROFILE:-local_only}"
-DEFAULT_ACCESS_USERS="${PROXMOX_LXC_DEBIAN_ACCESS_USERS:-agent proxmox root}"
+# Two-tier baseline policy for this script stack:
+# - Generic LXC common baseline (runner default): root, app, agent
+# - Project/debian-base intent remains proxmox: root, proxmox, agent in ansible/proxmox/container/debian.base.yml defaults.
+PROXMOX_LXC_DEBIAN_BASELINE_USERS="${PROXMOX_LXC_DEBIAN_BASELINE_USERS:-${PROXMOX_LXC_COMMON_BASELINE_USERS:-root app agent}}"
+PROXMOX_LXC_DEBIAN_ACCESS_USERS="${PROXMOX_LXC_DEBIAN_ACCESS_USERS:-}"
+PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE="${PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE:-false}"
+if [[ -n "${PROXMOX_LXC_DEBIAN_ACCESS_USERS:-}" ]]; then
+  PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE="true"
+fi
+DEFAULT_ACCESS_USERS="${PROXMOX_LXC_DEBIAN_ACCESS_USERS:-${PROXMOX_LXC_DEBIAN_BASELINE_USERS}}"
 DEFAULT_ALLOW_SUBNETS="${PROXMOX_LXC_DEBIAN_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
 DEFAULT_EXPECTED_DNS="${PROXMOX_LXC_DEBIAN_EXPECTED_DNS:-10.0.0.1}"
 DEFAULT_INTERNET_PROBE_IPV4="${PROXMOX_LXC_DEBIAN_INTERNET_PROBE_IPV4:-1.1.1.1}"
 DEFAULT_MOUNTS="${PROXMOX_LXC_DEBIAN_MOUNTS:-}"
 DEBIAN_SELF_URL="${PROXMOX_LXC_DEBIAN_SELF_URL:-${PAGES_BASE_URL}/setup/lxc/debian.sh}"
 DEBIAN_SUDO_REEXEC="${PROXMOX_LXC_DEBIAN_SUDO_REEXEC:-0}"
+
+source.lxc.common() {
+  local script_dir=""
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+
+  if [[ -n "${script_dir}" && -r "${script_dir}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${script_dir}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  mkdir -p "${TMP_DIR}"
+  if ! wget -qO "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" "${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"; then
+    log.error "Unable to fetch shared LXC baseline helper from ${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"
+    exit 1
+  fi
+
+  if [[ -r "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  log.error "Shared LXC baseline helper is missing: ${script_dir}/${LXC_COMMON_HELPER_NAME}"
+  exit 1
+}
+
+source.lxc.common
 
 declare -a CT_IDS=()
 declare -a CT_HOSTNAMES=()
@@ -137,6 +177,7 @@ declare -a SELECTED_ALLOW_SUBNETS=()
 declare -a SELECTED_ACCESS_USERS=()
 declare -a SELECTED_MOUNT_HOST_PATHS=()
 declare -a SELECTED_MOUNT_CONTAINER_PATHS=()
+declare -a PROXMOX_LXC_DEBIAN_CLI_ACCESS_USERS=()
 
 OPEN_TTY=0
 SELECTED_OPERATION=""
@@ -222,7 +263,6 @@ collect.sudo.env.args() {
     "PROXMOX_LXC_DEBIAN_FUSE=${DEFAULT_FUSE}"
     "PROXMOX_LXC_DEBIAN_PROFILE=${DEFAULT_HARDENING_PROFILE}"
     "PROXMOX_LXC_DEBIAN_ACCESS_PROFILE=${DEFAULT_ACCESS_PROFILE}"
-    "PROXMOX_LXC_DEBIAN_ACCESS_USERS=${DEFAULT_ACCESS_USERS}"
     "PROXMOX_LXC_DEBIAN_ALLOW_SUBNETS=${DEFAULT_ALLOW_SUBNETS}"
     "PROXMOX_LXC_DEBIAN_EXPECTED_DNS=${DEFAULT_EXPECTED_DNS}"
     "PROXMOX_LXC_DEBIAN_INTERNET_PROBE_IPV4=${DEFAULT_INTERNET_PROBE_IPV4}"
@@ -238,6 +278,11 @@ collect.sudo.env.args() {
     "PAGES_BASE_URL=${PAGES_BASE_URL}"
     "TMP_DIR=${TMP_DIR}"
   )
+
+  if [[ -n "${PROXMOX_LXC_DEBIAN_ACCESS_USERS:-}" ]]; then
+    _out+=("PROXMOX_LXC_DEBIAN_ACCESS_USERS=${PROXMOX_LXC_DEBIAN_ACCESS_USERS}")
+  fi
+  _out+=("PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE=${PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE}")
 }
 
 is.true() {
@@ -510,7 +555,34 @@ normalize.access.users() {
     SELECTED_ACCESS_USERS+=("${user}")
   done
   if ((${#SELECTED_ACCESS_USERS[@]} == 0)); then
-    SELECTED_ACCESS_USERS=(agent proxmox root)
+    read -r -a SELECTED_ACCESS_USERS <<< "${PROXMOX_LXC_DEBIAN_BASELINE_USERS}"
+  fi
+
+  PROXMOX_LXC_DEBIAN_CLI_ACCESS_USERS=()
+  if is.true "${PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE}"; then
+    read -r -a PROXMOX_LXC_DEBIAN_CLI_ACCESS_USERS <<< "${PROXMOX_LXC_DEBIAN_ACCESS_USERS}"
+  fi
+}
+
+list.signature() {
+  printf '%s\n' "$@" | awk 'NF {print}' | sort -u | tr '\n' ',' | sed 's/,$//'
+}
+
+assert.default.access.users() {
+  local baseline_signature
+  local selected_signature
+
+  if is.true "${PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE}"; then
+    return 0
+  fi
+
+  baseline_signature="$(list.signature ${PROXMOX_LXC_DEBIAN_BASELINE_USERS})"
+  selected_signature="$(list.signature "${SELECTED_ACCESS_USERS[@]}")"
+
+  if [[ "${selected_signature}" != "${baseline_signature}" ]]; then
+    log.error "Unexpected access user set in Debian LXC selection. Baseline: ${PROXMOX_LXC_DEBIAN_BASELINE_USERS}. Selected: ${SELECTED_ACCESS_USERS[*]}"
+    log.error "Set PROXMOX_LXC_DEBIAN_ACCESS_USERS explicitly to override."
+    exit 1
   fi
 }
 
@@ -1629,6 +1701,26 @@ proxmox_lxc_debian:
   isos_tsv_path: $(yaml.quote "${ISOS_TSV_PATH}")
   selection_path: $(yaml.quote "${SELECTION_PATH}")
   runtime_facts_path: $(yaml.quote "${RUNTIME_FACTS_PATH}")
+
+proxmox_lxc_access_users_runner:
+$(if ((${#SELECTED_ACCESS_USERS[@]} > 0)); then
+  for user in "${SELECTED_ACCESS_USERS[@]}"; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+else
+  for user in ${PROXMOX_LXC_DEBIAN_BASELINE_USERS}; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+fi)
+proxmox_lxc_access_users_cli:
+$(if is.true "${PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE}"; then
+  for user in "${PROXMOX_LXC_DEBIAN_CLI_ACCESS_USERS[@]}"; do
+    printf '  - %s\n' "$(yaml.quote "${user}")"
+  done
+else
+  printf '  -\n'
+fi)
+proxmox_lxc_access_users_override: $(bool.yaml "${PROXMOX_LXC_DEBIAN_ACCESS_USERS_OVERRIDE}")
 EOF
   log "Prepared Debian LXC extra-vars: ${DEBIAN_LXC_EXTRA_VARS_PATH}"
 }
@@ -1642,6 +1734,7 @@ run.debian.feature() {
   load.netboot.catalog
   discover.mountpoints
   collect.operator.selection
+  assert.default.access.users
   write.runtime.facts
 
   if [[ "${FEATURE_MODE}" == "preflight" || "${SELECTED_OPERATION:-}" == "preflight" ]]; then
