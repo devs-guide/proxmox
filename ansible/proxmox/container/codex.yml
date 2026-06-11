@@ -3,7 +3,7 @@
 # Two-tier intent:
 # - project/proxmox baseline vs LXC-common baseline
 # - debian/proxmox implementation details delegated, not duplicated
-- import_playbook: ../debian/cli.codex.yml
+- import_playbook: ../../debian/cli.codex.yml
   vars:
     proxmox_container_entrypoint: "lxc"
     ansible_python_interpreter_managed: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"

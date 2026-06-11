@@ -14,6 +14,7 @@ TMP_DIR="/tmp/pve-feature-lxc-users"
 PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
 PLAYBOOK_ROOT="${TMP_DIR}/ansible"
 PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
+PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
 LOCAL_COMMON_HELPER="../../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
 COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
@@ -25,9 +26,19 @@ GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 FEATURE_PLAYBOOKS=(
   "proxmox/container/users.yml"
 )
+FEATURE_SUPPORT_FILES=(
+  "debian/users.yml"
+  "proxmox/container/common.yml"
+)
 USERS_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
+USERS_SUPPORT_PLAYBOOK_REL="${FEATURE_SUPPORT_FILES[0]}"
+USERS_COMMON_SUPPORT_FILE_REL="${FEATURE_SUPPORT_FILES[1]}"
 USERS_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${USERS_PLAYBOOK_REL}"
 USERS_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${USERS_PLAYBOOK_REL}"
+USERS_SUPPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${USERS_SUPPORT_PLAYBOOK_REL}"
+USERS_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${USERS_SUPPORT_PLAYBOOK_REL}"
+USERS_COMMON_SUPPORT_FILE_URL="${PAGES_BASE_URL}/ansible/${USERS_COMMON_SUPPORT_FILE_REL}"
+USERS_COMMON_SUPPORT_FILE_PATH="${PLAYBOOK_ROOT}/${USERS_COMMON_SUPPORT_FILE_REL}"
 LXC_USERS_EXTRA_VARS_PATH="${TMP_DIR}/lxc.users.extra-vars.yml"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
@@ -291,11 +302,17 @@ use.local.feature.files() {
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   repo_root="$(cd "${script_dir}/../.." && pwd)"
 
-  if [[ -r "${repo_root}/ansible/${USERS_PLAYBOOK_REL}" && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
+  if [[ -r "${repo_root}/ansible/${USERS_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${USERS_SUPPORT_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${USERS_COMMON_SUPPORT_FILE_REL}" \
+        && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
+    PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
     USERS_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${USERS_PLAYBOOK_REL}"
+    USERS_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${USERS_SUPPORT_PLAYBOOK_REL}"
+    USERS_COMMON_SUPPORT_FILE_PATH="${PLAYBOOK_ROOT}/${USERS_COMMON_SUPPORT_FILE_REL}"
     log "Using local feature files from ${repo_root}."
     return 0
   fi
@@ -323,8 +340,10 @@ prepare.feature.files() {
     return
   fi
 
-  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}"
+  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}" "${PLAYBOOK_DEBIAN_DIR}"
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
+  fetch.feature.file "${USERS_SUPPORT_PLAYBOOK_URL}" "${USERS_SUPPORT_PLAYBOOK_PATH}"
+  fetch.feature.file "${USERS_COMMON_SUPPORT_FILE_URL}" "${USERS_COMMON_SUPPORT_FILE_PATH}"
   fetch.feature.file "${USERS_PLAYBOOK_URL}" "${USERS_PLAYBOOK_PATH}"
 }
 

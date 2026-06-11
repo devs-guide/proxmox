@@ -8,6 +8,7 @@ BASE_URL="${BASE_URL:-https://devs-guide.github.io/proxmox}"
 WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATIC_DIR="${STATIC_DIR:-${WORKDIR}/static}"
 VALIDATE_PAGES_MODE="${VALIDATE_PAGES_MODE:-remote}"
+VALIDATE_PAGES_GRAPH_ONLY="${VALIDATE_PAGES_GRAPH_ONLY:-0}"
 TMPDIR="$(mktemp -d)"
 if [[ "${VALIDATE_PAGES_MODE}" != "local" && "${VALIDATE_PAGES_MODE}" != "remote" ]]; then
   echo "[validate.pages][error] invalid VALIDATE_PAGES_MODE=${VALIDATE_PAGES_MODE}; must be local|remote"
@@ -36,6 +37,14 @@ fetch_artifact() {
     echo "[validate.pages][error] failed to fetch ${url}"
     return 1
   fi
+}
+
+is.true() {
+  local value="${1:-}"
+  case "${value,,}" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 echo "[validate.pages] mode: ${VALIDATE_PAGES_MODE}"
@@ -71,6 +80,9 @@ FILES=(
   "ansible/proxmox/container/samba.file.share.yml:ansible/proxmox/container/samba.file.share.yml"
   "ansible/proxmox/container/network.access.yml:ansible/proxmox/container/network.access.yml"
   "ansible/debian/install.packages.yml:ansible/debian/install.packages.yml"
+  "ansible/debian/node.yml:ansible/debian/node.yml"
+  "ansible/debian/cli.codex.yml:ansible/debian/cli.codex.yml"
+  "ansible/debian/users.yml:ansible/debian/users.yml"
   "ansible/debian/netboot.yml:ansible/debian/netboot.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
   "ansible/debian/ssh.yml:ansible/debian/ssh.yml"
@@ -85,39 +97,139 @@ GENERATED_FILES=(
 )
 
 rc=0
-for entry in "${FILES[@]}"; do
-  remote_path="${entry%%:*}"
-  local_path="${entry#*:}"
-  dest="${TMPDIR}/${remote_path}"
-  mkdir -p "$(dirname "${dest}")"
+if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
+  for entry in "${FILES[@]}"; do
+    remote_path="${entry%%:*}"
+    local_path="${entry#*:}"
+    dest="${TMPDIR}/${remote_path}"
+    mkdir -p "$(dirname "${dest}")"
 
-  if ! fetch_artifact "${remote_path}" "${dest}"; then
+    if ! fetch_artifact "${remote_path}" "${dest}"; then
+      rc=1
+      continue
+    fi
+
+    if ! diff -u "${WORKDIR}/${local_path}" "${dest}" >/dev/null; then
+      if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+        echo "[validate.pages][diff] ${local_path} differs from generated ${STATIC_DIR}/${remote_path}"
+      else
+        echo "[validate.pages][diff] ${local_path} differs from published ${BASE_URL}/${remote_path}"
+      fi
+      diff -u "${WORKDIR}/${local_path}" "${dest}" || true
+      rc=1
+    else
+      if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+        echo "[validate.pages][ok] ${local_path} matches generated ${STATIC_DIR}/${remote_path}"
+      else
+        echo "[validate.pages][ok] ${local_path} matches published ${BASE_URL}/${remote_path}"
+      fi
+    fi
+  done
+fi
+
+read.runner.array() {
+  local runner_path="$1"
+  local array_name="$2"
+  local required="$3"
+  local feature_ref=""
+
+  RUNNER_ARRAY_REFS=()
+  while IFS= read -r feature_ref; do
+    [[ -n "${feature_ref}" ]] || continue
+    RUNNER_ARRAY_REFS+=("${feature_ref}")
+  done < <(
+    sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner_path}" \
+      | grep -Eo '"[^"]+"' \
+      | tr -d '"'
+  )
+
+  if ((${#RUNNER_ARRAY_REFS[@]} == 0)) && [[ "${required}" == "1" ]]; then
+    echo "[validate.pages][error] ${runner_path#${WORKDIR}/} has empty or missing ${array_name} array"
     rc=1
-    continue
+    return 1
   fi
 
-  if ! diff -u "${WORKDIR}/${local_path}" "${dest}" >/dev/null; then
-    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
-      echo "[validate.pages][diff] ${local_path} differs from generated ${STATIC_DIR}/${remote_path}"
-    else
-      echo "[validate.pages][diff] ${local_path} differs from published ${BASE_URL}/${remote_path}"
-    fi
-    diff -u "${WORKDIR}/${local_path}" "${dest}" || true
+  return 0
+}
+
+check_artifact_ref() {
+  local runner_rel="$1"
+  local feature_ref="$2"
+  local local_playbook="ansible/${feature_ref}"
+  local remote_playbook="${local_playbook}"
+  local tmp_playbook="${TMPDIR}/${remote_playbook}"
+  local compare_hint=""
+
+  if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
+    echo "[validate.pages][error] ${runner_rel} references missing local artifact: ${local_playbook}"
     rc=1
+    return 1
+  fi
+
+  if ! fetch_artifact "${remote_playbook}" "${tmp_playbook}"; then
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      echo "[validate.pages][error] failed to fetch setup dependency ${STATIC_DIR}/${remote_playbook}"
+    else
+      echo "[validate.pages][error] failed to fetch setup dependency ${BASE_URL}/${remote_playbook}"
+    fi
+    rc=1
+    return 1
+  fi
+
+  if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+    compare_hint="${STATIC_DIR}/${remote_playbook}"
   else
-    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
-      echo "[validate.pages][ok] ${local_path} matches generated ${STATIC_DIR}/${remote_path}"
-    else
-      echo "[validate.pages][ok] ${local_path} matches published ${BASE_URL}/${remote_path}"
-    fi
+    compare_hint="${BASE_URL}/${remote_playbook}"
   fi
-done
+
+  if ! diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" >/dev/null; then
+    echo "[validate.pages][diff] ${local_playbook} differs from ${compare_hint}"
+    diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" || true
+    rc=1
+    return 1
+  fi
+
+  echo "[validate.pages][ok] ${local_playbook} matches ${compare_hint}"
+}
+
+normalize.rel.path() {
+  local path="$1"
+  local -a parts=()
+  local -a normalized=()
+  local part=""
+
+  IFS='/' read -r -a parts <<< "${path}"
+  for part in "${parts[@]}"; do
+    case "${part}" in
+      ""|.) ;;
+      ..)
+        if ((${#normalized[@]} > 0)); then
+          unset "normalized[${#normalized[@]}-1]"
+        fi
+        ;;
+      *)
+        normalized+=("${part}")
+        ;;
+    esac
+  done
+
+  (IFS='/'; printf '%s\n' "${normalized[*]}")
+}
+
+resolve.wrapper.dep.path() {
+  local wrapper_rel="$1"
+  local dep_rel="$2"
+  dep_rel="${dep_rel#/}"
+  normalize.rel.path "$(dirname "${wrapper_rel}")/${dep_rel}"
+}
 
 check_setup_feature_refs() {
   local runner_rel="$1"
   local runner_path="${WORKDIR}/${runner_rel}"
-  local feature_ref
-  local -a _setup_feature_refs=()
+  local feature_ref=""
+  local -a playbook_refs=()
+  local -a support_refs=()
+  local -a setup_feature_refs=()
 
   if [[ ! -f "${runner_path}" ]]; then
     echo "[validate.pages][error] missing local setup runner: ${runner_path}"
@@ -125,57 +237,52 @@ check_setup_feature_refs() {
     return
   fi
 
-  while IFS= read -r feature_ref; do
-    [[ -n "${feature_ref}" ]] || continue
-    _setup_feature_refs+=("${feature_ref}")
-  done < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner_path}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
+  if ! read.runner.array "${runner_path}" "FEATURE_PLAYBOOKS" "1"; then
+    return
+  fi
+  playbook_refs=( "${RUNNER_ARRAY_REFS[@]}" )
 
-  if ((${#_setup_feature_refs[@]} == 0)); then
-    echo "[validate.pages][error] ${runner_rel} has empty or missing FEATURE_PLAYBOOKS array"
+  read.runner.array "${runner_path}" "FEATURE_SUPPORT_FILES" "0" || true
+  support_refs=( "${RUNNER_ARRAY_REFS[@]}" )
+  setup_feature_refs=( "${playbook_refs[@]}" "${support_refs[@]}" )
+
+  for feature_ref in "${setup_feature_refs[@]}"; do
+    check_artifact_ref "${runner_rel}" "${feature_ref}" || true
+  done
+}
+
+check_wrapper_dependency_graph() {
+  local wrapper_rel="$1"
+  local wrapper_tmp="${TMPDIR}/${wrapper_rel}"
+  local dep_rel=""
+  local resolved_rel=""
+  local resolved_tmp=""
+
+  if ! fetch_artifact "${wrapper_rel}" "${wrapper_tmp}"; then
+    echo "[validate.pages][error] failed to fetch wrapper dependency root ${wrapper_rel}"
     rc=1
     return
   fi
 
-  for feature_ref in "${_setup_feature_refs[@]}"; do
-    local local_playbook="ansible/${feature_ref}"
-    local remote_playbook="${local_playbook}"
-    local tmp_playbook="${TMPDIR}/${remote_playbook}"
-    local compare_hint
-
-  if [[ ! -f "${WORKDIR}/${local_playbook}" ]]; then
-    echo "[validate.pages][error] ${runner_rel} references missing local playbook: ${local_playbook}"
-    rc=1
-    continue
-  fi
-
-    if ! fetch_artifact "${remote_playbook}" "${tmp_playbook}"; then
-      if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
-        echo "[validate.pages][error] failed to fetch setup dependency ${STATIC_DIR}/${remote_playbook}"
-      else
-        echo "[validate.pages][error] failed to fetch setup dependency ${BASE_URL}/${remote_playbook}"
-      fi
+  while IFS= read -r dep_rel; do
+    [[ -n "${dep_rel}" ]] || continue
+    resolved_rel="$(resolve.wrapper.dep.path "${wrapper_rel}" "${dep_rel}")"
+    resolved_tmp="${TMPDIR}/${resolved_rel}"
+    if ! fetch_artifact "${resolved_rel}" "${resolved_tmp}"; then
+      echo "[validate.pages][error] wrapper dependency missing from published tree: ${wrapper_rel} -> ${dep_rel} -> ${resolved_rel}"
       rc=1
-      continue
     fi
+  done < <(sed -n 's/^[[:space:]-]*import_playbook:[[:space:]]*//p' "${wrapper_tmp}" | sed 's/[[:space:]]*$//')
 
-    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
-      compare_hint="${STATIC_DIR}/${remote_playbook}"
-    else
-      compare_hint="${BASE_URL}/${remote_playbook}"
-    fi
-
-    if ! diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" >/dev/null; then
-      echo "[validate.pages][diff] ${local_playbook} differs from ${compare_hint}"
-      diff -u "${WORKDIR}/${local_playbook}" "${tmp_playbook}" || true
+  while IFS= read -r dep_rel; do
+    [[ -n "${dep_rel}" ]] || continue
+    resolved_rel="$(resolve.wrapper.dep.path "${wrapper_rel}" "${dep_rel}")"
+    resolved_tmp="${TMPDIR}/${resolved_rel}"
+    if ! fetch_artifact "${resolved_rel}" "${resolved_tmp}"; then
+      echo "[validate.pages][error] wrapper file lookup missing from published tree: ${wrapper_rel} -> ${dep_rel} -> ${resolved_rel}"
       rc=1
-    else
-      echo "[validate.pages][ok] ${local_playbook} matches ${compare_hint}"
     fi
-  done
+  done < <(sed -n "s/.*playbook_dir ~ '\\([^']\\+\\)'.*/\\1/p" "${wrapper_tmp}")
 }
 
 check_generated_file_artifacts() {
@@ -273,8 +380,10 @@ check_playlist_refs() {
   done < <(sed 's/[[:space:]]*$//' "${WORKDIR}/${playlist_path}" | grep -vE '^[[:space:]]*(#|$)')
 }
 
-check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
-check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
+if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
+  check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
+  check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
+fi
 check_setup_feature_refs "setup/vlan.sh"
 check_setup_feature_refs "setup/network.sh"
 check_setup_feature_refs "setup/cli.codex.sh"
@@ -283,6 +392,11 @@ check_setup_feature_refs "setup/lxc/samba.sh"
 check_setup_feature_refs "setup/lxc/network.sh"
 check_setup_feature_refs "setup/lxc/codex.sh"
 check_setup_feature_refs "setup/lxc/users.sh"
+check_wrapper_dependency_graph "ansible/proxmox/container/node.yml"
+check_wrapper_dependency_graph "ansible/proxmox/container/codex.yml"
+check_wrapper_dependency_graph "ansible/proxmox/container/users.yml"
+check_wrapper_dependency_graph "ansible/proxmox/container/debian.yml"
+check_wrapper_dependency_graph "ansible/proxmox/container/debian.base.yml"
 
 check_published_samba_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/samba.sh"
@@ -580,15 +694,17 @@ check_published_network_playbook_policy() {
   done
 }
 
-check_published_samba_runner_policy
-check_published_release91_bootstrap_policy
-check_published_debian_lxc_policy
-check_published_debian_lxc_playbook_policy
-check_published_debian_base_bootstrap
-check_published_samba_playbook_policy
-check_published_network_runner_policy
-check_published_network_playbook_policy
-check_generated_file_artifacts
+if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
+  check_published_samba_runner_policy
+  check_published_release91_bootstrap_policy
+  check_published_debian_lxc_policy
+  check_published_debian_lxc_playbook_policy
+  check_published_debian_base_bootstrap
+  check_published_samba_playbook_policy
+  check_published_network_runner_policy
+  check_published_network_playbook_policy
+  check_generated_file_artifacts
+fi
 
 check_published_lxc_network_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/network.sh"
@@ -634,7 +750,9 @@ check_published_lxc_network_runner_policy() {
   done
 }
 
-check_published_lxc_network_runner_policy
+if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
+  check_published_lxc_network_runner_policy
+fi
 
 rm -rf "${TMPDIR}"
 exit "${rc}"

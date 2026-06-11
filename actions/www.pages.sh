@@ -139,180 +139,64 @@ load.whitelist.ansible() {
   PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, of playbook files
 }
 
-load.setup.vlan.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_VLAN_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_VLAN_RUNNER} not found; skipping setup-vlan playbook refs"
-    PKGS[setup_vlan]=""
-    return 0
-  }
+load.runner.array_from_script() {
+  local runner="$1"
+  local array_name="$2"
+  local pkg_key="$3"
+  local required="$4"
+  local -a runner_items=()
 
-  mapfile -t _setup_vlan_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
+  mapfile -t runner_items < <(
+    sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner}" \
       | grep -Eo '"[^"]+"' \
       | tr -d '"'
   )
 
-  if ((${#_setup_vlan_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_VLAN_RUNNER}"
-    exit 1
+  if ((${#runner_items[@]} == 0)); then
+    if [[ "${required}" == "1" ]]; then
+      log.error "[www.pages] ERROR[whitelist]: ${array_name} array missing/empty in ${runner#${PATH_TO[root]}/}"
+      exit 1
+    fi
+    PKGS[${pkg_key}]=""
+    return 0
   fi
 
-  PKGS[setup_vlan]="${_setup_vlan_items[*]}"
+  PKGS[${pkg_key}]="${runner_items[*]}"
 }
 
-load.setup.network.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_NETWORK_RUNNER}"
+load.setup.runner.refs() {
+  local runner_rel="$1"
+  local pkg_key="$2"
+  local runner="${PATH_TO[root]}/${runner_rel}"
+
   [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_NETWORK_RUNNER} not found; skipping setup-network playbook refs"
-    PKGS[setup_network]=""
+    log.warn "[www.pages] ${runner_rel} not found; skipping runner refs"
+    PKGS[${pkg_key}]=""
+    PKGS[${pkg_key}_support]=""
     return 0
   }
 
-  mapfile -t _setup_network_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_network_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_NETWORK_RUNNER}"
-    exit 1
-  fi
-
-  PKGS[setup_network]="${_setup_network_items[*]}"
+  load.runner.array_from_script "${runner}" "FEATURE_PLAYBOOKS" "${pkg_key}" "1"
+  load.runner.array_from_script "${runner}" "FEATURE_SUPPORT_FILES" "${pkg_key}_support" "0"
 }
 
-load.setup.cli_codex.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_CLI_CODEX_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_CLI_CODEX_RUNNER} not found; skipping setup-cli-codex playbook refs"
-    PKGS[setup_cli_codex]=""
-    return 0
-  }
+add.pkg.refs_to_shared_playbooks() {
+  local pkg_key="$1"
+  local -n out_refs="$2"
+  local playbook_ref
 
-  mapfile -t _setup_cli_codex_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_cli_codex_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_CLI_CODEX_RUNNER}"
-    exit 1
-  fi
-
-  PKGS[setup_cli_codex]="${_setup_cli_codex_items[*]}"
+  for playbook_ref in ${PKGS[${pkg_key}]:-}; do
+    out_refs["$(normalize.shared.playbook.ref "${playbook_ref}")"]=1
+  done
 }
 
-load.setup.samba.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_SAMBA_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_SAMBA_RUNNER} not found; skipping setup-samba playbook refs"
-    PKGS[setup_samba]=""
-    return 0
-  }
+log.pkg.entries() {
+  local pkg_key="$1"
+  local label="$2"
 
-  mapfile -t _setup_samba_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_samba_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_SAMBA_RUNNER}"
-    exit 1
+  if [[ -n "${PKGS[${pkg_key}]:-}" ]]; then
+    log.info "[www.pages] ${label}: ${PKGS[${pkg_key}]}"
   fi
-
-  PKGS[setup_samba]="${_setup_samba_items[*]}"
-}
-
-load.setup.lxc_network.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_LXC_NETWORK_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_LXC_NETWORK_RUNNER} not found; skipping setup-lxc-network playbook refs"
-    PKGS[setup_lxc_network]=""
-    return 0
-  }
-
-  mapfile -t _setup_lxc_network_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_lxc_network_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_LXC_NETWORK_RUNNER}"
-    exit 1
-  fi
-
-  PKGS[setup_lxc_network]="${_setup_lxc_network_items[*]}"
-}
-
-load.setup.lxc_codex.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_LXC_CODEX_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_LXC_CODEX_RUNNER} not found; skipping setup-lxc-codex playbook refs"
-    PKGS[setup_lxc_codex]=""
-    return 0
-  }
-
-  mapfile -t _setup_lxc_codex_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_lxc_codex_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_LXC_CODEX_RUNNER}"
-    exit 1
-  fi
-
-  PKGS[setup_lxc_codex]="${_setup_lxc_codex_items[*]}"
-}
-
-load.setup.lxc_users.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_LXC_USERS_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_LXC_USERS_RUNNER} not found; skipping setup-lxc-users playbook refs"
-    PKGS[setup_lxc_users]=""
-    return 0
-  }
-
-  mapfile -t _setup_lxc_users_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_lxc_users_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_LXC_USERS_RUNNER}"
-    exit 1
-  fi
-
-  PKGS[setup_lxc_users]="${_setup_lxc_users_items[*]}"
-}
-
-load.setup.debian_lxc.playbooks() {
-  local runner="${PATH_TO[root]}/${SETUP_DEBIAN_LXC_RUNNER}"
-  [[ -f "${runner}" ]] || {
-    log.warn "[www.pages] ${SETUP_DEBIAN_LXC_RUNNER} not found; skipping setup-debian-lxc playbook refs"
-    PKGS[setup_debian_lxc]=""
-    return 0
-  }
-
-  mapfile -t _setup_debian_lxc_items < <(
-    sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
-
-  if ((${#_setup_debian_lxc_items[@]} == 0)); then
-    log.error "[www.pages] ERROR[whitelist]: FEATURE_PLAYBOOKS array missing/empty in ${SETUP_DEBIAN_LXC_RUNNER}"
-    exit 1
-  fi
-
-  PKGS[setup_debian_lxc]="${_setup_debian_lxc_items[*]}"
 }
 
 load.release.playbook.refs() {
@@ -505,45 +389,37 @@ publish.ansible() {
   load.release.playbook.refs "6.4" shared_playbooks
   load.release.playbook.refs "9.1" shared_playbooks
 
-  load.setup.vlan.playbooks
-  for playbook_to_run in ${PKGS[setup_vlan]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_VLAN_RUNNER}" "setup_vlan"
+  add.pkg.refs_to_shared_playbooks "setup_vlan" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_vlan_support" shared_playbooks
 
-  load.setup.network.playbooks
-  for playbook_to_run in ${PKGS[setup_network]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_NETWORK_RUNNER}" "setup_network"
+  add.pkg.refs_to_shared_playbooks "setup_network" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_network_support" shared_playbooks
 
-  load.setup.cli_codex.playbooks
-  for playbook_to_run in ${PKGS[setup_cli_codex]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_CLI_CODEX_RUNNER}" "setup_cli_codex"
+  add.pkg.refs_to_shared_playbooks "setup_cli_codex" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_cli_codex_support" shared_playbooks
 
-  load.setup.samba.playbooks
-  for playbook_to_run in ${PKGS[setup_samba]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_SAMBA_RUNNER}" "setup_samba"
+  add.pkg.refs_to_shared_playbooks "setup_samba" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_samba_support" shared_playbooks
 
-  load.setup.lxc_network.playbooks
-  for playbook_to_run in ${PKGS[setup_lxc_network]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_LXC_NETWORK_RUNNER}" "setup_lxc_network"
+  add.pkg.refs_to_shared_playbooks "setup_lxc_network" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_lxc_network_support" shared_playbooks
 
-  load.setup.lxc_codex.playbooks
-  for playbook_to_run in ${PKGS[setup_lxc_codex]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_LXC_CODEX_RUNNER}" "setup_lxc_codex"
+  add.pkg.refs_to_shared_playbooks "setup_lxc_codex" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_lxc_codex_support" shared_playbooks
 
-  load.setup.lxc_users.playbooks
-  for playbook_to_run in ${PKGS[setup_lxc_users]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_LXC_USERS_RUNNER}" "setup_lxc_users"
+  add.pkg.refs_to_shared_playbooks "setup_lxc_users" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_lxc_users_support" shared_playbooks
 
-  load.setup.debian_lxc.playbooks
-  for playbook_to_run in ${PKGS[setup_debian_lxc]:-}; do
-    shared_playbooks["$(normalize.shared.playbook.ref "${playbook_to_run}")"]=1
-  done
+  load.setup.runner.refs "${SETUP_DEBIAN_LXC_RUNNER}" "setup_debian_lxc"
+  add.pkg.refs_to_shared_playbooks "setup_debian_lxc" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_debian_lxc_support" shared_playbooks
 
   for playbook_to_run in "${!shared_playbooks[@]}"; do
     rsync_includes+=( "--include=${playbook_to_run}" )
@@ -552,30 +428,22 @@ publish.ansible() {
   rsync_includes+=( "--include=dell/**" )
 
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
-  if [[ -n "${PKGS[setup_vlan]:-}" ]]; then
-    log.info "[www.pages] setup vlan entries: ${PKGS[setup_vlan]}"
-  fi
-  if [[ -n "${PKGS[setup_network]:-}" ]]; then
-    log.info "[www.pages] setup network entries: ${PKGS[setup_network]}"
-  fi
-  if [[ -n "${PKGS[setup_cli_codex]:-}" ]]; then
-    log.info "[www.pages] setup cli codex entries: ${PKGS[setup_cli_codex]}"
-  fi
-  if [[ -n "${PKGS[setup_samba]:-}" ]]; then
-    log.info "[www.pages] setup samba entries: ${PKGS[setup_samba]}"
-  fi
-  if [[ -n "${PKGS[setup_lxc_network]:-}" ]]; then
-    log.info "[www.pages] setup lxc network entries: ${PKGS[setup_lxc_network]}"
-  fi
-  if [[ -n "${PKGS[setup_lxc_codex]:-}" ]]; then
-    log.info "[www.pages] setup lxc codex entries: ${PKGS[setup_lxc_codex]}"
-  fi
-  if [[ -n "${PKGS[setup_lxc_users]:-}" ]]; then
-    log.info "[www.pages] setup lxc users entries: ${PKGS[setup_lxc_users]}"
-  fi
-  if [[ -n "${PKGS[setup_debian_lxc]:-}" ]]; then
-    log.info "[www.pages] setup debian lxc entries: ${PKGS[setup_debian_lxc]}"
-  fi
+  log.pkg.entries "setup_vlan" "setup vlan entries"
+  log.pkg.entries "setup_vlan_support" "setup vlan support entries"
+  log.pkg.entries "setup_network" "setup network entries"
+  log.pkg.entries "setup_network_support" "setup network support entries"
+  log.pkg.entries "setup_cli_codex" "setup cli codex entries"
+  log.pkg.entries "setup_cli_codex_support" "setup cli codex support entries"
+  log.pkg.entries "setup_samba" "setup samba entries"
+  log.pkg.entries "setup_samba_support" "setup samba support entries"
+  log.pkg.entries "setup_lxc_network" "setup lxc network entries"
+  log.pkg.entries "setup_lxc_network_support" "setup lxc network support entries"
+  log.pkg.entries "setup_lxc_codex" "setup lxc codex entries"
+  log.pkg.entries "setup_lxc_codex_support" "setup lxc codex support entries"
+  log.pkg.entries "setup_lxc_users" "setup lxc users entries"
+  log.pkg.entries "setup_lxc_users_support" "setup lxc users support entries"
+  log.pkg.entries "setup_debian_lxc" "setup debian lxc entries"
+  log.pkg.entries "setup_debian_lxc_support" "setup debian lxc support entries"
 
   rsync -av \
     --include='*/' \

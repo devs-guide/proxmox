@@ -14,6 +14,7 @@ TMP_DIR="/tmp/pve-feature-lxc-codex"
 PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
 PLAYBOOK_ROOT="${TMP_DIR}/ansible"
 PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
+PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
 LOCAL_COMMON_HELPER="../../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
 COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
@@ -25,12 +26,22 @@ FEATURE_PLAYBOOKS=(
   "proxmox/container/node.yml"
   "proxmox/container/codex.yml"
 )
+FEATURE_SUPPORT_FILES=(
+  "debian/node.yml"
+  "debian/cli.codex.yml"
+)
 NODE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 CODEX_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
+NODE_SUPPORT_PLAYBOOK_REL="${FEATURE_SUPPORT_FILES[0]}"
+CODEX_SUPPORT_PLAYBOOK_REL="${FEATURE_SUPPORT_FILES[1]}"
 NODE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NODE_PLAYBOOK_REL}"
 CODEX_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${CODEX_PLAYBOOK_REL}"
 NODE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_PLAYBOOK_REL}"
 CODEX_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_PLAYBOOK_REL}"
+NODE_SUPPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NODE_SUPPORT_PLAYBOOK_REL}"
+CODEX_SUPPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${CODEX_SUPPORT_PLAYBOOK_REL}"
+NODE_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_SUPPORT_PLAYBOOK_REL}"
+CODEX_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_SUPPORT_PLAYBOOK_REL}"
 LXC_CODEX_EXTRA_VARS_PATH="${TMP_DIR}/lxc.codex.extra-vars.yml"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
@@ -216,12 +227,19 @@ use.local.feature.files() {
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   repo_root="$(cd "${script_dir}/../.." && pwd)"
 
-  if [[ -r "${repo_root}/ansible/${NODE_PLAYBOOK_REL}" && -r "${repo_root}/ansible/${CODEX_PLAYBOOK_REL}" && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
+  if [[ -r "${repo_root}/ansible/${NODE_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${CODEX_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${NODE_SUPPORT_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${CODEX_SUPPORT_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
+    PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
     NODE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_PLAYBOOK_REL}"
     CODEX_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_PLAYBOOK_REL}"
+    NODE_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_SUPPORT_PLAYBOOK_REL}"
+    CODEX_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_SUPPORT_PLAYBOOK_REL}"
     log "Using local feature files from ${repo_root}."
     return 0
   fi
@@ -249,8 +267,10 @@ prepare.feature.files() {
     return
   fi
 
-  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}"
+  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}" "${PLAYBOOK_DEBIAN_DIR}"
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
+  fetch.feature.file "${NODE_SUPPORT_PLAYBOOK_URL}" "${NODE_SUPPORT_PLAYBOOK_PATH}"
+  fetch.feature.file "${CODEX_SUPPORT_PLAYBOOK_URL}" "${CODEX_SUPPORT_PLAYBOOK_PATH}"
   fetch.feature.file "${NODE_PLAYBOOK_URL}" "${NODE_PLAYBOOK_PATH}"
   fetch.feature.file "${CODEX_PLAYBOOK_URL}" "${CODEX_PLAYBOOK_PATH}"
 }

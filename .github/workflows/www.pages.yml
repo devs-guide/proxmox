@@ -49,6 +49,13 @@ jobs:
           STATIC_DIR: ./static
         run: ./actions/validate.pages.sh
 
+      - name: Validate staged wrapper dependency graph before deploy
+        env:
+          VALIDATE_PAGES_MODE: local
+          STATIC_DIR: ./static
+          VALIDATE_PAGES_GRAPH_ONLY: 1
+        run: ./actions/validate.pages.sh
+
       - name: Deploy static/ to www branch (GitHub Pages)
         uses: peaceiris/actions-gh-pages@v4
         with:

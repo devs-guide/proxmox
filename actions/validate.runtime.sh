@@ -254,6 +254,18 @@ if ! grep -q '"proxmox/container/codex.yml"' "${ROOT}/setup/lxc/codex.sh"; then
   echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_PLAYBOOKS is missing proxmox/container/codex.yml"
   exit 1
 fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh does not define FEATURE_SUPPORT_FILES array"
+  exit 1
+fi
+if ! grep -q '"debian/node.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_SUPPORT_FILES is missing debian/node.yml"
+  exit 1
+fi
+if ! grep -q '"debian/cli.codex.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_SUPPORT_FILES is missing debian/cli.codex.yml"
+  exit 1
+fi
 if ! grep -q 'LXC_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/codex.sh"; then
   echo "[validate.runtime][error] setup/lxc/codex.sh is missing LXC_CODEX_EXTRA_VARS_PATH"
   exit 1
@@ -290,6 +302,14 @@ if ! grep -q 'NODE_INSTALL_SCOPE="${PROXMOX_LXC_CODEX_NODE_INSTALL_SCOPE:-shared
   echo "[validate.runtime][error] setup/lxc/codex.sh must default to shared Node install scope for multi-user containers"
   exit 1
 fi
+if ! grep -q 'import_playbook: ../../debian/node.yml' "${ROOT}/ansible/proxmox/container/node.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/node.yml must import ../../debian/node.yml"
+  exit 1
+fi
+if ! grep -q 'import_playbook: ../../debian/cli.codex.yml' "${ROOT}/ansible/proxmox/container/codex.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/codex.yml must import ../../debian/cli.codex.yml"
+  exit 1
+fi
 echo "[validate.runtime][ok] setup/lxc/codex.sh exposes the LXC wrapper entrypoint contract"
 
 echo "[validate.runtime] checking Proxmox LXC users runner contract..."
@@ -299,6 +319,18 @@ if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/users.sh"; then
 fi
 if ! grep -q '"proxmox/container/users.yml"' "${ROOT}/setup/lxc/users.sh"; then
   echo "[validate.runtime][error] setup/lxc/users.sh FEATURE_PLAYBOOKS is missing proxmox/container/users.yml"
+  exit 1
+fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh does not define FEATURE_SUPPORT_FILES array"
+  exit 1
+fi
+if ! grep -q '"debian/users.yml"' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh FEATURE_SUPPORT_FILES is missing debian/users.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/container/common.yml"' "${ROOT}/setup/lxc/users.sh"; then
+  echo "[validate.runtime][error] setup/lxc/users.sh FEATURE_SUPPORT_FILES is missing proxmox/container/common.yml"
   exit 1
 fi
 if ! grep -q 'LXC_USERS_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/users.sh"; then
@@ -343,6 +375,10 @@ if ! grep -q 'PROXMOX_LXC_COMMON_BASELINE_USERS=.*root app agent' "${ROOT}/setup
 fi
 if ! grep -q 'verify.managed.users()' "${ROOT}/setup/lxc/users.sh"; then
   echo "[validate.runtime][error] setup/lxc/users.sh must verify managed users after apply"
+  exit 1
+fi
+if ! grep -q 'import_playbook: ../../debian/users.yml' "${ROOT}/ansible/proxmox/container/users.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/users.yml must import ../../debian/users.yml"
   exit 1
 fi
 echo "[validate.runtime][ok] setup/lxc/users.sh exposes the Debian-in-LXC default users runner contract"
@@ -498,6 +534,26 @@ if ! grep -q '"proxmox/container/debian.lxc.yml"' "${ROOT}/setup/lxc/debian.sh";
 fi
 if ! grep -Eq '"proxmox/container/debian(\.base)?\.yml"' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_PLAYBOOKS is missing proxmox/container/debian.yml"
+  exit 1
+fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh does not define FEATURE_SUPPORT_FILES array"
+  exit 1
+fi
+if ! grep -q '"debian/netboot.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_SUPPORT_FILES is missing debian/netboot.yml"
+  exit 1
+fi
+if ! grep -q '"debian/ssh.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_SUPPORT_FILES is missing debian/ssh.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/container/debian.base.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_SUPPORT_FILES is missing proxmox/container/debian.base.yml"
+  exit 1
+fi
+if ! grep -q '"proxmox/common.yml"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh FEATURE_SUPPORT_FILES is missing proxmox/common.yml"
   exit 1
 fi
 if ! grep -q '/dev/tty' "${ROOT}/setup/lxc/debian.sh"; then
@@ -1278,36 +1334,28 @@ if grep -qE '(^|[[:space:]])proxmox/' "${ROOT}/ansible/debian/install.playbooks.
   echo "[validate.runtime][error] ansible/debian/install.playbooks.txt must remain Debian-only (found proxmox entry)"
   exit 1
 fi
-if ! grep -q 'load.setup.vlan.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/vlan.sh feature playbook refs"
+if ! grep -q 'load.runner.array_from_script' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must parse runner arrays through a shared loader"
   exit 1
 fi
-if ! grep -q 'load.setup.network.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/network.sh feature playbook refs"
+if ! grep -q 'load.setup.runner.refs' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must load setup runner feature refs through the shared loader"
   exit 1
 fi
-if ! grep -q 'load.setup.cli_codex.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/cli.codex.sh feature playbook refs"
+if ! grep -q 'FEATURE_SUPPORT_FILES' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish FEATURE_SUPPORT_FILES dependencies"
   exit 1
 fi
-if ! grep -q 'load.setup.samba.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/samba.sh feature playbook refs"
+if ! grep -q 'setup_lxc_codex_support' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must collect support refs for setup/lxc/codex.sh"
   exit 1
 fi
-if ! grep -q 'load.setup.lxc_network.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/network.sh feature playbook refs"
+if ! grep -q 'setup_lxc_users_support' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must collect support refs for setup/lxc/users.sh"
   exit 1
 fi
-if ! grep -q 'load.setup.lxc_codex.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/codex.sh feature playbook refs"
-  exit 1
-fi
-if ! grep -q 'load.setup.lxc_users.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/users.sh feature playbook refs"
-  exit 1
-fi
-if ! grep -q 'load.setup.debian_lxc.playbooks' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh does not load setup/lxc/debian.sh feature playbook refs"
+if ! grep -q 'setup_debian_lxc_support' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must collect support refs for setup/lxc/debian.sh"
   exit 1
 fi
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then

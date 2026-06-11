@@ -46,12 +46,26 @@ FEATURE_PLAYBOOKS=(
   "proxmox/container/debian.lxc.yml"
   "proxmox/container/debian.yml"
 )
+FEATURE_SUPPORT_FILES=(
+  "debian/netboot.yml"
+  "debian/ssh.yml"
+  "proxmox/container/debian.base.yml"
+  "proxmox/common.yml"
+)
 DEBIAN_LXC_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
-DEBIAN_BASE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
+DEBIAN_HARDEN_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
+DEBIAN_NETBOOT_SUPPORT_REL="${FEATURE_SUPPORT_FILES[0]}"
+DEBIAN_SSH_SUPPORT_REL="${FEATURE_SUPPORT_FILES[1]}"
+DEBIAN_BASE_SUPPORT_REL="${FEATURE_SUPPORT_FILES[2]}"
+PROXMOX_COMMON_SUPPORT_REL="${FEATURE_SUPPORT_FILES[3]}"
 DEBIAN_LXC_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${DEBIAN_LXC_PLAYBOOK_REL}"
 DEBIAN_LXC_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_LXC_PLAYBOOK_REL}"
-DEBIAN_BASE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${DEBIAN_BASE_PLAYBOOK_REL}"
-DEBIAN_BASE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_BASE_PLAYBOOK_REL}"
+DEBIAN_HARDEN_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${DEBIAN_HARDEN_PLAYBOOK_REL}"
+DEBIAN_HARDEN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_HARDEN_PLAYBOOK_REL}"
+DEBIAN_BASE_SUPPORT_URL="${PAGES_BASE_URL}/ansible/${DEBIAN_BASE_SUPPORT_REL}"
+DEBIAN_BASE_SUPPORT_PATH="${PLAYBOOK_ROOT}/${DEBIAN_BASE_SUPPORT_REL}"
+PROXMOX_COMMON_SUPPORT_URL="${PAGES_BASE_URL}/ansible/${PROXMOX_COMMON_SUPPORT_REL}"
+PROXMOX_COMMON_SUPPORT_PATH="${PLAYBOOK_ROOT}/${PROXMOX_COMMON_SUPPORT_REL}"
 DEBIAN_LXC_EXTRA_VARS_PATH="${TMP_DIR}/lxc.debian.extra-vars.yml"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
@@ -592,7 +606,9 @@ use.local.feature.files() {
   repo_root="$(cd "${script_dir}/../.." && pwd)"
 
   if [[ -r "${repo_root}/ansible/${DEBIAN_LXC_PLAYBOOK_REL}" \
-        && -r "${repo_root}/ansible/${DEBIAN_BASE_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${DEBIAN_HARDEN_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${DEBIAN_BASE_SUPPORT_REL}" \
+        && -r "${repo_root}/ansible/${PROXMOX_COMMON_SUPPORT_REL}" \
         && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" \
         && -r "${repo_root}/ansible/debian/${NETBOOT_FILE}" \
         && -r "${repo_root}/ansible/debian/${SSH_POLICY_FILE}" ]]; then
@@ -603,7 +619,9 @@ use.local.feature.files() {
     NETBOOT_PATH="${PLAYBOOK_DEBIAN_DIR}/${NETBOOT_FILE}"
     SSH_POLICY_PATH="${PLAYBOOK_DEBIAN_DIR}/${SSH_POLICY_FILE}"
     DEBIAN_LXC_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_LXC_PLAYBOOK_REL}"
-    DEBIAN_BASE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_BASE_PLAYBOOK_REL}"
+    DEBIAN_HARDEN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${DEBIAN_HARDEN_PLAYBOOK_REL}"
+    DEBIAN_BASE_SUPPORT_PATH="${PLAYBOOK_ROOT}/${DEBIAN_BASE_SUPPORT_REL}"
+    PROXMOX_COMMON_SUPPORT_PATH="${PLAYBOOK_ROOT}/${PROXMOX_COMMON_SUPPORT_REL}"
     log "Using local feature files from ${repo_root}."
     return 0
   fi
@@ -634,8 +652,10 @@ prepare.feature.files() {
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
   fetch.feature.file "${NETBOOT_URL}" "${NETBOOT_PATH}"
   fetch.feature.file "${SSH_POLICY_URL}" "${SSH_POLICY_PATH}"
+  fetch.feature.file "${DEBIAN_BASE_SUPPORT_URL}" "${DEBIAN_BASE_SUPPORT_PATH}"
+  fetch.feature.file "${PROXMOX_COMMON_SUPPORT_URL}" "${PROXMOX_COMMON_SUPPORT_PATH}"
   fetch.feature.file "${DEBIAN_LXC_PLAYBOOK_URL}" "${DEBIAN_LXC_PLAYBOOK_PATH}"
-  fetch.feature.file "${DEBIAN_BASE_PLAYBOOK_URL}" "${DEBIAN_BASE_PLAYBOOK_PATH}"
+  fetch.feature.file "${DEBIAN_HARDEN_PLAYBOOK_URL}" "${DEBIAN_HARDEN_PLAYBOOK_PATH}"
 }
 
 run.feature.playbook() {
@@ -1749,7 +1769,7 @@ run.debian.feature() {
   log "Running Proxmox Debian LXC feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${DEBIAN_LXC_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
 
-  run.feature.playbook "${DEBIAN_BASE_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
+  run.feature.playbook "${DEBIAN_HARDEN_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
 
   log "Suggested next step:"
   log "pct exec ${SELECTED_CTID} -- bash -lc 'wget -qO- https://devs-guide.github.io/proxmox/setup/lxc/samba.sh | bash'"
