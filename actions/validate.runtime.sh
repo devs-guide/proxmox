@@ -266,6 +266,10 @@ if ! grep -q '"debian/cli.codex.yml"' "${ROOT}/setup/lxc/codex.sh"; then
   echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_SUPPORT_FILES is missing debian/cli.codex.yml"
   exit 1
 fi
+if ! grep -q '"proxmox/container/common.yml"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh FEATURE_SUPPORT_FILES is missing proxmox/container/common.yml"
+  exit 1
+fi
 if ! grep -q 'LXC_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/lxc/codex.sh"; then
   echo "[validate.runtime][error] setup/lxc/codex.sh is missing LXC_CODEX_EXTRA_VARS_PATH"
   exit 1
@@ -284,6 +288,18 @@ if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/codex.sh"; then
 fi
 if ! grep -q 'ensure.root.or.sudo.reexec' "${ROOT}/setup/lxc/codex.sh"; then
   echo "[validate.runtime][error] setup/lxc/codex.sh must support sudo re-entry instead of requiring the operator to start as root"
+  exit 1
+fi
+if ! grep -q 'LXC_COMMON_HELPER_NAME="common.sh"' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must define the shared LXC helper name"
+  exit 1
+fi
+if ! grep -q 'source.lxc.common()' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must source setup/lxc/common.sh before running feature orchestration"
+  exit 1
+fi
+if ! grep -q 'lxc.common.report.binary.status' "${ROOT}/setup/lxc/codex.sh"; then
+  echo "[validate.runtime][error] setup/lxc/codex.sh must report the Codex sandbox helper status via setup/lxc/common.sh"
   exit 1
 fi
 if grep -q 'ensure.managed.ansible' "${ROOT}/setup/lxc/codex.sh"; then
@@ -308,6 +324,18 @@ if ! grep -q 'import_playbook: ../../debian/node.yml' "${ROOT}/ansible/proxmox/c
 fi
 if ! grep -q 'import_playbook: ../../debian/cli.codex.yml' "${ROOT}/ansible/proxmox/container/codex.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/container/codex.yml must import ../../debian/cli.codex.yml"
+  exit 1
+fi
+if ! grep -q "lookup('file', playbook_dir ~ '/common.yml')" "${ROOT}/ansible/proxmox/container/codex.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/codex.yml must load LXC container defaults from common.yml"
+  exit 1
+fi
+if ! grep -q 'Ensure LXC Codex runtime packages are installed' "${ROOT}/ansible/proxmox/container/codex.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/codex.yml must install the LXC Codex runtime package contract before delegating to debian/cli.codex.yml"
+  exit 1
+fi
+if ! grep -q 'Assert LXC Codex runtime binaries are present' "${ROOT}/ansible/proxmox/container/codex.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/codex.yml must assert the LXC Codex runtime binary contract"
   exit 1
 fi
 echo "[validate.runtime][ok] setup/lxc/codex.sh exposes the LXC wrapper entrypoint contract"
@@ -371,6 +399,18 @@ if ! grep -q 'setup/lxc/users.sh' "${ROOT}/setup/lxc/users.sh"; then
 fi
 if ! grep -q 'PROXMOX_LXC_COMMON_BASELINE_USERS=.*root app agent' "${ROOT}/setup/lxc/common.sh"; then
   echo "[validate.runtime][error] setup/lxc/common.sh must define the LXC common baseline as root app agent"
+  exit 1
+fi
+if ! grep -q 'PROXMOX_LXC_CODEX_SANDBOX_PACKAGE=.*bubblewrap' "${ROOT}/setup/lxc/common.sh"; then
+  echo "[validate.runtime][error] setup/lxc/common.sh must define bubblewrap as the default LXC Codex sandbox package"
+  exit 1
+fi
+if ! grep -q 'PROXMOX_LXC_CODEX_SANDBOX_BINARY=.*bwrap' "${ROOT}/setup/lxc/common.sh"; then
+  echo "[validate.runtime][error] setup/lxc/common.sh must define bwrap as the default LXC Codex sandbox binary"
+  exit 1
+fi
+if ! grep -q 'lxc.common.report.binary.status()' "${ROOT}/setup/lxc/common.sh"; then
+  echo "[validate.runtime][error] setup/lxc/common.sh must expose a shared runtime-binary status helper"
   exit 1
 fi
 if ! grep -q 'verify.managed.users()' "${ROOT}/setup/lxc/users.sh"; then
@@ -1149,6 +1189,22 @@ if ! grep -q 'proxmox' "${ROOT}/ansible/proxmox/common.yml"; then
 fi
 if ! grep -q 'agent' "${ROOT}/ansible/proxmox/common.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/common.yml must include agent in its baseline user list"
+  exit 1
+fi
+if ! grep -q 'proxmox_lxc_codex_runtime_packages:' "${ROOT}/ansible/proxmox/container/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/common.yml must define the LXC Codex runtime package contract"
+  exit 1
+fi
+if ! grep -q 'bubblewrap' "${ROOT}/ansible/proxmox/container/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/common.yml must define bubblewrap as an LXC Codex runtime package"
+  exit 1
+fi
+if ! grep -q 'proxmox_lxc_codex_runtime_binaries:' "${ROOT}/ansible/proxmox/container/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/common.yml must define the LXC Codex runtime binary contract"
+  exit 1
+fi
+if ! grep -q 'bwrap' "${ROOT}/ansible/proxmox/container/common.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/container/common.yml must define bwrap as the LXC Codex runtime binary"
   exit 1
 fi
 if ! grep -q 'template_policy:' "${ROOT}/ansible/group_vars/proxmox.yml"; then

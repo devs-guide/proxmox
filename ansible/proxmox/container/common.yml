@@ -12,3 +12,11 @@ proxmox_lxc_common_default_users:
   - name: "agent"
     password: "agent"
     shell: "/bin/bash"
+
+# LXC-specific Codex sandbox/runtime defaults belong here, not in
+# ansible/debian/*, because they are container policy rather than baseOS policy.
+proxmox_lxc_codex_runtime_packages:
+  - "bubblewrap"
+proxmox_lxc_codex_runtime_binaries:
+  - name: "bubblewrap"
+    command: "bwrap"

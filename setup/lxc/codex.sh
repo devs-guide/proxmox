@@ -15,10 +15,12 @@ PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
 PLAYBOOK_ROOT="${TMP_DIR}/ansible"
 PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
 PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
+PLAYBOOK_PROXMOX_CONTAINER_DIR="${PLAYBOOK_ROOT}/proxmox/container"
 LOCAL_COMMON_HELPER="../../bootstrap/release.common.sh"
 COMMON_HELPER_NAME="release.common.sh"
 COMMON_HELPER_URL="${PAGES_BASE_URL}/${COMMON_HELPER_NAME}"
 COMMON_HELPER_PATH="${TMP_DIR}/${COMMON_HELPER_NAME}"
+LXC_COMMON_HELPER_NAME="common.sh"
 GROUP_VARS_FILE="proxmox.yml"
 GROUP_VARS_URL="${PAGES_BASE_URL}/ansible/group_vars/${GROUP_VARS_FILE}"
 GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
@@ -29,11 +31,13 @@ FEATURE_PLAYBOOKS=(
 FEATURE_SUPPORT_FILES=(
   "debian/node.yml"
   "debian/cli.codex.yml"
+  "proxmox/container/common.yml"
 )
 NODE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 CODEX_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
 NODE_SUPPORT_PLAYBOOK_REL="${FEATURE_SUPPORT_FILES[0]}"
 CODEX_SUPPORT_PLAYBOOK_REL="${FEATURE_SUPPORT_FILES[1]}"
+CONTAINER_COMMON_SUPPORT_FILE_REL="${FEATURE_SUPPORT_FILES[2]}"
 NODE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NODE_PLAYBOOK_REL}"
 CODEX_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${CODEX_PLAYBOOK_REL}"
 NODE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_PLAYBOOK_REL}"
@@ -42,6 +46,8 @@ NODE_SUPPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NODE_SUPPORT_PLAYBOOK_REL
 CODEX_SUPPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${CODEX_SUPPORT_PLAYBOOK_REL}"
 NODE_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_SUPPORT_PLAYBOOK_REL}"
 CODEX_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_SUPPORT_PLAYBOOK_REL}"
+CONTAINER_COMMON_SUPPORT_FILE_URL="${PAGES_BASE_URL}/ansible/${CONTAINER_COMMON_SUPPORT_FILE_REL}"
+CONTAINER_COMMON_SUPPORT_FILE_PATH="${PLAYBOOK_ROOT}/${CONTAINER_COMMON_SUPPORT_FILE_REL}"
 LXC_CODEX_EXTRA_VARS_PATH="${TMP_DIR}/lxc.codex.extra-vars.yml"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
@@ -88,6 +94,36 @@ CODEX_DOCS_MCP_URL="${PROXMOX_LXC_CODEX_DOCS_MCP_URL:-https://developers.openai.
 CODEX_SELF_URL="${PROXMOX_LXC_CODEX_SELF_URL:-${PAGES_BASE_URL}/setup/lxc/codex.sh}"
 CODEX_SUDO_REEXEC="${PROXMOX_LXC_CODEX_SUDO_REEXEC:-0}"
 CONTAINER_OS_PRETTY=""
+
+source.lxc.common() {
+  local script_dir=""
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+
+  if [[ -n "${script_dir}" && -r "${script_dir}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${script_dir}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  mkdir -p "${TMP_DIR}"
+  if ! wget -qO "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" "${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}"; then
+    log.error "Unable to fetch shared LXC baseline helper from ${PAGES_BASE_URL}/setup/lxc/${LXC_COMMON_HELPER_NAME}; confirm setup/lxc/common.sh is published"
+    exit 1
+  fi
+
+  if [[ -r "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}" ]]; then
+    # shellcheck source=common.sh
+    source "${TMP_DIR}/${LXC_COMMON_HELPER_NAME}"
+    return
+  fi
+
+  log.error "Shared LXC baseline helper is missing: ${script_dir}/${LXC_COMMON_HELPER_NAME}"
+  exit 1
+}
+
+source.lxc.common
 
 source.release.common() {
   local script_dir=""
@@ -139,6 +175,8 @@ collect.sudo.env.args() {
     "PROXMOX_LXC_CODEX_INSTALL_DOCS_MCP=${CODEX_INSTALL_DOCS_MCP}"
     "PROXMOX_LXC_CODEX_DOCS_MCP_NAME=${CODEX_DOCS_MCP_NAME}"
     "PROXMOX_LXC_CODEX_DOCS_MCP_URL=${CODEX_DOCS_MCP_URL}"
+    "PROXMOX_LXC_CODEX_SANDBOX_PACKAGE=${PROXMOX_LXC_CODEX_SANDBOX_PACKAGE}"
+    "PROXMOX_LXC_CODEX_SANDBOX_BINARY=${PROXMOX_LXC_CODEX_SANDBOX_BINARY}"
     "PROXMOX_LXC_CODEX_FACTS_DIR=${FACTS_DIR}"
     "PROXMOX_LXC_CODEX_NODE_RUNTIME_FACTS_PATH=${NODE_RUNTIME_FACTS_PATH}"
     "PROXMOX_LXC_CODEX_RUNTIME_FACTS_PATH=${CODEX_RUNTIME_FACTS_PATH}"
@@ -231,15 +269,18 @@ use.local.feature.files() {
         && -r "${repo_root}/ansible/${CODEX_PLAYBOOK_REL}" \
         && -r "${repo_root}/ansible/${NODE_SUPPORT_PLAYBOOK_REL}" \
         && -r "${repo_root}/ansible/${CODEX_SUPPORT_PLAYBOOK_REL}" \
+        && -r "${repo_root}/ansible/${CONTAINER_COMMON_SUPPORT_FILE_REL}" \
         && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
     PLAYBOOK_DEBIAN_DIR="${PLAYBOOK_ROOT}/debian"
+    PLAYBOOK_PROXMOX_CONTAINER_DIR="${PLAYBOOK_ROOT}/proxmox/container"
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
     NODE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_PLAYBOOK_REL}"
     CODEX_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_PLAYBOOK_REL}"
     NODE_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NODE_SUPPORT_PLAYBOOK_REL}"
     CODEX_SUPPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${CODEX_SUPPORT_PLAYBOOK_REL}"
+    CONTAINER_COMMON_SUPPORT_FILE_PATH="${PLAYBOOK_ROOT}/${CONTAINER_COMMON_SUPPORT_FILE_REL}"
     log "Using local feature files from ${repo_root}."
     return 0
   fi
@@ -267,10 +308,11 @@ prepare.feature.files() {
     return
   fi
 
-  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}" "${PLAYBOOK_DEBIAN_DIR}"
+  mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}" "${PLAYBOOK_DEBIAN_DIR}" "${PLAYBOOK_PROXMOX_CONTAINER_DIR}"
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
   fetch.feature.file "${NODE_SUPPORT_PLAYBOOK_URL}" "${NODE_SUPPORT_PLAYBOOK_PATH}"
   fetch.feature.file "${CODEX_SUPPORT_PLAYBOOK_URL}" "${CODEX_SUPPORT_PLAYBOOK_PATH}"
+  fetch.feature.file "${CONTAINER_COMMON_SUPPORT_FILE_URL}" "${CONTAINER_COMMON_SUPPORT_FILE_PATH}"
   fetch.feature.file "${NODE_PLAYBOOK_URL}" "${NODE_PLAYBOOK_PATH}"
   fetch.feature.file "${CODEX_PLAYBOOK_URL}" "${CODEX_PLAYBOOK_PATH}"
 }
@@ -319,6 +361,12 @@ codex_install_docs_mcp: $(bool.yaml "${CODEX_INSTALL_DOCS_MCP}")
 codex_docs_mcp_name: $(yaml.quote "${CODEX_DOCS_MCP_NAME}")
 codex_docs_mcp_url: $(yaml.quote "${CODEX_DOCS_MCP_URL}")
 codex_runtime_facts_path: $(yaml.quote "${CODEX_RUNTIME_FACTS_PATH}")
+
+proxmox_lxc_codex_runtime_packages:
+  - $(yaml.quote "${PROXMOX_LXC_CODEX_SANDBOX_PACKAGE}")
+proxmox_lxc_codex_runtime_binaries:
+  - name: $(yaml.quote "${PROXMOX_LXC_CODEX_SANDBOX_PACKAGE}")
+    command: $(yaml.quote "${PROXMOX_LXC_CODEX_SANDBOX_BINARY}")
 EOF
   log "Prepared LXC Codex extra-vars: ${LXC_CODEX_EXTRA_VARS_PATH}"
 }
@@ -333,8 +381,9 @@ run.lxc.codex.feature() {
   log "Desired Codex version: ${CODEX_VERSION}"
   log "Running Debian Node feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${NODE_PLAYBOOK_PATH}" -e "@${LXC_CODEX_EXTRA_VARS_PATH}"
-  log "Running Debian Codex feature in mode=${FEATURE_MODE}..."
+  log "Running LXC Codex feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${CODEX_PLAYBOOK_PATH}" -e "@${LXC_CODEX_EXTRA_VARS_PATH}"
+  lxc.common.report.binary.status "Codex sandbox helper" "${PROXMOX_LXC_CODEX_SANDBOX_BINARY}" || true
 }
 
 main() {
