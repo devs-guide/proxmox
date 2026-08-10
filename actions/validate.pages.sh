@@ -424,7 +424,6 @@ check_published_samba_runner_policy() {
       rc=1
     fi
   done
-
   if grep -q 'ensure.managed.ansible' "${published_runner}"; then
     echo "[validate.pages][error] published setup/lxc/samba.sh still uses the heavy managed-target Ansible bootstrap path"
     rc=1
@@ -433,7 +432,13 @@ check_published_samba_runner_policy() {
 
 check_published_release91_bootstrap_policy() {
   local published_bootstrap="${TMPDIR}/9.1.sh"
+  local published_common="${TMPDIR}/release.common.sh"
   local published_enterprise="${TMPDIR}/ansible/release/9.1/enterprise.yml"
+  local playlist_runner_body=""
+  local managed_ansible_line=""
+  local managed_target_line=""
+  local fetch_playlist_line=""
+  local run_playlist_line=""
   local needle
 
   if [[ ! -f "${published_bootstrap}" ]]; then
@@ -455,7 +460,7 @@ check_published_release91_bootstrap_policy() {
     fi
   done
 
-  if [[ ! -f "${TMPDIR}/release.common.sh" ]]; then
+  if [[ ! -f "${published_common}" ]]; then
     echo "[validate.pages][error] published release.common.sh was not fetched"
     rc=1
     return
@@ -463,14 +468,44 @@ check_published_release91_bootstrap_policy() {
 
   for needle in \
     'select.ansible.bootstrap.python()' \
+    'ansible.version.line.matches.policy()' \
+    'ansible-playbook [core ${ANSIBLE_CORE_VERSION}]' \
     'Using native system Python for Ansible bootstrap' \
     'Installing venv support for system Python' \
     'python${python_mm}-venv'; do
-    if ! grep -Fq -- "${needle}" "${TMPDIR}/release.common.sh"; then
+    if ! grep -Fq -- "${needle}" "${published_common}"; then
       echo "[validate.pages][error] published release.common.sh is stale or missing native system Python bootstrap marker: ${needle}"
       rc=1
     fi
   done
+  if [[ "$(grep -Fc 'if ansible.venv.matches.policy; then' "${published_common}" || true)" -ne 2 ]]; then
+    echo "[validate.pages][error] published managed and container Ansible paths do not share the version-policy predicate"
+    rc=1
+  fi
+
+  playlist_runner_body="$(sed -n '/^maybe\.run\.ansible() {$/,/^}$/p' "${published_common}")"
+  for needle in \
+    'ensure.managed.ansible' \
+    'ensure.managed.target.python' \
+    'fetch.playlist' \
+    'run.playlist'; do
+    if ! grep -Fq -- "${needle}" <<< "${playlist_runner_body}"; then
+      echo "[validate.pages][error] published maybe.run.ansible is missing required call: ${needle}"
+      rc=1
+    fi
+  done
+
+  managed_ansible_line="$(grep -nF 'ensure.managed.ansible' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
+  managed_target_line="$(grep -nF 'ensure.managed.target.python' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
+  fetch_playlist_line="$(grep -nF 'fetch.playlist' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
+  run_playlist_line="$(grep -nF 'run.playlist' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
+  if [[ -z "${managed_ansible_line}" || -z "${managed_target_line}" || -z "${fetch_playlist_line}" || -z "${run_playlist_line}" ]] \
+    || (( managed_ansible_line >= managed_target_line )) \
+    || (( managed_target_line >= fetch_playlist_line )) \
+    || (( fetch_playlist_line >= run_playlist_line )); then
+    echo "[validate.pages][error] published maybe.run.ansible bootstrap call order is invalid"
+    rc=1
+  fi
 
   if [[ ! -f "${published_enterprise}" ]]; then
     echo "[validate.pages][error] published ansible/release/9.1/enterprise.yml was not fetched"
@@ -487,6 +522,33 @@ check_published_release91_bootstrap_policy() {
       rc=1
     fi
   done
+}
+
+check_published_users_policy() {
+  local published_users="${TMPDIR}/ansible/debian/users.yml"
+
+  if [[ ! -f "${published_users}" ]]; then
+    echo "[validate.pages][error] published ansible/debian/users.yml was not fetched"
+    rc=1
+    return
+  fi
+
+  if grep -Fq 'proxmox_users_skip_container_safety_checks: "{{ proxmox_users_skip_container_safety_checks |' "${published_users}"; then
+    echo "[validate.pages][error] published users.yml contains a recursive container safety variable"
+    rc=1
+  fi
+  if ! grep -Fq 'proxmox_users_skip_container_safety_checks_effective: "{{ proxmox_users_skip_container_safety_checks | default(false) | bool }}"' "${published_users}"; then
+    echo "[validate.pages][error] published users.yml is missing the effective container safety variable"
+    rc=1
+  fi
+  if grep -Eq '^[[:space:]]+when: not proxmox_users_skip_container_safety_checks$' "${published_users}"; then
+    echo "[validate.pages][error] published users.yml bypasses the effective container safety variable"
+    rc=1
+  fi
+  if [[ "$(grep -Ec '^[[:space:]]+when: not proxmox_users_skip_container_safety_checks_effective$' "${published_users}" || true)" -ne 9 ]]; then
+    echo "[validate.pages][error] published users.yml does not guard all nine host safety tasks"
+    rc=1
+  fi
 }
 
 check_published_debian_lxc_policy() {
@@ -697,6 +759,7 @@ check_published_network_playbook_policy() {
 if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_samba_runner_policy
   check_published_release91_bootstrap_policy
+  check_published_users_policy
   check_published_debian_lxc_policy
   check_published_debian_lxc_playbook_policy
   check_published_debian_base_bootstrap

@@ -7,7 +7,7 @@
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     default_password_hash_algo: sha512
-    proxmox_users_skip_container_safety_checks: "{{ proxmox_users_skip_container_safety_checks | default(false) | bool }}"
+    proxmox_users_skip_container_safety_checks_effective: "{{ proxmox_users_skip_container_safety_checks | default(false) | bool }}"
 
   tasks:
     - name: Ensure sudo group exists
@@ -117,20 +117,20 @@
           - /
       register: managed_root_mount_options
       changed_when: false
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Assert root filesystem is not mounted nosuid
       ansible.builtin.assert:
         that:
           - "'nosuid' not in ((managed_root_mount_options.stdout | default('')).split(','))"
         fail_msg: "Root filesystem is mounted nosuid; sudo cannot work correctly inside this container."
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Capture sudo config ownership and mode
       ansible.builtin.stat:
         path: /etc/sudo.conf
       register: managed_sudo_conf_stat
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Assert sudo config ownership is root-managed
       ansible.builtin.assert:
@@ -142,13 +142,13 @@
           /etc/sudo.conf must be owned by root:root.
           Observed uid={{ managed_sudo_conf_stat.stat.uid | default('missing') }}
           gid={{ managed_sudo_conf_stat.stat.gid | default('missing') }}.
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Capture sudo binary ownership and mode
       ansible.builtin.stat:
         path: /usr/bin/sudo
       register: managed_sudo_bin_stat
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Assert sudo binary ownership is root-managed
       ansible.builtin.assert:
@@ -160,7 +160,7 @@
           /usr/bin/sudo must be owned by root:root.
           Observed uid={{ managed_sudo_bin_stat.stat.uid | default('missing') }}
           gid={{ managed_sudo_bin_stat.stat.gid | default('missing') }}.
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Assert sudo binary retains the setuid bit
       ansible.builtin.command:
@@ -169,7 +169,7 @@
           - -u
           - /usr/bin/sudo
       changed_when: false
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Validate sudo binary health from root context
       ansible.builtin.command:
@@ -179,7 +179,7 @@
       register: managed_sudo_health
       changed_when: false
       failed_when: false
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Assert sudo binary executes correctly
       ansible.builtin.assert:
@@ -189,7 +189,7 @@
           sudo failed to execute correctly as root.
           This usually indicates broken container ownership mapping,
           a missing setuid bit, or an invalid mount policy. stderr={{ managed_sudo_health.stderr | default('') }}
-      when: not proxmox_users_skip_container_safety_checks
+      when: not proxmox_users_skip_container_safety_checks_effective
 
     - name: Verify managed non-root users can start a login shell
       ansible.builtin.command:

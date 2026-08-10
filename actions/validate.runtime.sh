@@ -1291,12 +1291,57 @@ if ! grep -q 'python${python_mm}-venv' "${ROOT}/bootstrap/release.common.sh"; th
   echo "[validate.runtime][error] release.common.sh must install version-matched pythonX.Y-venv when system ensurepip is unavailable"
   exit 1
 fi
+if ! bash -u -c '
+  log() { :; }
+  log.error() { :; }
+  source "$1"
+
+  ansible.version.line.matches.policy "ansible-playbook [core ${ANSIBLE_CORE_VERSION}]"
+  ! ansible.version.line.matches.policy "ansible-playbook [core 0.0.0]"
+  ! ansible.version.line.matches.policy "ansible-playbook core ${ANSIBLE_CORE_VERSION}"
+
+  calls=()
+  ensure.managed.ansible() { calls+=("managed-ansible"); }
+  ensure.managed.target.python() { calls+=("managed-target-python"); }
+  fetch.playlist() { calls+=("playlist"); }
+  fetch.groupvars() { calls+=("group-vars"); }
+  merge.groupvars() { calls+=("merge"); }
+  run.playlist() { calls+=("run"); }
+
+  SKIP_ANSIBLE=0
+  maybe.run.ansible
+  [[ "${calls[*]}" == "managed-ansible managed-target-python playlist group-vars merge run" ]]
+' _ "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] shared Ansible version policy or release bootstrap call order is invalid"
+  exit 1
+fi
+echo "[validate.runtime][ok] shared Ansible version policy and release bootstrap call order are valid"
+if [[ "$(grep -Fc 'if ansible.venv.matches.policy; then' "${ROOT}/bootstrap/release.common.sh" || true)" -ne 2 ]]; then
+  echo "[validate.runtime][error] managed and container Ansible paths must share the version-policy predicate"
+  exit 1
+fi
 if ! grep -q 'PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"' "${ROOT}/bootstrap/release.9.1.sh"; then
   echo "[validate.runtime][error] bootstrap/release.9.1.sh must enable native system Python preference for Ansible bootstrap"
   exit 1
 fi
 if ! grep -q 'SYSTEM_PYTHON_MIN_MINOR="12"' "${ROOT}/bootstrap/release.9.1.sh"; then
   echo "[validate.runtime][error] bootstrap/release.9.1.sh must require system Python 3.12+ before skipping managed-target bootstrap"
+  exit 1
+fi
+if grep -Fq 'proxmox_users_skip_container_safety_checks: "{{ proxmox_users_skip_container_safety_checks |' "${ROOT}/ansible/debian/users.yml"; then
+  echo "[validate.runtime][error] users.yml must not define the container safety flag recursively"
+  exit 1
+fi
+if ! grep -Fq 'proxmox_users_skip_container_safety_checks_effective: "{{ proxmox_users_skip_container_safety_checks | default(false) | bool }}"' "${ROOT}/ansible/debian/users.yml"; then
+  echo "[validate.runtime][error] users.yml must derive a non-recursive effective container safety flag"
+  exit 1
+fi
+if grep -Eq '^[[:space:]]+when: not proxmox_users_skip_container_safety_checks$' "${ROOT}/ansible/debian/users.yml"; then
+  echo "[validate.runtime][error] users.yml safety tasks must use the effective container safety flag"
+  exit 1
+fi
+if [[ "$(grep -Ec '^[[:space:]]+when: not proxmox_users_skip_container_safety_checks_effective$' "${ROOT}/ansible/debian/users.yml" || true)" -ne 9 ]]; then
+  echo "[validate.runtime][error] users.yml must apply the effective container safety flag to all nine host safety tasks"
   exit 1
 fi
 if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then

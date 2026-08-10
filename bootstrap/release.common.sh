@@ -153,6 +153,23 @@ select.ansible.bootstrap.python() {
   ensure.managed.target.python
 }
 
+ansible.version.line.matches.policy() {
+  local version_line="${1:-}"
+
+  [[ "${version_line}" == "ansible-playbook [core ${ANSIBLE_CORE_VERSION}]" ]]
+}
+
+ansible.venv.matches.policy() {
+  local version_output=""
+  local version_line=""
+
+  [[ -x "${ANSIBLE_VENV_BIN}" ]] || return 1
+  version_output="$("${ANSIBLE_VENV_BIN}" --version 2>/dev/null)" || return 1
+  version_line="${version_output%%$'\n'*}"
+
+  ansible.version.line.matches.policy "${version_line}"
+}
+
 ensure.python312() {
   export DEBIAN_FRONTEND=noninteractive
   if command -v "python${PYTHON_MAJOR_MINOR}" >/dev/null 2>&1; then
@@ -262,7 +279,7 @@ ensure.container.python() {
 ensure.managed.ansible() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
-    if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q "core ${ANSIBLE_CORE_VERSION}\$"; then
+    if ansible.venv.matches.policy; then
       select.ansible.bootstrap.python
       log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return
@@ -284,7 +301,7 @@ ensure.managed.ansible() {
 ensure.container.ansible() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
-    if "${ANSIBLE_VENV_BIN}" --version 2>/dev/null | head -n1 | grep -q "core ${ANSIBLE_CORE_VERSION}\$"; then
+    if ansible.venv.matches.policy; then
       ensure.container.python
       log "Using existing container Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return
@@ -456,6 +473,9 @@ maybe.run.ansible() {
     return
   fi
   ensure.managed.ansible
+  # The controller may use native system Python, but playlist modules retain
+  # the release-managed target interpreter contract.
+  ensure.managed.target.python
   fetch.playlist
   fetch.groupvars
   merge.groupvars
