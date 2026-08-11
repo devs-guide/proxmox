@@ -84,6 +84,36 @@ start after successful restore verification and staging cleanup.
 Run the same command with `--dry-run` first when reviewing a new host, storage
 layout, or target VM choice.
 
+### Expected preflight status
+
+A current runner reports each preflight boundary before it performs transfer or
+VM mutation:
+
+```text
+[setup.vm.restore] preflight: validating the local Proxmox node
+[setup.vm.restore] preflight: checking required restore commands
+[setup.vm.restore] preflight: acquiring the restore lock for VM 201
+[setup.vm.restore] preflight: checking stage storage local-lvm
+[setup.vm.restore] preflight: checking target storage local-lvm
+[setup.vm.restore] preflight: inspecting temporary-stage state for VM 201
+[setup.vm.restore] preflight: checking passwordless SSH access to root@10.0.0.10
+```
+
+If an older downloaded copy exits immediately with only `phase preflight failed
+with exit 1`, download `restore.sh` again before retrying. That earlier build
+could incorrectly treat an omitted `--dry-run` flag as a failed argument-builder
+command under Bash `set -e`. The failure occurred before stage creation,
+transfer, or `qmrestore`.
+
+Both published execution forms are supported. Streaming is convenient for a
+single run; downloading first keeps the exact runner available for inspection:
+
+```bash
+wget -qO /tmp/proxmox-vm-restore.sh \
+  https://devs-guide.github.io/proxmox/setup/vm/restore.sh
+bash /tmp/proxmox-vm-restore.sh --help
+```
+
 ## 3. Run each phase manually
 
 Use these steps when observing or resuming each boundary separately.

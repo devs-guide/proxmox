@@ -61,6 +61,13 @@ for command_path in "${SSH_SYNC}" "${STORAGE_TEMP}" "${RSYNC_FETCH}"; do
   )"
   grep -q -- '--help' <<<"${stream_help}" || fail "streamed helper bootstrap failed: ${command_path#${ROOT}/}"
 done
+stream_runner_help="$(
+  PROXMOX_RESTORE_PAGES_BASE_URL="file://${ROOT}" \
+  PROXMOX_RESTORE_TMP_DIR="${stream_tmp}" \
+    bash -s -- --help < "${RUNNER}"
+)"
+grep -q -- '--action preflight|transfer|verify|restore|cleanup|all' <<<"${stream_runner_help}" || \
+  fail "streamed setup/vm/restore.sh did not bootstrap and render help"
 stream_setup="$(
   PROXMOX_RESTORE_PAGES_BASE_URL="file://${ROOT}" \
   PROXMOX_RESTORE_TMP_DIR="${stream_tmp}" \
@@ -77,6 +84,72 @@ grep -q 'ssh-copy-id' <<<"${stream_setup}" || fail "streamed SSH setup dry-run d
 grep -q 'atomically replace' <<<"${stream_setup}" || fail "streamed SSH key-rotation dry-run did not render replacement plan"
 rm -rf "${stream_tmp}"
 ok "published helper entrypoints bootstrap restore.common.sh when streamed"
+
+if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))); then
+  storage_args_definition="$(awk '
+    /^storage_args\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  [[ -n "${storage_args_definition}" ]] || fail "could not extract storage_args for regression coverage"
+  if ! storage_args_output="$(bash -c '
+    set -euo pipefail
+    eval "$1"
+    VM_ID=100
+    STAGE_STORAGE=local-lvm
+    MOUNT_ROOT=/mnt/pve-restore
+    MAX_THIN_DATA_PERCENT=85
+    MAX_THIN_METADATA_PERCENT=75
+    SOURCE_VM_ID=200
+
+    DRY_RUN=0
+    real_args=()
+    storage_args real_args
+    printf "real:%s\n" "${real_args[*]}"
+
+    DRY_RUN=1
+    dry_args=()
+    storage_args dry_args
+    printf "dry:%s\n" "${dry_args[*]}"
+  ' _ "${storage_args_definition}")"; then
+    fail "storage_args returned nonzero under set -e"
+  fi
+  expected_storage_args=$'real:--vm 100 --storage local-lvm --mount-root /mnt/pve-restore --max-thin-data-percent 85 --max-thin-metadata-percent 75 --source-vm 200\ndry:--vm 100 --storage local-lvm --mount-root /mnt/pve-restore --max-thin-data-percent 85 --max-thin-metadata-percent 75 --source-vm 200 --dry-run'
+  [[ "${storage_args_output}" == "${expected_storage_args}" ]] || \
+    fail "storage_args regression output did not match the real/dry-run contract"
+
+  dry_run_definition="$(awk '
+    /^dry_run_post_transfer\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  [[ -n "${dry_run_definition}" ]] || fail "could not extract dry_run_post_transfer for regression coverage"
+  if ! bash -c '
+    set -euo pipefail
+    eval "$1"
+    restore.log() { :; }
+    restore.render_command() { :; }
+    check_vm_collision() { RESTORE_REPLACEMENT=0; }
+    ARCHIVE=/mnt/pve-restore/100/vzdump-qemu-200-test.vma.zst
+    VM_ID=100
+    TARGET_STORAGE=local-lvm
+    STAGE_STORAGE=local-lvm
+    MOUNT_ROOT=/mnt/pve-restore
+    STORAGE_TEMP=/tmp/storage-temp.sh
+    RESTORE_REPLACEMENT=0
+    UNIQUE=1
+    RESTORE_BWLIMIT_KBPS=""
+    CLEANUP_POLICY=success
+    START_VM=0
+    CURRENT_PHASE=test
+    dry_run_post_transfer
+  ' _ "${dry_run_definition}"; then
+    fail "dry_run_post_transfer returned nonzero when --start was absent"
+  fi
+  ok "real-mode argument builders and optional dry-run actions remain successful under set -e"
+else
+  ok "argument-builder regression is deferred to GitHub Actions on Bash 4.3+"
+fi
 
 canonical_tmp="$(mktemp -d)"
 canonical_identity="${canonical_tmp}/commented-ed25519"

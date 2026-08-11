@@ -14,9 +14,14 @@ FEATURE_CLI_FILES=(
 
 PAGES_BASE_URL="${PROXMOX_RESTORE_PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}"
 FEATURE_TMP_DIR="${PROXMOX_RESTORE_TMP_DIR:-/tmp/pve-feature-vm-restore}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR=""
 CLI_ROOT=""
 PLAYBOOK_PATH=""
+
+if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+fi
 
 bootstrap.log() {
   printf '[setup.vm.restore] %s\n' "$*" >&2
@@ -44,13 +49,17 @@ bootstrap.fetch() {
 
 bootstrap.feature_files() {
   local requested_root="${PROXMOX_RESTORE_CLI_ROOT:-}"
-  local local_root="${SCRIPT_DIR}/../../cli"
+  local local_root=""
   local ref=""
   local missing=0
 
+  if [[ -n "${SCRIPT_DIR}" ]]; then
+    local_root="${SCRIPT_DIR}/../../cli"
+  fi
+
   if [[ -n "${requested_root}" ]]; then
     CLI_ROOT="${requested_root}"
-  elif [[ -r "${local_root}/lib/restore.common.sh" ]]; then
+  elif [[ -n "${local_root}" && -r "${local_root}/lib/restore.common.sh" ]]; then
     CLI_ROOT="$(cd "${local_root}" && pwd)"
   else
     CLI_ROOT="${FEATURE_TMP_DIR}/cli"
@@ -332,7 +341,10 @@ connection_args() {
     --known-hosts "${KNOWN_HOSTS}"
     --connect-timeout "${CONNECT_TIMEOUT}"
   )
-  [[ -z "${HOST_KEY_FINGERPRINT}" ]] || output_args+=(--host-key-fingerprint "${HOST_KEY_FINGERPRINT}")
+  if [[ -n "${HOST_KEY_FINGERPRINT}" ]]; then
+    output_args+=(--host-key-fingerprint "${HOST_KEY_FINGERPRINT}")
+  fi
+  return 0
 }
 
 storage_args() {
@@ -344,29 +356,41 @@ storage_args() {
     --max-thin-data-percent "${MAX_THIN_DATA_PERCENT}"
     --max-thin-metadata-percent "${MAX_THIN_METADATA_PERCENT}"
   )
-  [[ -z "${SOURCE_VM_ID}" ]] || output_args+=(--source-vm "${SOURCE_VM_ID}")
-  ((DRY_RUN)) && output_args+=(--dry-run)
+  if [[ -n "${SOURCE_VM_ID}" ]]; then
+    output_args+=(--source-vm "${SOURCE_VM_ID}")
+  fi
+  if ((DRY_RUN)); then
+    output_args+=(--dry-run)
+  fi
+  return 0
 }
 
 local_preflight() {
   CURRENT_PHASE="preflight"
+  restore.log "preflight: validating the local Proxmox node"
   restore.require_proxmox
+  restore.log "preflight: checking required restore commands"
   restore.require_commands "${RESTORE_EXIT_PREFLIGHT}" \
     qm qmrestore pvesm lvs vgs lvcreate lvremove mkfs.ext4 mount umount findmnt flock \
     ssh rsync sha256sum zstd vma lsblk stat awk grep sed tee sync ha-manager
+  restore.log "preflight: acquiring the restore lock for VM ${VM_ID}"
   restore.acquire_lock "${VM_ID}"
+  restore.log "preflight: checking stage storage ${STAGE_STORAGE}"
   pvesm status --storage "${STAGE_STORAGE}" 2>/dev/null | awk -v storage="${STAGE_STORAGE}" '$1 == storage && $3 == "active" {found=1} END {exit !found}' || \
     restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage storage is unavailable: ${STAGE_STORAGE}"
+  restore.log "preflight: checking target storage ${TARGET_STORAGE}"
   pvesm status --storage "${TARGET_STORAGE}" 2>/dev/null | awk -v storage="${TARGET_STORAGE}" '$1 == storage && $3 == "active" {found=1} END {exit !found}' || \
     restore.die "${RESTORE_EXIT_PREFLIGHT}" "target storage is unavailable: ${TARGET_STORAGE}"
   local -a stage_args=()
   storage_args stage_args
+  restore.log "preflight: inspecting temporary-stage state for VM ${VM_ID}"
   if ! "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output tsv >/dev/null; then
     restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage-storage inspection failed"
   fi
   if [[ -n "${REMOTE_HOST}" ]]; then
     local -a ssh_args=()
     connection_args ssh_args
+    restore.log "preflight: checking passwordless SSH access to ${REMOTE_USER}@${REMOTE_HOST}"
     "${SSH_SYNC}" --action check "${ssh_args[@]}" --output human
   fi
   restore.log "preflight passed for target VM ${VM_ID}; dependency playbook: ${PLAYBOOK_PATH}"
@@ -649,14 +673,23 @@ dry_run_post_transfer() {
   check_vm_collision
   CURRENT_PHASE="dry-run-plan"
   local -a command=(qmrestore "${ARCHIVE}" "${VM_ID}" --storage "${TARGET_STORAGE}")
-  ((RESTORE_REPLACEMENT)) && command+=(--force 1)
-  ((UNIQUE)) && command+=(--unique 1)
-  [[ -z "${RESTORE_BWLIMIT_KBPS}" ]] || command+=(--bwlimit "${RESTORE_BWLIMIT_KBPS}")
+  if ((RESTORE_REPLACEMENT)); then
+    command+=(--force 1)
+  fi
+  if ((UNIQUE)); then
+    command+=(--unique 1)
+  fi
+  if [[ -n "${RESTORE_BWLIMIT_KBPS}" ]]; then
+    command+=(--bwlimit "${RESTORE_BWLIMIT_KBPS}")
+  fi
   restore.render_command "${command[@]}"
   if [[ "${CLEANUP_POLICY}" == success ]]; then
     restore.render_command "${STORAGE_TEMP}" --action remove --vm "${VM_ID}" --storage "${STAGE_STORAGE}" --mount-root "${MOUNT_ROOT}"
   fi
-  ((START_VM)) && restore.render_command qm start "${VM_ID}"
+  if ((START_VM)); then
+    restore.render_command qm start "${VM_ID}"
+  fi
+  return 0
 }
 
 case "${ACTION}" in
