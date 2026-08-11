@@ -140,6 +140,17 @@ PUBLIC_KEY="${IDENTITY}.pub"
 [[ ! -L "${IDENTITY}" && ! -L "${PUBLIC_KEY}" && ! -L "${KNOWN_HOSTS}" ]] || \
   restore.die "${RESTORE_EXIT_SSH}" "identity and host-key files must not be symlinks"
 
+canonical.public.key() {
+  awk '
+    NF >= 2 && $1 ~ /^(ssh-|ecdsa-|sk-)/ {
+      print $1 " " $2
+      found = 1
+      exit
+    }
+    END { if (!found) exit 1 }
+  '
+}
+
 ensure_identity() {
   restore.require_commands "${RESTORE_EXIT_SSH}" ssh ssh-keygen
   if [[ -e "${IDENTITY}" && ! -f "${IDENTITY}" ]]; then
@@ -157,13 +168,16 @@ ensure_identity() {
   if [[ "${DRY_RUN}" == "1" && ! -f "${IDENTITY}" ]]; then
     return 0
   fi
-  local derived_public
-  derived_public="$(ssh-keygen -y -f "${IDENTITY}")" || restore.die "${RESTORE_EXIT_SSH}" "could not derive the public key from ${IDENTITY}"
+  local derived_public stored_public=""
+  derived_public="$(ssh-keygen -y -f "${IDENTITY}" | canonical.public.key)" || \
+    restore.die "${RESTORE_EXIT_SSH}" "could not derive canonical public key material from ${IDENTITY}"
   if [[ "${DRY_RUN}" == "1" ]]; then
     restore.render_command chmod 0600 "${IDENTITY}"
     if [[ ! -f "${PUBLIC_KEY}" ]]; then
       restore.log "dry-run: would derive ${PUBLIC_KEY} from the selected private identity"
-    elif [[ "$(awk '{print $1 " " $2; exit}' "${PUBLIC_KEY}")" != "${derived_public}" ]]; then
+    elif ! stored_public="$(canonical.public.key < "${PUBLIC_KEY}")"; then
+      restore.die "${RESTORE_EXIT_SSH}" "existing public key is malformed: ${PUBLIC_KEY}"
+    elif [[ "${stored_public}" != "${derived_public}" ]]; then
       restore.die "${RESTORE_EXIT_SSH}" "existing public key does not match the selected private identity: ${PUBLIC_KEY}"
     else
       restore.render_command chmod 0644 "${PUBLIC_KEY}"
@@ -175,7 +189,9 @@ ensure_identity() {
     local public_temp="${PUBLIC_KEY}.tmp.$$"
     printf '%s proxmox-restore@%s\n' "${derived_public}" "$(hostname -s)" >"${public_temp}"
     mv -f "${public_temp}" "${PUBLIC_KEY}"
-  elif [[ "$(awk '{print $1 " " $2; exit}' "${PUBLIC_KEY}")" != "${derived_public}" ]]; then
+  elif ! stored_public="$(canonical.public.key < "${PUBLIC_KEY}")"; then
+    restore.die "${RESTORE_EXIT_SSH}" "existing public key is malformed: ${PUBLIC_KEY}"
+  elif [[ "${stored_public}" != "${derived_public}" ]]; then
     restore.die "${RESTORE_EXIT_SSH}" "existing public key does not match the selected private identity: ${PUBLIC_KEY}"
   fi
   chmod 0644 "${PUBLIC_KEY}"
@@ -314,15 +330,14 @@ collect_old_key_blobs() {
   OLD_KEY_BLOBS=()
 
   if [[ -f "${IDENTITY}" ]]; then
-    if public_material="$(ssh-keygen -y -f "${IDENTITY}" 2>/dev/null)"; then
+    if public_material="$(ssh-keygen -y -f "${IDENTITY}" 2>/dev/null | canonical.public.key)"; then
       append_old_key_blob "${public_material}"
     else
       restore.warn "could not derive the old public key from ${IDENTITY}; continuing with fresh rotation"
     fi
   fi
   if [[ -f "${PUBLIC_KEY}" ]]; then
-    public_material="$(awk 'NF >= 2 {print $1 " " $2; exit}' "${PUBLIC_KEY}")"
-    if [[ -n "${public_material}" ]]; then
+    if public_material="$(canonical.public.key < "${PUBLIC_KEY}")"; then
       append_old_key_blob "${public_material}"
     else
       restore.warn "could not parse the old public key ${PUBLIC_KEY}; continuing with fresh rotation"

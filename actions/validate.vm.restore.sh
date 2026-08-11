@@ -78,45 +78,46 @@ grep -q 'atomically replace' <<<"${stream_setup}" || fail "streamed SSH key-rota
 rm -rf "${stream_tmp}"
 ok "published helper entrypoints bootstrap restore.common.sh when streamed"
 
+canonical_tmp="$(mktemp -d)"
+canonical_identity="${canonical_tmp}/commented-ed25519"
+canonical_known_hosts="${canonical_tmp}/known_hosts"
+ssh-keygen -q -t ed25519 -N '' -C 'proxmox-restore@canonical-test' -f "${canonical_identity}"
+printf 'mock-known-host\n' >"${canonical_known_hosts}"
+canonical_setup="$(
+  "${SSH_SYNC}" \
+    --action setup \
+    --remote-host test.example.invalid \
+    --identity "${canonical_identity}" \
+    --known-hosts "${canonical_known_hosts}" \
+    --dry-run 2>&1
+)"
+grep -q 'ssh-copy-id' <<<"${canonical_setup}" || fail "commented ssh-keygen output was not accepted as the matching public key"
+rm -rf "${canonical_tmp}"
+ok "public-key comparison ignores OpenSSH comments and matches canonical key material"
+
 if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))); then
   rotation_tmp="$(mktemp -d)"
   rotation_bin="${rotation_tmp}/bin"
   rotation_remote="${rotation_tmp}/remote"
   rotation_identity="${rotation_tmp}/proxmox-restore-ed25519"
   rotation_known_hosts="${rotation_tmp}/known_hosts"
+  stale_identity="${rotation_tmp}/stale-ed25519"
+  unrelated_identity="${rotation_tmp}/unrelated-ed25519"
   mkdir -p "${rotation_bin}" "${rotation_remote}/.ssh"
-  printf 'OLD_PRIVATE\n' >"${rotation_identity}"
-  printf 'ssh-ed25519 U1RBTEVfUFVCTElDX0tFWQ== stale-public\n' >"${rotation_identity}.pub"
+  ssh-keygen -q -t ed25519 -N '' -C 'old-private' -f "${rotation_identity}"
+  ssh-keygen -q -t ed25519 -N '' -C 'stale-public' -f "${stale_identity}"
+  ssh-keygen -q -t ed25519 -N '' -C 'unrelated' -f "${unrelated_identity}"
+  old_private_material="$(ssh-keygen -y -f "${rotation_identity}" | awk 'NF >= 2 {print $1 " " $2; exit}')"
+  stale_material="$(awk 'NF >= 2 {print $1 " " $2; exit}' "${stale_identity}.pub")"
+  unrelated_material="$(awk 'NF >= 2 {print $1 " " $2; exit}' "${unrelated_identity}.pub")"
+  old_private_blob="${old_private_material#* }"
+  stale_blob="${stale_material#* }"
+  unrelated_blob="${unrelated_material#* }"
+  cp "${stale_identity}.pub" "${rotation_identity}.pub"
   printf 'mock-known-host\n' >"${rotation_known_hosts}"
-  cat >"${rotation_remote}/.ssh/authorized_keys" <<'EOF'
-from="10.0.0.0/8" ssh-ed25519 T0xEX1BSSVZBVEVfS0VZ old-private
-ssh-ed25519 U1RBTEVfUFVCTElDX0tFWQ== stale-public
-ssh-ed25519 VU5SRUxBVEVEX0tFWQ== unrelated
-EOF
-  cat >"${rotation_bin}/ssh-keygen" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-mode="generate"
-identity=""
-while (($#)); do
-  case "$1" in
-    -y) mode="derive"; shift ;;
-    -f) identity="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[[ -n "${identity}" ]] || exit 2
-if [[ "${mode}" == derive ]]; then
-  if grep -Fxq 'NEW_PRIVATE' "${identity}"; then
-    printf 'ssh-ed25519 TkVXX1BVQkxJQ19LRVk=\n'
-  else
-    printf 'ssh-ed25519 T0xEX1BSSVZBVEVfS0VZ\n'
-  fi
-else
-  printf 'NEW_PRIVATE\n' >"${identity}"
-  printf 'ssh-ed25519 TkVXX1BVQkxJQ19LRVk= rotated\n' >"${identity}.pub"
-fi
-EOF
+  printf 'from="test.example.invalid" %s old-private\n%s stale-public\n%s unrelated\n' \
+    "${old_private_material}" "${stale_material}" "${unrelated_material}" \
+    >"${rotation_remote}/.ssh/authorized_keys"
   cat >"${rotation_bin}/ssh-copy-id" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -144,7 +145,23 @@ while (($#)); do
 done
 exit 0
 EOF
-  chmod 0755 "${rotation_bin}/ssh-keygen" "${rotation_bin}/ssh-copy-id" "${rotation_bin}/ssh"
+  chmod 0755 "${rotation_bin}/ssh-copy-id" "${rotation_bin}/ssh"
+
+  set +e
+  PATH="${rotation_bin}:${PATH}" \
+  MOCK_REMOTE_AUTHORIZED_KEYS="${rotation_remote}/.ssh/authorized_keys" \
+    "${SSH_SYNC}" \
+      --action setup \
+      --remote-host test.example.invalid \
+      --identity "${rotation_identity}" \
+      --known-hosts "${rotation_known_hosts}" >/dev/null 2>"${rotation_tmp}/mismatch.log"
+  mismatch_rc=$?
+  set -e
+  [[ "${mismatch_rc}" == "${RESTORE_EXIT_SSH:-20}" ]] || fail "ordinary mismatched-pair setup returned ${mismatch_rc}, expected 20"
+  grep -q 'does not match' "${rotation_tmp}/mismatch.log" || fail "ordinary setup did not reject the mismatched pair"
+
+  old_private_checksum="$(cksum < "${rotation_identity}")"
+  old_public_checksum="$(cksum < "${rotation_identity}.pub")"
 
   set +e
   PATH="${rotation_bin}:${PATH}" \
@@ -152,7 +169,7 @@ EOF
   MOCK_SSH_COPY_ID_FAIL=1 \
     "${SSH_SYNC}" \
       --action setup \
-      --remote-host 192.0.2.1 \
+      --remote-host test.example.invalid \
       --identity "${rotation_identity}" \
       --known-hosts "${rotation_known_hosts}" \
       --key-rotation \
@@ -160,28 +177,35 @@ EOF
   failed_rotation_rc=$?
   set -e
   [[ "${failed_rotation_rc}" == "${RESTORE_EXIT_SSH:-20}" ]] || fail "failed key installation returned ${failed_rotation_rc}, expected 20"
-  grep -Fxq 'OLD_PRIVATE' "${rotation_identity}" || fail "failed key installation changed the old private key"
-  grep -q 'U1RBTEVfUFVCTElDX0tFWQ==' "${rotation_identity}.pub" || fail "failed key installation changed the old public key"
+  [[ "$(cksum < "${rotation_identity}")" == "${old_private_checksum}" ]] || fail "failed key installation changed the old private key"
+  [[ "$(cksum < "${rotation_identity}.pub")" == "${old_public_checksum}" ]] || fail "failed key installation changed the old public key"
+  if compgen -G "${rotation_identity}.rotation-new.*" >/dev/null; then
+    fail "failed key installation retained temporary new-key material"
+  fi
 
   PATH="${rotation_bin}:${PATH}" \
   MOCK_REMOTE_AUTHORIZED_KEYS="${rotation_remote}/.ssh/authorized_keys" \
     "${SSH_SYNC}" \
       --action setup \
-      --remote-host 192.0.2.1 \
+      --remote-host test.example.invalid \
       --identity "${rotation_identity}" \
       --known-hosts "${rotation_known_hosts}" \
       --key-rotation \
       --yes >/dev/null 2>"${rotation_tmp}/rotation.log"
 
-  grep -Fxq 'NEW_PRIVATE' "${rotation_identity}" || fail "key rotation did not install the fresh private key"
-  grep -q 'TkVXX1BVQkxJQ19LRVk=' "${rotation_identity}.pub" || fail "key rotation did not install the fresh public key"
-  grep -q 'TkVXX1BVQkxJQ19LRVk=' "${rotation_remote}/.ssh/authorized_keys" || fail "key rotation did not install the fresh remote key"
-  grep -q 'VU5SRUxBVEVEX0tFWQ==' "${rotation_remote}/.ssh/authorized_keys" || fail "key rotation removed an unrelated remote key"
-  if grep -Eq 'T0xEX1BSSVZBVEVfS0VZ|U1RBTEVfUFVCTElDX0tFWQ==' "${rotation_remote}/.ssh/authorized_keys"; then
+  rotated_private_material="$(ssh-keygen -y -f "${rotation_identity}" | awk 'NF >= 2 {print $1 " " $2; exit}')"
+  rotated_public_material="$(awk 'NF >= 2 {print $1 " " $2; exit}' "${rotation_identity}.pub")"
+  rotated_blob="${rotated_private_material#* }"
+  [[ "${rotated_private_material}" == "${rotated_public_material}" ]] || fail "key rotation installed a mismatched local pair"
+  grep -Fq -- "${rotated_blob}" "${rotation_remote}/.ssh/authorized_keys" || fail "key rotation did not install the fresh remote key"
+  grep -Fq -- "${unrelated_blob}" "${rotation_remote}/.ssh/authorized_keys" || fail "key rotation removed an unrelated remote key"
+  if grep -Fq -e "${old_private_blob}" -e "${stale_blob}" "${rotation_remote}/.ssh/authorized_keys"; then
     fail "key rotation retained old remote key material"
   fi
-  if compgen -G "${rotation_identity}.rotation-old.*" >/dev/null || compgen -G "${rotation_identity}.pub.rotation-old.*" >/dev/null; then
-    fail "key rotation retained old local key material after success"
+  if compgen -G "${rotation_identity}.rotation-new.*" >/dev/null \
+    || compgen -G "${rotation_identity}.rotation-old.*" >/dev/null \
+    || compgen -G "${rotation_identity}.pub.rotation-old.*" >/dev/null; then
+    fail "key rotation retained temporary or old local key material after success"
   fi
   grep -q 'key rotation completed' "${rotation_tmp}/rotation.log" || fail "key rotation did not report successful cleanup"
   rm -rf "${rotation_tmp}"
