@@ -2,9 +2,47 @@
 set -euo pipefail
 
 RESTORE_COMPONENT="cli.rsync.fetch"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../lib/restore.common
-source "${SCRIPT_DIR}/../lib/restore.common"
+PAGES_BASE_URL="${PROXMOX_RESTORE_PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}"
+FEATURE_TMP_DIR="${PROXMOX_RESTORE_TMP_DIR:-/tmp/pve-feature-vm-restore}"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+COMMON_PATH=""
+
+bootstrap.common.error() {
+  printf '[%s][error] %s\n' "${RESTORE_COMPONENT}" "$*" >&2
+}
+
+bootstrap.common.fetch() {
+  local destination="${FEATURE_TMP_DIR}/cli/lib/restore.common.sh"
+  local temporary="${destination}.tmp.$$"
+  mkdir -p "$(dirname "${destination}")"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${PAGES_BASE_URL}/cli/lib/restore.common.sh" -o "${temporary}" || {
+      rm -f "${temporary}"
+      bootstrap.common.error "failed to fetch ${PAGES_BASE_URL}/cli/lib/restore.common.sh"
+      exit 10
+    }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${temporary}" "${PAGES_BASE_URL}/cli/lib/restore.common.sh" || {
+      rm -f "${temporary}"
+      bootstrap.common.error "failed to fetch ${PAGES_BASE_URL}/cli/lib/restore.common.sh"
+      exit 10
+    }
+  else
+    bootstrap.common.error "curl or wget is required to fetch restore.common.sh"
+    exit 10
+  fi
+  chmod 0644 "${temporary}"
+  mv -f "${temporary}" "${destination}"
+  printf '%s\n' "${destination}"
+}
+
+if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+  [[ -r "${SCRIPT_DIR}/../lib/restore.common.sh" ]] && COMMON_PATH="${SCRIPT_DIR}/../lib/restore.common.sh"
+fi
+[[ -n "${COMMON_PATH}" ]] || COMMON_PATH="$(bootstrap.common.fetch)"
+# shellcheck source=../lib/restore.common.sh
+source "${COMMON_PATH}"
 
 ACTION="inspect"
 REMOTE_HOST=""
@@ -23,7 +61,7 @@ DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-Usage: cli/rsync/fetch --action inspect|transfer --remote-host HOST --remote-path PATH [options]
+Usage: cli/rsync/fetch.sh --action inspect|transfer --remote-host HOST --remote-path PATH [options]
 
 Inspect or resumably fetch one QEMU VMA backup. Transfer uses no network
 compression and verifies remote/local size and SHA-256 before succeeding.
@@ -48,11 +86,16 @@ Options:
   --help
 
 Examples:
-  cli/rsync/fetch --action inspect --remote-host 10.0.0.11 \
+  cli/rsync/fetch.sh --action inspect --remote-host 10.0.0.11 \
     --remote-path /backup/vzdump-qemu-200-date.vma.zst --output bytes
-  cli/rsync/fetch --action transfer --remote-host 10.0.0.11 \
+  cli/rsync/fetch.sh --action transfer --remote-host 10.0.0.11 \
     --remote-path /backup/vzdump-qemu-200-date.vma.zst \
     --destination-dir /mnt/pve-restore/200 --output path
+
+Published runner:
+  wget -qO- https://devs-guide.github.io/proxmox/cli/rsync/fetch.sh | \
+    bash -s -- --action inspect --remote-host 10.0.0.11 \
+      --remote-path /backup/vzdump-qemu-200-date.vma.zst
 EOF
 }
 

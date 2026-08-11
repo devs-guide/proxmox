@@ -2,9 +2,47 @@
 set -euo pipefail
 
 RESTORE_COMPONENT="cli.ssh.sync"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../lib/restore.common
-source "${SCRIPT_DIR}/../lib/restore.common"
+PAGES_BASE_URL="${PROXMOX_RESTORE_PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}"
+FEATURE_TMP_DIR="${PROXMOX_RESTORE_TMP_DIR:-/tmp/pve-feature-vm-restore}"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+COMMON_PATH=""
+
+bootstrap.common.error() {
+  printf '[%s][error] %s\n' "${RESTORE_COMPONENT}" "$*" >&2
+}
+
+bootstrap.common.fetch() {
+  local destination="${FEATURE_TMP_DIR}/cli/lib/restore.common.sh"
+  local temporary="${destination}.tmp.$$"
+  mkdir -p "$(dirname "${destination}")"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${PAGES_BASE_URL}/cli/lib/restore.common.sh" -o "${temporary}" || {
+      rm -f "${temporary}"
+      bootstrap.common.error "failed to fetch ${PAGES_BASE_URL}/cli/lib/restore.common.sh"
+      exit 10
+    }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${temporary}" "${PAGES_BASE_URL}/cli/lib/restore.common.sh" || {
+      rm -f "${temporary}"
+      bootstrap.common.error "failed to fetch ${PAGES_BASE_URL}/cli/lib/restore.common.sh"
+      exit 10
+    }
+  else
+    bootstrap.common.error "curl or wget is required to fetch restore.common.sh"
+    exit 10
+  fi
+  chmod 0644 "${temporary}"
+  mv -f "${temporary}" "${destination}"
+  printf '%s\n' "${destination}"
+}
+
+if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+  [[ -r "${SCRIPT_DIR}/../lib/restore.common.sh" ]] && COMMON_PATH="${SCRIPT_DIR}/../lib/restore.common.sh"
+fi
+[[ -n "${COMMON_PATH}" ]] || COMMON_PATH="$(bootstrap.common.fetch)"
+# shellcheck source=../lib/restore.common.sh
+source "${COMMON_PATH}"
 
 ACTION="check"
 REMOTE_HOST=""
@@ -19,7 +57,7 @@ DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-Usage: cli/ssh/sync --action setup|check --remote-host HOST [options]
+Usage: cli/ssh/sync.sh --action setup|check --remote-host HOST [options]
 
 Establish or verify the dedicated passwordless SSH identity used by VM restore.
 The setup action may prompt for the remote password. Passwords are never flags.
@@ -40,8 +78,12 @@ Options:
   --help
 
 Examples:
-  cli/ssh/sync --action setup --remote-host 10.0.0.11
-  cli/ssh/sync --action check --remote-host 10.0.0.11 --output tsv
+  cli/ssh/sync.sh --action setup --remote-host 10.0.0.11
+  cli/ssh/sync.sh --action check --remote-host 10.0.0.11 --output tsv
+
+Published runner:
+  wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh | \
+    bash -s -- --action setup --remote-host 10.0.0.11
 EOF
 }
 

@@ -2,9 +2,47 @@
 set -euo pipefail
 
 RESTORE_COMPONENT="cli.storage.temp"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../lib/restore.common
-source "${SCRIPT_DIR}/../lib/restore.common"
+PAGES_BASE_URL="${PROXMOX_RESTORE_PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}"
+FEATURE_TMP_DIR="${PROXMOX_RESTORE_TMP_DIR:-/tmp/pve-feature-vm-restore}"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+COMMON_PATH=""
+
+bootstrap.common.error() {
+  printf '[%s][error] %s\n' "${RESTORE_COMPONENT}" "$*" >&2
+}
+
+bootstrap.common.fetch() {
+  local destination="${FEATURE_TMP_DIR}/cli/lib/restore.common.sh"
+  local temporary="${destination}.tmp.$$"
+  mkdir -p "$(dirname "${destination}")"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${PAGES_BASE_URL}/cli/lib/restore.common.sh" -o "${temporary}" || {
+      rm -f "${temporary}"
+      bootstrap.common.error "failed to fetch ${PAGES_BASE_URL}/cli/lib/restore.common.sh"
+      exit 10
+    }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${temporary}" "${PAGES_BASE_URL}/cli/lib/restore.common.sh" || {
+      rm -f "${temporary}"
+      bootstrap.common.error "failed to fetch ${PAGES_BASE_URL}/cli/lib/restore.common.sh"
+      exit 10
+    }
+  else
+    bootstrap.common.error "curl or wget is required to fetch restore.common.sh"
+    exit 10
+  fi
+  chmod 0644 "${temporary}"
+  mv -f "${temporary}" "${destination}"
+  printf '%s\n' "${destination}"
+}
+
+if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+  [[ -r "${SCRIPT_DIR}/../lib/restore.common.sh" ]] && COMMON_PATH="${SCRIPT_DIR}/../lib/restore.common.sh"
+fi
+[[ -n "${COMMON_PATH}" ]] || COMMON_PATH="$(bootstrap.common.fetch)"
+# shellcheck source=../lib/restore.common.sh
+source "${COMMON_PATH}"
 
 ACTION="status"
 VM_ID=""
@@ -28,7 +66,7 @@ STORAGE_CONFIG="${PROXMOX_STORAGE_CONFIG:-/etc/pve/storage.cfg}"
 
 usage() {
   cat <<'EOF'
-Usage: cli/storage/temp --action create|status|remove --vm ID [options]
+Usage: cli/storage/temp.sh --action create|status|remove --vm ID [options]
 
 Create, resume, inspect, or remove one manifest-owned temporary filesystem on a
 thin LV. The selected Proxmox lvmthin storage is resolved from storage.cfg.
@@ -58,9 +96,13 @@ Options:
   --help
 
 Examples:
-  cli/storage/temp --action create --vm 321 --storage local-lvm \
+  cli/storage/temp.sh --action create --vm 321 --storage local-lvm \
     --source-bytes 2147483648 --output path
-  cli/storage/temp --action remove --vm 321 --storage local-lvm
+  cli/storage/temp.sh --action remove --vm 321 --storage local-lvm
+
+Published runner:
+  wget -qO- https://devs-guide.github.io/proxmox/cli/storage/temp.sh | \
+    bash -s -- --action status --vm 321
 EOF
 }
 

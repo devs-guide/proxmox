@@ -6,10 +6,10 @@ FEATURE_PLAYBOOKS=(
   "proxmox/helper/vm.restore.yml"
 )
 FEATURE_CLI_FILES=(
-  "lib/restore.common"
-  "ssh/sync"
-  "storage/temp"
-  "rsync/fetch"
+  "lib/restore.common.sh"
+  "ssh/sync.sh"
+  "storage/temp.sh"
+  "rsync/fetch.sh"
 )
 
 PAGES_BASE_URL="${PROXMOX_RESTORE_PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}"
@@ -50,7 +50,7 @@ bootstrap.feature_files() {
 
   if [[ -n "${requested_root}" ]]; then
     CLI_ROOT="${requested_root}"
-  elif [[ -r "${local_root}/lib/restore.common" ]]; then
+  elif [[ -r "${local_root}/lib/restore.common.sh" ]]; then
     CLI_ROOT="$(cd "${local_root}" && pwd)"
   else
     CLI_ROOT="${FEATURE_TMP_DIR}/cli"
@@ -61,8 +61,8 @@ bootstrap.feature_files() {
     for ref in "${FEATURE_CLI_FILES[@]}"; do
       bootstrap.fetch "${PAGES_BASE_URL}/cli/${ref}" "${CLI_ROOT}/${ref}"
     done
-    chmod 0644 "${CLI_ROOT}/lib/restore.common"
-    chmod 0755 "${CLI_ROOT}/ssh/sync" "${CLI_ROOT}/storage/temp" "${CLI_ROOT}/rsync/fetch"
+    chmod 0644 "${CLI_ROOT}/lib/restore.common.sh"
+    chmod 0755 "${CLI_ROOT}/ssh/sync.sh" "${CLI_ROOT}/storage/temp.sh" "${CLI_ROOT}/rsync/fetch.sh"
     PLAYBOOK_PATH="${FEATURE_TMP_DIR}/ansible/${FEATURE_PLAYBOOKS[0]}"
     bootstrap.fetch "${PAGES_BASE_URL}/ansible/${FEATURE_PLAYBOOKS[0]}" "${PLAYBOOK_PATH}"
   else
@@ -84,12 +84,12 @@ bootstrap.feature_files() {
 bootstrap.feature_files
 
 RESTORE_COMPONENT="setup.vm.restore"
-# shellcheck source=../../cli/lib/restore.common
-source "${CLI_ROOT}/lib/restore.common"
+# shellcheck source=../../cli/lib/restore.common.sh
+source "${CLI_ROOT}/lib/restore.common.sh"
 
-SSH_SYNC="${CLI_ROOT}/ssh/sync"
-STORAGE_TEMP="${CLI_ROOT}/storage/temp"
-RSYNC_FETCH="${CLI_ROOT}/rsync/fetch"
+SSH_SYNC="${CLI_ROOT}/ssh/sync.sh"
+STORAGE_TEMP="${CLI_ROOT}/storage/temp.sh"
+RSYNC_FETCH="${CLI_ROOT}/rsync/fetch.sh"
 
 ACTION="all"
 VM_ID=""
@@ -161,7 +161,7 @@ Connection flags:
   --remote-port PORT                 Default: 22
   --identity PATH                    Default: /root/.ssh/proxmox-restore-ed25519
   --known-hosts PATH                 Default: /root/.ssh/known_hosts
-  --host-key-fingerprint SHA256:...  Optional pin used by cli/ssh/sync setup
+  --host-key-fingerprint SHA256:...  Optional pin used by cli/ssh/sync.sh setup
   --connect-timeout SECONDS          Default: 10
 
 Storage and safety flags:
@@ -184,7 +184,7 @@ Storage and safety flags:
   --help
 
 Passwordless SSH is intentionally separate:
-  cli/ssh/sync --action setup --remote-host 10.0.0.11
+  cli/ssh/sync.sh --action setup --remote-host 10.0.0.11
 
 Complete restore example:
   setup/vm/restore.sh --action all --vm 201 --source-vm 200 \

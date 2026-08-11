@@ -364,6 +364,10 @@ publish.setup.features() {
     load.runner.array_from_script "${PATH_TO[root]}/${SETUP_VM_RESTORE_RUNNER}" "FEATURE_CLI_FILES" "setup_vm_restore_cli" "1"
     local cli_ref cli_source cli_destination cli_mode
     for cli_ref in ${PKGS[setup_vm_restore_cli]}; do
+      [[ "${cli_ref}" == *.sh ]] || {
+        log.error "[www.pages] ERROR[restore]: published Bash helper must end in .sh: cli/${cli_ref}"
+        exit 1
+      }
       cli_source="${PATH_TO[root]}/cli/${cli_ref}"
       cli_destination="${PATH_TO[publish]}/cli/${cli_ref}"
       [[ -f "${cli_source}" ]] || {
@@ -379,6 +383,22 @@ publish.setup.features() {
   else
     log.warn "[www.pages] ${SETUP_VM_RESTORE_RUNNER} not found; skipping structured VM restore runner publish"
   fi
+}
+
+validate.published.bash.extensions() {
+  local artifact first_line relative_path
+
+  while IFS= read -r artifact; do
+    IFS= read -r first_line < "${artifact}" || first_line=""
+    [[ "${first_line}" == '#!'*bash* ]] || continue
+    relative_path="${artifact#${PATH_TO[publish]}/}"
+    [[ "${relative_path}" == *.sh ]] || {
+      log.error "[www.pages] ERROR[extension]: published Bash artifact must end in .sh: ${relative_path}"
+      exit 1
+    }
+  done < <(find "${PATH_TO[publish]}" -type f -print)
+
+  log.info "[www.pages] all published Bash artifacts use .sh"
 }
 
 publish.ansible() {
@@ -567,6 +587,7 @@ run.pages() {
   publish.ansible
   publish.ansible.release64
   publish.ansible.release91
+  validate.published.bash.extensions
 
   log.info "${MSG[done]}"
 }

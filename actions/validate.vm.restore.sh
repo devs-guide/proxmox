@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="${ROOT}/setup/vm/restore.sh"
-COMMON="${ROOT}/cli/lib/restore.common"
-SSH_SYNC="${ROOT}/cli/ssh/sync"
-STORAGE_TEMP="${ROOT}/cli/storage/temp"
-RSYNC_FETCH="${ROOT}/cli/rsync/fetch"
+COMMON="${ROOT}/cli/lib/restore.common.sh"
+SSH_SYNC="${ROOT}/cli/ssh/sync.sh"
+STORAGE_TEMP="${ROOT}/cli/storage/temp.sh"
+RSYNC_FETCH="${ROOT}/cli/rsync/fetch.sh"
 PLAYBOOK="${ROOT}/ansible/proxmox/helper/vm.restore.yml"
 
 fail() {
@@ -48,6 +48,29 @@ for required_flag in --vm --action --stage-storage --target-storage --replace-ex
   grep -q -- "${required_flag}" <<<"$("${RUNNER}" --help)" || fail "runner help missing ${required_flag}"
 done
 ok "help and named-flag contracts are present"
+
+stream_tmp="$(mktemp -d)"
+for command_path in "${SSH_SYNC}" "${STORAGE_TEMP}" "${RSYNC_FETCH}"; do
+  stream_help="$(
+    PROXMOX_RESTORE_PAGES_BASE_URL="file://${ROOT}" \
+    PROXMOX_RESTORE_TMP_DIR="${stream_tmp}" \
+      bash -s -- --help < "${command_path}"
+  )"
+  grep -q -- '--help' <<<"${stream_help}" || fail "streamed helper bootstrap failed: ${command_path#${ROOT}/}"
+done
+stream_setup="$(
+  PROXMOX_RESTORE_PAGES_BASE_URL="file://${ROOT}" \
+  PROXMOX_RESTORE_TMP_DIR="${stream_tmp}" \
+    bash -s -- \
+      --action setup \
+      --remote-host 192.0.2.1 \
+      --identity "${stream_tmp}/identity" \
+      --known-hosts "${stream_tmp}/known_hosts" \
+      --dry-run < "${SSH_SYNC}" 2>&1
+)"
+grep -q 'ssh-copy-id' <<<"${stream_setup}" || fail "streamed SSH setup dry-run did not render ssh-copy-id"
+rm -rf "${stream_tmp}"
+ok "published helper entrypoints bootstrap restore.common.sh when streamed"
 
 expect_exit 2 "${RUNNER}" --unknown
 expect_exit 2 "${RUNNER}" --action cleanup
@@ -129,6 +152,12 @@ ok "restore failure retention and cleanup-before-start ordering are explicit"
 
 grep -q 'FEATURE_PLAYBOOKS=(' "${RUNNER}" || fail "runner does not declare playbook dependencies"
 grep -q 'FEATURE_CLI_FILES=(' "${RUNNER}" || fail "runner does not declare CLI dependencies"
+for cli_ref in lib/restore.common.sh ssh/sync.sh storage/temp.sh rsync/fetch.sh; do
+  grep -q "\"${cli_ref}\"" "${RUNNER}" || fail "runner is missing .sh CLI dependency: ${cli_ref}"
+done
+if grep -Eq '"(lib/restore\.common|ssh/sync|storage/temp|rsync/fetch)"' "${RUNNER}"; then
+  fail "runner retains an extensionless CLI dependency"
+fi
 grep -q 'SETUP_VM_RESTORE_RUNNER="setup/vm/restore.sh"' "${ROOT}/actions/www.pages.sh" || fail "Pages publisher lacks VM restore runner"
 grep -q 'setup/vm/restore.sh:setup/vm/restore.sh' "${ROOT}/actions/validate.pages.sh" || fail "Pages validator lacks canonical runner"
 grep -q "'cli/\*\*'" "${ROOT}/.github/workflows/www.pages.yml" || fail "Pages workflow does not trigger on cli/**"
