@@ -12,6 +12,7 @@
       - lvm2
       - e2fsprogs
       - zstd
+      - jq
 
   pre_tasks:
     - name: Confirm this host is a Proxmox node

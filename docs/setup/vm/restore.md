@@ -27,6 +27,9 @@ The target VM ID should be unused. Replacing an existing VM requires the
 explicit `--replace-existing` gate; the existing VM must be stopped, local to
 the current node, and not HA-managed.
 
+The restore dependency set includes `jq`. Published helpers use typed JSON for
+machine-to-machine composition.
+
 ## 1. Set up or rotate the SSH key
 
 For the first setup:
@@ -81,6 +84,15 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/vm/restore.sh |
 The restored VM remains stopped by default. Add `--start` only when it should
 start after successful restore verification and staging cleanup.
 
+Add `--output json` when another tool needs the final result on standard
+output. Progress and phase messages continue on standard error. The final
+object uses numeric VM IDs and bytes, with `source_vm`, `archive`, and `sha256`
+set to JSON `null` when a phase does not produce them:
+
+```json
+{"action":"all","target_vm":201,"source_vm":200,"archive":"/mnt/pve-restore/201/vzdump-qemu-200-date.vma.zst","bytes":2147483648,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+```
+
 Run the same command with `--dry-run` first when reviewing a new host, storage
 layout, or target VM choice.
 
@@ -105,6 +117,10 @@ could incorrectly treat an omitted `--dry-run` flag as a failed argument-builder
 command under Bash `set -e`. The failure occurred before stage creation,
 transfer, or `qmrestore`.
 
+If an older copy reports malformed helper metadata, download the runner and
+helpers again. That build stopped during remote inspection, before stage
+creation, transfer, or `qmrestore`.
+
 Both published execution forms are supported. Streaming is convenient for a
 single run; downloading first keeps the exact runner available for inspection:
 
@@ -126,10 +142,11 @@ wget -qO- https://devs-guide.github.io/proxmox/cli/rsync/fetch.sh |
     --action inspect \
     --remote-host 10.0.0.10 \
     --remote-path /backup/vzdump-qemu-200-date.vma.zst \
-    --output tsv
+    --output json
 ```
 
-Record the returned byte count, SHA-256 digest, and basename.
+Record the returned numeric `bytes` value and string `sha256` and `basename`
+values.
 
 ### Create the temporary staging filesystem
 

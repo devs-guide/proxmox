@@ -35,6 +35,7 @@ done
 for path in "${RUNNER}" "${SSH_SYNC}" "${STORAGE_TEMP}" "${RSYNC_FETCH}"; do
   [[ -x "${path}" ]] || fail "command is not executable: ${path#${ROOT}/}"
 done
+command -v jq >/dev/null 2>&1 || fail "jq is required for restore JSON contract validation"
 
 bash -n "${RUNNER}" "${COMMON}" "${SSH_SYNC}" "${STORAGE_TEMP}" "${RSYNC_FETCH}"
 ok "all restore shell artifacts pass bash -n"
@@ -43,6 +44,10 @@ for command_path in "${RUNNER}" "${SSH_SYNC}" "${STORAGE_TEMP}" "${RSYNC_FETCH}"
   help_output="$("${command_path}" --help)"
   grep -q -- '--help' <<<"${help_output}" || fail "help output missing --help: ${command_path#${ROOT}/}"
   grep -q -- '--dry-run' <<<"${help_output}" || fail "help output missing --dry-run: ${command_path#${ROOT}/}"
+  grep -q -- 'json' <<<"${help_output}" || fail "help output missing JSON output: ${command_path#${ROOT}/}"
+  if grep -q -- 'tsv' <<<"${help_output}"; then
+    fail "help output retains the removed TSV interface: ${command_path#${ROOT}/}"
+  fi
 done
 for required_flag in --key-rotation --yes; do
   grep -q -- "${required_flag}" <<<"$("${SSH_SYNC}" --help)" || fail "SSH helper help missing ${required_flag}"
@@ -149,6 +154,328 @@ if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)));
   ok "real-mode argument builders and optional dry-run actions remain successful under set -e"
 else
   ok "argument-builder regression is deferred to GitHub Actions on Bash 4.3+"
+fi
+
+if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))); then
+  json_tmp="$(mktemp -d)"
+  json_bin="${json_tmp}/bin"
+  json_identity="${json_tmp}/identity with \"quotes\" and \\backslash"
+  json_known_hosts="${json_tmp}/known hosts with \"quotes\" and \\backslash"
+  json_basename='vzdump-qemu-200-space "quoted" \backslash.vma.zst'
+  json_remote_path="/backup folder/${json_basename}"
+  json_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  mkdir -p "${json_bin}"
+  printf 'mock-identity\n' >"${json_identity}"
+  printf 'mock-known-host\n' >"${json_known_hosts}"
+  cat >"${json_bin}/ssh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${MOCK_REMOTE_BYTES:-}" ]]; then
+  printf '%s\n%s\n%s\n' "${MOCK_REMOTE_BYTES}" "${MOCK_REMOTE_SHA256}" "${MOCK_REMOTE_BASENAME}"
+fi
+EOF
+  chmod 0755 "${json_bin}/ssh"
+
+  archive_json="$({
+    PATH="${json_bin}:${PATH}" \
+    MOCK_REMOTE_BYTES=4096 \
+    MOCK_REMOTE_SHA256="${json_sha}" \
+    MOCK_REMOTE_BASENAME="${json_basename}" \
+      "${RSYNC_FETCH}" \
+        --action inspect \
+        --remote-host test.example.invalid \
+        --remote-path "${json_remote_path}" \
+        --identity "${json_identity}" \
+        --known-hosts "${json_known_hosts}" \
+        --output json
+  } 2>"${json_tmp}/archive.log")"
+  jq -e \
+    --arg basename "${json_basename}" \
+    'type == "object"
+     and (.bytes | type == "number" and . == 4096 and floor == .)
+     and (.sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+     and (.basename == $basename)
+     and (has("path") | not)' <<<"${archive_json}" >/dev/null || \
+    fail "rsync inspection did not emit the typed archive JSON contract"
+
+  connection_args_definition="$(awk '
+    /^connection_args\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  inspect_definition="$(awk '
+    /^inspect_remote_archive\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  resolve_source_definition="$(awk '
+    /^resolve_source_vm\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  [[ -n "${connection_args_definition}" && -n "${inspect_definition}" && -n "${resolve_source_definition}" ]] || \
+    fail "could not extract the runner JSON inspection path"
+
+  parsed_archive_json="$({
+    PATH="${json_bin}:${PATH}" \
+    MOCK_REMOTE_BYTES=4096 \
+    MOCK_REMOTE_SHA256="${json_sha}" \
+    MOCK_REMOTE_BASENAME="${json_basename}" \
+      bash -c '
+        set -euo pipefail
+        source "$1"
+        eval "$2"
+        eval "$3"
+        eval "$4"
+        RSYNC_FETCH="$5"
+        REMOTE_HOST=test.example.invalid
+        REMOTE_USER=root
+        REMOTE_PORT=22
+        REMOTE_PATH="$6"
+        IDENTITY="$7"
+        KNOWN_HOSTS="$8"
+        CONNECT_TIMEOUT=10
+        HOST_KEY_FINGERPRINT=""
+        SOURCE_VM_ID=200
+        CURRENT_PHASE=test
+        inspect_remote_archive
+        jq -cn \
+          --arg bytes "${REMOTE_BYTES}" \
+          --arg sha256 "${REMOTE_SHA256}" \
+          --arg basename "${REMOTE_BASENAME}" \
+          --arg source_vm "${SOURCE_VM_ID}" \
+          "{bytes:(\$bytes|tonumber),sha256:\$sha256,basename:\$basename,source_vm:(\$source_vm|tonumber)}"
+      ' _ "${COMMON}" "${connection_args_definition}" "${inspect_definition}" \
+        "${resolve_source_definition}" "${RSYNC_FETCH}" "${json_remote_path}" \
+        "${json_identity}" "${json_known_hosts}"
+  } 2>"${json_tmp}/runner-archive.log")"
+  jq -e --arg basename "${json_basename}" \
+    '.bytes == 4096 and .source_vm == 200 and .basename == $basename
+     and .sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+    <<<"${parsed_archive_json}" >/dev/null || \
+    fail "runner did not parse the real rsync helper JSON output"
+
+  cat >"${json_bin}/mock-fetch" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${MOCK_JSON}"
+EOF
+  chmod 0755 "${json_bin}/mock-fetch"
+  invalid_archive_json=(
+    '{'
+    '[]'
+    'null'
+    $'{"bytes":4096,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","basename":"vzdump-qemu-200-test.vma.zst"}\n{"bytes":4096,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","basename":"vzdump-qemu-200-test.vma.zst"}'
+    "{\"bytes\":4096,\"sha256\":\"${json_sha}\"}"
+    "{\"bytes\":\"4096\",\"sha256\":\"${json_sha}\",\"basename\":\"vzdump-qemu-200-test.vma.zst\"}"
+    "{\"bytes\":0,\"sha256\":\"${json_sha}\",\"basename\":\"vzdump-qemu-200-test.vma.zst\"}"
+    "{\"bytes\":-1,\"sha256\":\"${json_sha}\",\"basename\":\"vzdump-qemu-200-test.vma.zst\"}"
+    '{"bytes":4096,"sha256":"not-a-sha256","basename":"vzdump-qemu-200-test.vma.zst"}'
+    $'{"bytes":4096,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","basename":"bad\nname"}'
+  )
+  for invalid_json in "${invalid_archive_json[@]}"; do
+    set +e
+    MOCK_JSON="${invalid_json}" bash -c '
+      set -euo pipefail
+      source "$1"
+      eval "$2"
+      eval "$3"
+      eval "$4"
+      RSYNC_FETCH="$5"
+      REMOTE_HOST=test.example.invalid
+      REMOTE_USER=root
+      REMOTE_PORT=22
+      REMOTE_PATH=/backup/vzdump-qemu-200-test.vma.zst
+      IDENTITY=/tmp/mock-identity
+      KNOWN_HOSTS=/tmp/mock-known-hosts
+      CONNECT_TIMEOUT=10
+      HOST_KEY_FINGERPRINT=""
+      SOURCE_VM_ID=200
+      CURRENT_PHASE=test
+      inspect_remote_archive
+    ' _ "${COMMON}" "${connection_args_definition}" "${inspect_definition}" \
+      "${resolve_source_definition}" "${json_bin}/mock-fetch" \
+      >"${json_tmp}/invalid.out" 2>"${json_tmp}/invalid.log"
+    invalid_rc=$?
+    set -e
+    [[ "${invalid_rc}" == "${RESTORE_EXIT_TRANSFER:-40}" ]] || \
+      fail "invalid archive JSON returned ${invalid_rc}, expected 40"
+    grep -q 'malformed or incorrectly typed JSON metadata' "${json_tmp}/invalid.log" || \
+      fail "invalid archive JSON did not report a metadata-contract error"
+  done
+
+  status_definition="$(awk '
+    /^emit_status\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${STORAGE_TEMP}")"
+  [[ -n "${status_definition}" ]] || fail "could not extract storage JSON status producer"
+  storage_mountpoint="${json_tmp}/mount with \"quotes\" and \\backslash"
+  storage_json="$(bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    OUTPUT=json
+    VG_NAME=pve
+    THIN_POOL=data
+    LV_NAME=restore_stage_vm100
+    STORAGE=local-lvm
+    DEVICE=/dev/pve/restore_stage_vm100
+    MOUNTPOINT="$3"
+    STAGE_BYTES=8192
+    POOL_SIZE_BYTES=107374182400
+    POOL_DATA_PERCENT=12.5
+    POOL_METADATA_PERCENT=1.25
+    VG_FREE_BYTES=53687091200
+    emit_status present
+  ' _ "${COMMON}" "${status_definition}" "${storage_mountpoint}")"
+  jq -e --arg mountpoint "${storage_mountpoint}" '
+    type == "object"
+    and .state == "present"
+    and .storage == "local-lvm"
+    and .mountpoint == $mountpoint
+    and (.stage_bytes == 8192 and (.stage_bytes | type) == "number")
+    and (.pool_size_bytes == 107374182400 and (.pool_size_bytes | type) == "number")
+    and (.data_percent == 12.5 and (.data_percent | type) == "number")
+    and (.metadata_percent == 1.25 and (.metadata_percent | type) == "number")
+    and (.vg_free_bytes == 53687091200 and (.vg_free_bytes | type) == "number")
+  ' <<<"${storage_json}" >/dev/null || fail "storage status did not emit typed JSON"
+
+  capacity_definition="$(awk '
+    /^check_restore_capacity\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  [[ -n "${capacity_definition}" ]] || fail "could not extract runner storage JSON parser"
+  MOCK_JSON="${storage_json}" bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    STORAGE_TEMP="$3"
+    VM_ID=100
+    TARGET_STORAGE=local-lvm
+    MOUNT_ROOT=/mnt/pve-restore
+    MAX_THIN_DATA_PERCENT=85
+    MAX_THIN_METADATA_PERCENT=75
+    VMA_ESTIMATED_BYTES=4096
+    CAPACITY_OVERRIDE=0
+    DRY_RUN=0
+    CURRENT_PHASE=test
+    check_restore_capacity
+  ' _ "${COMMON}" "${capacity_definition}" "${json_bin}/mock-fetch" \
+    >"${json_tmp}/capacity.out" 2>"${json_tmp}/capacity.log" || \
+    fail "runner did not parse the real storage status JSON"
+  invalid_storage_json=(
+    '{"pool_size_bytes":0,"data_percent":12.5,"metadata_percent":1.25}'
+    '{"pool_size_bytes":107374182400,"data_percent":"12.5","metadata_percent":1.25}'
+    '{"pool_size_bytes":107374182400,"data_percent":-1,"metadata_percent":1.25}'
+    '{"pool_size_bytes":107374182400,"data_percent":12.5,"metadata_percent":-1}'
+    '{"pool_size_bytes":107374182400,"data_percent":12.5}'
+  )
+  for invalid_json in "${invalid_storage_json[@]}"; do
+    set +e
+    MOCK_JSON="${invalid_json}" bash -c '
+      set -euo pipefail
+      source "$1"
+      eval "$2"
+      STORAGE_TEMP="$3"
+      VM_ID=100
+      TARGET_STORAGE=local-lvm
+      MOUNT_ROOT=/mnt/pve-restore
+      MAX_THIN_DATA_PERCENT=85
+      MAX_THIN_METADATA_PERCENT=75
+      VMA_ESTIMATED_BYTES=4096
+      CAPACITY_OVERRIDE=0
+      DRY_RUN=0
+      CURRENT_PHASE=test
+      check_restore_capacity
+    ' _ "${COMMON}" "${capacity_definition}" "${json_bin}/mock-fetch" \
+      >"${json_tmp}/invalid-capacity.out" 2>"${json_tmp}/invalid-capacity.log"
+    invalid_rc=$?
+    set -e
+    [[ "${invalid_rc}" == "${RESTORE_EXIT_INTEGRITY:-50}" ]] || \
+      fail "invalid storage JSON returned ${invalid_rc}, expected 50"
+    grep -q 'malformed or incorrectly typed JSON metadata' "${json_tmp}/invalid-capacity.log" || \
+      fail "invalid storage JSON did not report a metadata-contract error"
+  done
+
+  ssh_json="$({
+    PATH="${json_bin}:${PATH}" \
+      "${SSH_SYNC}" \
+        --action check \
+        --remote-host test.example.invalid \
+        --remote-port 0022 \
+        --identity "${json_identity}" \
+        --known-hosts "${json_known_hosts}" \
+        --output json
+  } 2>"${json_tmp}/ssh.log")"
+  jq -e --arg identity "${json_identity}" --arg known_hosts "${json_known_hosts}" '
+    type == "object"
+    and .host == "test.example.invalid"
+    and .user == "root"
+    and (.port == 22 and (.port | type) == "number")
+    and .identity == $identity
+    and .known_hosts == $known_hosts
+  ' <<<"${ssh_json}" >/dev/null || fail "SSH helper did not emit typed JSON"
+
+  result_definition="$(awk '
+    /^emit_result\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${RUNNER}")"
+  [[ -n "${result_definition}" ]] || fail "could not extract final restore JSON producer"
+  result_archive="${json_tmp}/archive with \"quotes\" and \\backslash.vma.zst"
+  result_json="$(bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    OUTPUT=json
+    ACTION=all
+    VM_ID=100
+    SOURCE_VM_ID=200
+    ARCHIVE="$3"
+    LOCAL_BYTES=4096
+    REMOTE_BYTES=4096
+    LOCAL_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    REMOTE_SHA256="${LOCAL_SHA256}"
+    MOUNT_ROOT=/mnt/pve-restore
+    emit_result completed
+  ' _ "${COMMON}" "${result_definition}" "${result_archive}")"
+  jq -e --arg archive "${result_archive}" '
+    type == "object"
+    and .action == "all"
+    and (.target_vm == 100 and (.target_vm | type) == "number")
+    and (.source_vm == 200 and (.source_vm | type) == "number")
+    and .archive == $archive
+    and (.bytes == 4096 and (.bytes | type) == "number")
+    and .sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ' <<<"${result_json}" >/dev/null || fail "final restore result did not emit typed JSON"
+
+  nullable_result_json="$(bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    OUTPUT=json
+    ACTION=preflight
+    VM_ID=100
+    SOURCE_VM_ID=""
+    ARCHIVE=""
+    LOCAL_BYTES=""
+    REMOTE_BYTES=""
+    LOCAL_SHA256=""
+    REMOTE_SHA256=""
+    MOUNT_ROOT=/mnt/pve-restore
+    emit_result completed
+  ' _ "${COMMON}" "${result_definition}")"
+  jq -e '
+    .action == "preflight" and .target_vm == 100 and .source_vm == null
+    and .archive == null and .bytes == 0 and .sha256 == null
+  ' <<<"${nullable_result_json}" >/dev/null || fail "optional restore result fields are not JSON null values"
+
+  rm -rf "${json_tmp}"
+  ok "SSH, archive, storage, and final-result JSON contracts are typed, escaped, parsed, and rejected strictly"
+else
+  ok "JSON integration is deferred to GitHub Actions on Bash 4.3+"
 fi
 
 canonical_tmp="$(mktemp -d)"
@@ -295,8 +622,12 @@ expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --key-rotatio
 expect_exit 2 "${SSH_SYNC}" --action setup --remote-host 192.0.2.1 --yes
 expect_exit 2 "${STORAGE_TEMP}" --unknown
 expect_exit 2 "${RSYNC_FETCH}" --unknown
+expect_exit 2 "${RUNNER}" --action preflight --vm 100 --output tsv
+expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --output tsv
+expect_exit 2 "${STORAGE_TEMP}" --action status --vm 100 --output tsv
+expect_exit 2 "${RSYNC_FETCH}" --action inspect --remote-host 192.0.2.1 --remote-path /backup/vzdump-qemu-200-test.vma.zst --output tsv
 expect_exit 2 "${RUNNER}" positional
-ok "unknown, positional, and missing required arguments return usage exit 2"
+ok "unknown, positional, missing, and removed TSV arguments return usage exit 2"
 
 derived="$(bash -u -c '
   source "$1"
@@ -376,6 +707,15 @@ done
 if grep -Eq '"(lib/restore\.common|ssh/sync|storage/temp|rsync/fetch)"' "${RUNNER}"; then
   fail "runner retains an extensionless CLI dependency"
 fi
+if grep -R -E -q -- '--output[[:space:]]+tsv|human\|[^[:space:]]*tsv|parse_tsv|local[[:space:]]+tsv=|restore\.emit.*tsv' \
+  "${RUNNER}" "${ROOT}/cli" "${ROOT}/docs/setup/vm/restore.md" "${ROOT}/docs/cli" "${ROOT}/readme.md"; then
+  fail "published restore interfaces retain the removed TSV machine-output contract"
+fi
+if grep -R -i -q -- 'tsv' \
+  "${ROOT}/docs/setup/vm/restore.md" "${ROOT}/docs/cli/rsync/fetch.md" \
+  "${ROOT}/docs/cli/ssh/sync.md" "${ROOT}/docs/cli/storage/temp.md" "${ROOT}/readme.md"; then
+  fail "restore documentation retains references to the removed machine-output format"
+fi
 grep -q 'SETUP_VM_RESTORE_RUNNER="setup/vm/restore.sh"' "${ROOT}/actions/www.pages.sh" || fail "Pages publisher lacks VM restore runner"
 grep -q 'setup/vm/restore.sh:setup/vm/restore.sh' "${ROOT}/actions/validate.pages.sh" || fail "Pages validator lacks canonical runner"
 grep -q "'cli/\*\*'" "${ROOT}/.github/workflows/www.pages.yml" || fail "Pages workflow does not trigger on cli/**"
@@ -386,9 +726,11 @@ if grep -q 'ansible.builtin.shell' "${PLAYBOOK}"; then
   fail "dependency playbook contains shell mutation logic"
 fi
 grep -q 'ansible.builtin.apt' "${PLAYBOOK}" || fail "dependency playbook does not install packages"
-for package in rsync openssh-client lvm2 e2fsprogs zstd; do
+for package in rsync openssh-client lvm2 e2fsprogs zstd jq; do
   grep -q -- "- ${package}" "${PLAYBOOK}" || fail "dependency playbook missing ${package}"
 done
+grep -A80 'dev_tools:' "${ROOT}/ansible/debian/packages.yml" | grep -q -- '- jq' || \
+  fail "Debian dev_tools does not include jq"
 ok "Ansible playbook remains dependency-only"
 
 printf '[validate.vm.restore] all contracts passed\n'

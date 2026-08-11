@@ -77,7 +77,7 @@ Options:
   --known-hosts PATH               Default: /root/.ssh/known_hosts
   --host-key-fingerprint SHA256:... Pin the remote host key during setup
   --connect-timeout SECONDS        Default: 10
-  --output human|path|tsv          Default: human
+  --output human|path|json         Default: human
   --key-rotation                   Install/verify a fresh key, then remove old keys
   --yes                            Required confirmation for --key-rotation
   --dry-run                        Print mutations without performing them
@@ -87,7 +87,7 @@ Examples:
   cli/ssh/sync.sh --action setup --remote-host 10.0.0.11
   cli/ssh/sync.sh --action setup --remote-host 10.0.0.11 \
     --key-rotation --yes
-  cli/ssh/sync.sh --action check --remote-host 10.0.0.11 --output tsv
+  cli/ssh/sync.sh --action check --remote-host 10.0.0.11 --output json
 
 Published runner:
   wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh | \
@@ -123,7 +123,10 @@ restore.validate_host "${REMOTE_HOST}"
 restore.validate_remote_user "${REMOTE_USER}"
 restore.validate_port "${REMOTE_PORT}"
 restore.validate_positive_uint "--connect-timeout" "${CONNECT_TIMEOUT}"
-restore.validate_output "${OUTPUT}" human path tsv
+restore.validate_output "${OUTPUT}" human path json
+if [[ "${OUTPUT}" == json ]]; then
+  restore.require_commands "${RESTORE_EXIT_SSH}" jq
+fi
 [[ "${IDENTITY}" == /* ]] || restore.die "${RESTORE_EXIT_USAGE}" "--identity must be absolute"
 [[ "${KNOWN_HOSTS}" == /* ]] || restore.die "${RESTORE_EXIT_USAGE}" "--known-hosts must be absolute"
 [[ -z "${HOST_KEY_FINGERPRINT}" || "${HOST_KEY_FINGERPRINT}" == SHA256:* ]] || \
@@ -477,6 +480,13 @@ esac
 case "${OUTPUT}" in
   human) restore.log "SSH ${ACTION} completed for ${SSH_TARGET}" ;;
   path) printf '%s\n' "${IDENTITY}" ;;
-  tsv) printf 'host\t%s\tuser\t%s\tport\t%s\tidentity\t%s\tknown_hosts\t%s\n' \
-    "${REMOTE_HOST}" "${REMOTE_USER}" "${REMOTE_PORT}" "${IDENTITY}" "${KNOWN_HOSTS}" ;;
+  json)
+    jq -cn \
+      --arg host "${REMOTE_HOST}" \
+      --arg user "${REMOTE_USER}" \
+      --arg port "${REMOTE_PORT}" \
+      --arg identity "${IDENTITY}" \
+      --arg known_hosts "${KNOWN_HOSTS}" \
+      '{host: $host, user: $user, port: ($port | tonumber), identity: $identity, known_hosts: $known_hosts}'
+    ;;
 esac

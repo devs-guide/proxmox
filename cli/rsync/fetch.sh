@@ -81,13 +81,13 @@ Options:
   --connect-timeout SECONDS         Default: 10
   --rsync-timeout SECONDS           Default: 0 (disabled)
   --rsync-bwlimit-kbps RATE
-  --output human|path|bytes|sha256|tsv
+  --output human|path|bytes|sha256|json
   --dry-run
   --help
 
 Examples:
   cli/rsync/fetch.sh --action inspect --remote-host 10.0.0.11 \
-    --remote-path /backup/vzdump-qemu-200-date.vma.zst --output bytes
+    --remote-path /backup/vzdump-qemu-200-date.vma.zst --output json
   cli/rsync/fetch.sh --action transfer --remote-host 10.0.0.11 \
     --remote-path /backup/vzdump-qemu-200-date.vma.zst \
     --destination-dir /mnt/pve-restore/200 --output path
@@ -138,12 +138,15 @@ restore.validate_uint "--rsync-timeout" "${RSYNC_TIMEOUT}"
 [[ -z "${HOST_KEY_FINGERPRINT}" || "${HOST_KEY_FINGERPRINT}" == SHA256:* ]] || \
   restore.die "${RESTORE_EXIT_USAGE}" "--host-key-fingerprint must start with SHA256:"
 restore.validate_archive_name "${REMOTE_PATH}"
-restore.validate_output "${OUTPUT}" human path bytes sha256 tsv
+restore.validate_output "${OUTPUT}" human path bytes sha256 json
 [[ -f "${IDENTITY}" && ! -L "${IDENTITY}" ]] || \
   restore.die "${RESTORE_EXIT_SSH}" "identity must be a regular non-symlink file: ${IDENTITY}"
 [[ -f "${KNOWN_HOSTS}" && ! -L "${KNOWN_HOSTS}" ]] || \
   restore.die "${RESTORE_EXIT_SSH}" "known-hosts must be a regular non-symlink file: ${KNOWN_HOSTS}"
 restore.require_commands "${RESTORE_EXIT_TRANSFER}" ssh sha256sum
+if [[ "${OUTPUT}" == json ]]; then
+  restore.require_commands "${RESTORE_EXIT_TRANSFER}" jq
+fi
 if [[ -n "${HOST_KEY_FINGERPRINT}" ]]; then
   restore.require_commands "${RESTORE_EXIT_SSH}" ssh-keygen
   restore.known_host_has_fingerprint "${REMOTE_HOST}" "${REMOTE_PORT}" "${KNOWN_HOSTS}" "${HOST_KEY_FINGERPRINT}" || \
@@ -164,14 +167,21 @@ inspect_remote() {
   remote_script+='if [ ! -r "$p" ]; then printf "restore-error:not-readable\\n" >&2; exit 43; fi; '
   remote_script+='bytes=$(stat -Lc %s -- "$p") || exit 44; '
   remote_script+='sha=$(sha256sum -- "$p") || exit 45; sha=${sha%% *}; '
-  remote_script+='base=${p##*/}; printf "%s\\t%s\\t%s\\n" "$bytes" "$sha" "$base"'
+  remote_script+='base=${p##*/}; printf "%s\\n%s\\n%s\\n" "$bytes" "$sha" "$base"'
   quoted_script="$(restore.shell_quote "${remote_script}")"
   remote_command="bash -c ${quoted_script}"
   restore.ssh_options ssh_options yes
   restore.log "inspecting ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
   result="$(ssh "${ssh_options[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "${remote_command}")" || \
     restore.die "${RESTORE_EXIT_SSH}" "remote archive inspection failed"
-  IFS=$'\t' read -r REMOTE_BYTES REMOTE_SHA256 REMOTE_BASENAME <<<"${result}"
+  local extra=""
+  {
+    IFS= read -r REMOTE_BYTES || true
+    IFS= read -r REMOTE_SHA256 || true
+    IFS= read -r REMOTE_BASENAME || true
+    IFS= read -r extra || true
+  } <<<"${result}"
+  [[ -z "${extra}" ]] || restore.die "${RESTORE_EXIT_TRANSFER}" "remote inspection returned unexpected metadata"
   [[ "${REMOTE_BYTES}" =~ ^[0-9]+$ && "${REMOTE_BYTES}" -gt 0 ]] || \
     restore.die "${RESTORE_EXIT_TRANSFER}" "remote inspection returned invalid byte count"
   [[ "${REMOTE_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]] || \
@@ -184,9 +194,24 @@ inspect_remote() {
 emit_metadata() {
   local local_path="${1:-}"
   local human="remote archive ${REMOTE_BASENAME}: $(restore.human_bytes "${REMOTE_BYTES}"), sha256 ${REMOTE_SHA256}"
-  local tsv="bytes\t${REMOTE_BYTES}\tsha256\t${REMOTE_SHA256}\tbasename\t${REMOTE_BASENAME}"
-  [[ -z "${local_path}" ]] || tsv+=$'\t'"path"$'\t'"${local_path}"
-  restore.emit "${OUTPUT}" "${human}" "${local_path:-${REMOTE_BASENAME}}" "${REMOTE_BYTES}" "${REMOTE_SHA256}" "${tsv}"
+  local json=""
+  if [[ "${OUTPUT}" == json ]]; then
+    if [[ -n "${local_path}" ]]; then
+      json="$(jq -cn \
+        --arg bytes "${REMOTE_BYTES}" \
+        --arg sha256 "${REMOTE_SHA256}" \
+        --arg basename "${REMOTE_BASENAME}" \
+        --arg path "${local_path}" \
+        '{bytes: ($bytes | tonumber), sha256: $sha256, basename: $basename, path: $path}')"
+    else
+      json="$(jq -cn \
+        --arg bytes "${REMOTE_BYTES}" \
+        --arg sha256 "${REMOTE_SHA256}" \
+        --arg basename "${REMOTE_BASENAME}" \
+        '{bytes: ($bytes | tonumber), sha256: $sha256, basename: $basename}')"
+    fi
+  fi
+  restore.emit "${OUTPUT}" "${human}" "${local_path:-${REMOTE_BASENAME}}" "${REMOTE_BYTES}" "${REMOTE_SHA256}" "${json}"
 }
 
 transfer_archive() {

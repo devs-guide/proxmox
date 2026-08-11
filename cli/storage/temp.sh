@@ -91,7 +91,7 @@ Options:
   --archive-basename NAME           Manifest metadata
   --capacity-override               Confirm bypass of the projected capacity gate
   --yes                             Noninteractive capacity-override confirmation
-  --output human|path|bytes|tsv
+  --output human|path|bytes|json
   --dry-run
   --help
 
@@ -140,7 +140,7 @@ restore.validate_vm_id "${VM_ID}"
 restore.validate_storage_id "${STORAGE}"
 restore.validate_percent "--max-thin-data-percent" "${MAX_THIN_DATA_PERCENT}"
 restore.validate_percent "--max-thin-metadata-percent" "${MAX_THIN_METADATA_PERCENT}"
-restore.validate_output "${OUTPUT}" human path bytes tsv
+restore.validate_output "${OUTPUT}" human path bytes json
 [[ "${MOUNT_ROOT}" == /* && "${MOUNT_ROOT}" != *'/../'* && "${MOUNT_ROOT}" != */.. ]] || \
   restore.die "${RESTORE_EXIT_USAGE}" "--mount-root must be an absolute normalized path"
 [[ -z "${SOURCE_BYTES}" ]] || restore.validate_positive_uint "--source-bytes" "${SOURCE_BYTES}"
@@ -154,6 +154,9 @@ fi
 
 restore.require_proxmox
 restore.require_commands "${RESTORE_EXIT_STORAGE}" pvesm lvs vgs lvcreate lvremove mkfs.ext4 mount umount findmnt lsblk awk
+if [[ "${OUTPUT}" == json ]]; then
+  restore.require_commands "${RESTORE_EXIT_STORAGE}" jq
+fi
 [[ -r "${STORAGE_CONFIG}" ]] || restore.die "${RESTORE_EXIT_STORAGE}" "cannot read Proxmox storage configuration: ${STORAGE_CONFIG}"
 
 LV_NAME="$(restore.stage_lv_name "${VM_ID}")"
@@ -343,8 +346,37 @@ check_stage_capacity() {
 emit_status() {
   local state="$1"
   local human="stage ${state}: ${VG_NAME}/${LV_NAME} -> ${MOUNTPOINT}; pool data ${POOL_DATA_PERCENT}%, metadata ${POOL_METADATA_PERCENT}%"
-  local tsv="state\t${state}\tstorage\t${STORAGE}\tvg\t${VG_NAME}\tthin_pool\t${THIN_POOL}\tlv\t${LV_NAME}\tdevice\t${DEVICE}\tmountpoint\t${MOUNTPOINT}\tstage_bytes\t${STAGE_BYTES:-0}\tpool_size_bytes\t${POOL_SIZE_BYTES}\tdata_percent\t${POOL_DATA_PERCENT}\tmetadata_percent\t${POOL_METADATA_PERCENT}\tvg_free_bytes\t${VG_FREE_BYTES}"
-  restore.emit "${OUTPUT}" "${human}" "${MOUNTPOINT}" "${STAGE_BYTES:-0}" "" "${tsv}"
+  local json=""
+  if [[ "${OUTPUT}" == json ]]; then
+    json="$(jq -cn \
+      --arg state "${state}" \
+      --arg storage "${STORAGE}" \
+      --arg vg "${VG_NAME}" \
+      --arg thin_pool "${THIN_POOL}" \
+      --arg lv "${LV_NAME}" \
+      --arg device "${DEVICE}" \
+      --arg mountpoint "${MOUNTPOINT}" \
+      --arg stage_bytes "${STAGE_BYTES:-0}" \
+      --arg pool_size_bytes "${POOL_SIZE_BYTES}" \
+      --arg data_percent "${POOL_DATA_PERCENT}" \
+      --arg metadata_percent "${POOL_METADATA_PERCENT}" \
+      --arg vg_free_bytes "${VG_FREE_BYTES}" \
+      '{
+        state: $state,
+        storage: $storage,
+        vg: $vg,
+        thin_pool: $thin_pool,
+        lv: $lv,
+        device: $device,
+        mountpoint: $mountpoint,
+        stage_bytes: ($stage_bytes | tonumber | floor),
+        pool_size_bytes: ($pool_size_bytes | tonumber | floor),
+        data_percent: ($data_percent | tonumber),
+        metadata_percent: ($metadata_percent | tonumber),
+        vg_free_bytes: ($vg_free_bytes | tonumber | floor)
+      }')"
+  fi
+  restore.emit "${OUTPUT}" "${human}" "${MOUNTPOINT}" "${STAGE_BYTES:-0}" "" "${json}"
 }
 
 create_stage() {

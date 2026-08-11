@@ -52,6 +52,22 @@ wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh |
 ```
 
 A successful check exits with status zero after logging a BatchMode SSH check.
+For reuse by other tooling, request typed JSON (`port` is numeric):
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh |
+  bash -s -- \
+    --action check \
+    --remote-host 10.0.0.10 \
+    --output json
+```
+
+```json
+{"host":"10.0.0.10","user":"root","port":22,"identity":"/root/.ssh/proxmox-restore-ed25519","known_hosts":"/root/.ssh/known_hosts"}
+```
+
+`jq` is required only when this standalone helper is asked to emit JSON. The
+complete restore runner requires it during preflight.
 
 ## Rotate the dedicated key manually
 

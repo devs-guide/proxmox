@@ -95,6 +95,7 @@ groups:
       - git
       - python3
       - ksh
+      - jq
   archive_iso_tools:
     description: Archive/compression and disk image utilities.
     packages:

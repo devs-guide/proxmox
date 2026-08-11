@@ -363,19 +363,43 @@ restore.manifest_require() {
     restore.die "${RESTORE_EXIT_STORAGE}" "stage manifest mismatch for ${key}: expected ${expected}, found ${actual:-missing}"
 }
 
+restore.json_require() {
+  local input="$1"
+  local filter="$2"
+  local label="$3"
+  local exit_code="${4:-${RESTORE_EXIT_PREFLIGHT}}"
+  printf '%s\n' "${input}" | jq -se "length == 1 and (.[0] | (${filter}))" >/dev/null 2>&1 || \
+    restore.die "${exit_code}" "${label} returned malformed or incorrectly typed JSON metadata"
+}
+
+restore.json_get() {
+  local input="$1"
+  local filter="$2"
+  local label="$3"
+  local exit_code="${4:-${RESTORE_EXIT_PREFLIGHT}}"
+  local value=""
+  value="$(printf '%s\n' "${input}" | jq -se -r \
+    "if length == 1 then (.[0] | (${filter})) else empty end")" || \
+    restore.die "${exit_code}" "${label} is missing or incorrectly typed in JSON metadata"
+  printf '%s\n' "${value}"
+}
+
 restore.emit() {
   local output="$1"
   local human="$2"
   local path="${3:-}"
   local bytes="${4:-}"
   local sha256="${5:-}"
-  local tsv="${6:-}"
+  local json="${6:-}"
   case "${output}" in
     human) [[ -n "${human}" ]] && restore.log "${human}" ;;
     path) printf '%s\n' "${path}" ;;
     bytes) printf '%s\n' "${bytes}" ;;
     sha256) printf '%s\n' "${sha256}" ;;
-    tsv) printf '%s\n' "${tsv}" ;;
+    json)
+      [[ -n "${json}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "JSON output was requested but no JSON document was provided"
+      printf '%s\n' "${json}"
+      ;;
     *) restore.die "${RESTORE_EXIT_USAGE}" "unsupported output: ${output}" ;;
   esac
 }

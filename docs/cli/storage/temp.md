@@ -8,6 +8,9 @@ Use this helper instead of placing a large backup directly on the Proxmox root
 filesystem. It applies thin-pool data and metadata thresholds and writes an
 ownership manifest used for safe resume and cleanup.
 
+The complete restore workflow uses `--output json` for storage composition and
+therefore requires `jq` on the destination Proxmox host.
+
 ## Create or resume a stage
 
 First inspect the remote archive with
@@ -43,7 +46,15 @@ wget -qO- https://devs-guide.github.io/proxmox/cli/storage/temp.sh |
   bash -s -- \
     --action status \
     --vm 201 \
-    --storage local-lvm
+    --storage local-lvm \
+    --output json
+```
+
+JSON status represents byte counts and utilization percentages as numbers;
+storage, LV, device, mountpoint, and state fields are strings.
+
+```json
+{"state":"absent","storage":"local-lvm","vg":"pve","thin_pool":"data","lv":"restore_stage_vm201","device":"/dev/pve/restore_stage_vm201","mountpoint":"/mnt/pve-restore/201","stage_bytes":0,"pool_size_bytes":107374182400,"data_percent":12.5,"metadata_percent":1.25,"vg_free_bytes":53687091200}
 ```
 
 ## Remove a manifest-owned stage

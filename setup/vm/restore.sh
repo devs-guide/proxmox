@@ -189,7 +189,7 @@ Storage and safety flags:
   --restore-bwlimit-kbps RATE
   --yes                              Confirms an already-requested destructive gate
   --dry-run                          Inspect and print; do not mutate
-  --output human|path|bytes|sha256|tsv
+  --output human|path|bytes|sha256|json
   --help
 
 Passwordless SSH is intentionally separate:
@@ -296,9 +296,9 @@ validate_arguments() {
     restore.die "${RESTORE_EXIT_USAGE}" "--start cannot be combined with --cleanup never"
   fi
   case "${ACTION}" in
-    preflight) restore.validate_output "${OUTPUT}" human tsv ;;
-    cleanup) restore.validate_output "${OUTPUT}" human path tsv ;;
-    *) restore.validate_output "${OUTPUT}" human path bytes sha256 tsv ;;
+    preflight) restore.validate_output "${OUTPUT}" human json ;;
+    cleanup) restore.validate_output "${OUTPUT}" human path json ;;
+    *) restore.validate_output "${OUTPUT}" human path bytes sha256 json ;;
   esac
 }
 
@@ -317,19 +317,6 @@ on_exit() {
   exit "${exit_code}"
 }
 trap on_exit EXIT
-
-declare -A TSV=()
-parse_tsv() {
-  local input="$1"
-  local -a fields=()
-  local index
-  TSV=()
-  IFS=$'\t' read -r -a fields <<<"${input}"
-  ((${#fields[@]} % 2 == 0)) || restore.die "${RESTORE_EXIT_PREFLIGHT}" "helper returned malformed TSV metadata"
-  for ((index=0; index<${#fields[@]}; index+=2)); do
-    TSV["${fields[index]}"]="${fields[index+1]}"
-  done
-}
 
 connection_args() {
   local -n output_args="$1"
@@ -372,7 +359,7 @@ local_preflight() {
   restore.log "preflight: checking required restore commands"
   restore.require_commands "${RESTORE_EXIT_PREFLIGHT}" \
     qm qmrestore pvesm lvs vgs lvcreate lvremove mkfs.ext4 mount umount findmnt flock \
-    ssh rsync sha256sum zstd vma lsblk stat awk grep sed tee sync ha-manager
+    ssh rsync sha256sum zstd vma lsblk stat awk grep sed tee sync ha-manager jq
   restore.log "preflight: acquiring the restore lock for VM ${VM_ID}"
   restore.acquire_lock "${VM_ID}"
   restore.log "preflight: checking stage storage ${STAGE_STORAGE}"
@@ -384,7 +371,7 @@ local_preflight() {
   local -a stage_args=()
   storage_args stage_args
   restore.log "preflight: inspecting temporary-stage state for VM ${VM_ID}"
-  if ! "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output tsv >/dev/null; then
+  if ! "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output json >/dev/null; then
     restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage-storage inspection failed"
   fi
   if [[ -n "${REMOTE_HOST}" ]]; then
@@ -401,13 +388,16 @@ inspect_remote_archive() {
   local -a ssh_args=()
   local metadata
   connection_args ssh_args
-  metadata="$("${RSYNC_FETCH}" --action inspect "${ssh_args[@]}" --remote-path "${REMOTE_PATH}" --output tsv)"
-  parse_tsv "${metadata}"
-  REMOTE_BYTES="${TSV[bytes]:-}"
-  REMOTE_SHA256="${TSV[sha256]:-}"
-  REMOTE_BASENAME="${TSV[basename]:-}"
-  [[ -n "${REMOTE_BYTES}" && -n "${REMOTE_SHA256}" && -n "${REMOTE_BASENAME}" ]] || \
-    restore.die "${RESTORE_EXIT_TRANSFER}" "remote helper did not return complete metadata"
+  metadata="$("${RSYNC_FETCH}" --action inspect "${ssh_args[@]}" --remote-path "${REMOTE_PATH}" --output json)"
+  restore.json_require "${metadata}" '
+    type == "object"
+    and (.bytes | type == "number" and . > 0 and floor == .)
+    and (.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$"))
+    and (.basename | type == "string" and length > 0)
+  ' "remote archive helper" "${RESTORE_EXIT_TRANSFER}"
+  REMOTE_BYTES="$(restore.json_get "${metadata}" '.bytes | tostring' "remote archive bytes" "${RESTORE_EXIT_TRANSFER}")"
+  REMOTE_SHA256="$(restore.json_get "${metadata}" '.sha256' "remote archive SHA-256" "${RESTORE_EXIT_TRANSFER}")"
+  REMOTE_BASENAME="$(restore.json_get "${metadata}" '.basename' "remote archive basename" "${RESTORE_EXIT_TRANSFER}")"
   resolve_source_vm "${REMOTE_BASENAME}"
 }
 
@@ -545,13 +535,16 @@ check_restore_capacity() {
   local metadata pool_size data_percent metadata_percent projected
   metadata="$("${STORAGE_TEMP}" --action status --vm "${VM_ID}" --storage "${TARGET_STORAGE}" \
     --mount-root "${MOUNT_ROOT}" --max-thin-data-percent "${MAX_THIN_DATA_PERCENT}" \
-    --max-thin-metadata-percent "${MAX_THIN_METADATA_PERCENT}" --output tsv)"
-  parse_tsv "${metadata}"
-  pool_size="${TSV[pool_size_bytes]:-}"
-  data_percent="${TSV[data_percent]:-}"
-  metadata_percent="${TSV[metadata_percent]:-}"
-  [[ -n "${pool_size}" && -n "${data_percent}" && -n "${metadata_percent}" ]] || \
-    restore.die "${RESTORE_EXIT_INTEGRITY}" "could not read target thin-pool capacity"
+    --max-thin-metadata-percent "${MAX_THIN_METADATA_PERCENT}" --output json)"
+  restore.json_require "${metadata}" '
+    type == "object"
+    and (.pool_size_bytes | type == "number" and . > 0 and floor == .)
+    and (.data_percent | type == "number" and . >= 0)
+    and (.metadata_percent | type == "number" and . >= 0)
+  ' "target storage helper" "${RESTORE_EXIT_INTEGRITY}"
+  pool_size="$(restore.json_get "${metadata}" '.pool_size_bytes | tostring' "target pool size" "${RESTORE_EXIT_INTEGRITY}")"
+  data_percent="$(restore.json_get "${metadata}" '.data_percent | tostring' "target data percentage" "${RESTORE_EXIT_INTEGRITY}")"
+  metadata_percent="$(restore.json_get "${metadata}" '.metadata_percent | tostring' "target metadata percentage" "${RESTORE_EXIT_INTEGRITY}")"
   projected="$(awk -v size="${pool_size}" -v used="${data_percent}" -v add="${VMA_ESTIMATED_BYTES}" \
     'BEGIN {printf "%.4f", used + ((add / size) * 100)}')"
   local refused=0
@@ -656,9 +649,28 @@ start_vm_if_requested() {
 
 emit_result() {
   local human="$1"
-  local tsv="action\t${ACTION}\ttarget_vm\t${VM_ID}\tsource_vm\t${SOURCE_VM_ID}\tarchive\t${ARCHIVE}\tbytes\t${LOCAL_BYTES:-${REMOTE_BYTES:-0}}\tsha256\t${LOCAL_SHA256:-${REMOTE_SHA256}}"
+  local result_bytes="${LOCAL_BYTES:-${REMOTE_BYTES:-0}}"
+  local result_sha="${LOCAL_SHA256:-${REMOTE_SHA256}}"
+  local json=""
+  if [[ "${OUTPUT}" == json ]]; then
+    json="$(jq -cn \
+      --arg action "${ACTION}" \
+      --arg target_vm "${VM_ID}" \
+      --arg source_vm "${SOURCE_VM_ID}" \
+      --arg archive "${ARCHIVE}" \
+      --arg bytes "${result_bytes}" \
+      --arg sha256 "${result_sha}" \
+      '{
+        action: $action,
+        target_vm: ($target_vm | tonumber),
+        source_vm: (if $source_vm == "" then null else ($source_vm | tonumber) end),
+        archive: (if $archive == "" then null else $archive end),
+        bytes: ($bytes | tonumber),
+        sha256: (if $sha256 == "" then null else $sha256 end)
+      }')"
+  fi
   restore.emit "${OUTPUT}" "${human}" "${ARCHIVE:-${MOUNT_ROOT%/}/${VM_ID}}" \
-    "${LOCAL_BYTES:-${REMOTE_BYTES:-0}}" "${LOCAL_SHA256:-${REMOTE_SHA256}}" "${tsv}"
+    "${result_bytes}" "${result_sha}" "${json}"
 }
 
 dry_run_post_transfer() {

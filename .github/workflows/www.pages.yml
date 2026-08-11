@@ -38,8 +38,8 @@ jobs:
           # preserve full history, as in the original workflow
           fetch-depth: 0
           
-      - name: Install rsync
-        run: sudo apt-get update ; sudo apt-get install -y rsync
+      - name: Install restore validation dependencies
+        run: sudo apt-get update ; sudo apt-get install -y rsync jq
 
       - name: Validate remote VM restore CLI contracts
         run: ./actions/validate.vm.restore.sh

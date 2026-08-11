@@ -21,6 +21,7 @@ wget -qO- https://devs-guide.github.io/proxmox/setup.cli.codex.sh | bash
 
 Every published Bash helper uses a `.sh` path and can bootstrap its shared
 library when streamed directly into Bash.
+Structured helper output uses `--output json` and requires `jq`.
 
 Human operator documentation:
 

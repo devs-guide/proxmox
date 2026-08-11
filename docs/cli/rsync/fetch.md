@@ -7,6 +7,8 @@ not be a symbolic link.
 
 The helper uses the dedicated identity documented in
 [SSH setup and key rotation](../ssh/sync.md).
+`jq` is required when `--output json` is selected and by the complete restore
+runner's internal helper composition.
 
 ## Inspect a remote archive
 
@@ -16,11 +18,18 @@ wget -qO- https://devs-guide.github.io/proxmox/cli/rsync/fetch.sh |
     --action inspect \
     --remote-host 10.0.0.10 \
     --remote-path /backup/vzdump-qemu-200-date.vma.zst \
-    --output tsv
+    --output json
 ```
 
-The TSV result contains the source byte count, SHA-256 digest, and basename.
-Retain those values when creating a managed staging filesystem.
+The JSON result contains a numeric source byte count and string SHA-256 and
+basename values:
+
+```json
+{"bytes": 2147483648, "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "basename": "vzdump-qemu-200-date.vma.zst"}
+```
+
+Transfer output adds a string `path` property. Retain these values when
+creating a managed staging filesystem.
 
 ## Transfer one archive
 
