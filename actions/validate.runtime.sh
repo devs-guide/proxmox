@@ -1501,6 +1501,9 @@ if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
 fi
 echo "[validate.runtime][ok] publish wiring follows setup/vlan.sh FEATURE_PLAYBOOKS model"
 
+echo "[validate.runtime] checking remote VM restore CLI contracts..."
+"${ROOT}/actions/validate.vm.restore.sh"
+
 echo "[validate.runtime] checking shell syntax..."
 bash -n "${ROOT}/bootstrap/release.6.4.sh"
 bash -n "${ROOT}/bootstrap/release.9.1.sh"
@@ -1514,6 +1517,12 @@ bash -n "${ROOT}/setup/lxc/samba.sh"
 bash -n "${ROOT}/setup/lxc/network.sh"
 bash -n "${ROOT}/setup/lxc/codex.sh"
 bash -n "${ROOT}/setup/lxc/users.sh"
+bash -n "${ROOT}/setup/vm/restore.sh"
+bash -n "${ROOT}/cli/lib/restore.common"
+bash -n "${ROOT}/cli/ssh/sync"
+bash -n "${ROOT}/cli/storage/temp"
+bash -n "${ROOT}/cli/rsync/fetch"
+bash -n "${ROOT}/actions/validate.vm.restore.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
