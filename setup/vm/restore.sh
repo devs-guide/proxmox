@@ -185,6 +185,8 @@ Storage and safety flags:
 
 Passwordless SSH is intentionally separate:
   cli/ssh/sync.sh --action setup --remote-host 10.0.0.11
+  cli/ssh/sync.sh --action setup --remote-host 10.0.0.11 \
+    --key-rotation --yes
 
 Complete restore example:
   setup/vm/restore.sh --action all --vm 201 --source-vm 200 \

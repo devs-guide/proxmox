@@ -44,6 +44,9 @@ for command_path in "${RUNNER}" "${SSH_SYNC}" "${STORAGE_TEMP}" "${RSYNC_FETCH}"
   grep -q -- '--help' <<<"${help_output}" || fail "help output missing --help: ${command_path#${ROOT}/}"
   grep -q -- '--dry-run' <<<"${help_output}" || fail "help output missing --dry-run: ${command_path#${ROOT}/}"
 done
+for required_flag in --key-rotation --yes; do
+  grep -q -- "${required_flag}" <<<"$("${SSH_SYNC}" --help)" || fail "SSH helper help missing ${required_flag}"
+done
 for required_flag in --vm --action --stage-storage --target-storage --replace-existing --unique --cleanup --output; do
   grep -q -- "${required_flag}" <<<"$("${RUNNER}" --help)" || fail "runner help missing ${required_flag}"
 done
@@ -66,15 +69,133 @@ stream_setup="$(
       --remote-host 192.0.2.1 \
       --identity "${stream_tmp}/identity" \
       --known-hosts "${stream_tmp}/known_hosts" \
+      --key-rotation \
+      --yes \
       --dry-run < "${SSH_SYNC}" 2>&1
 )"
 grep -q 'ssh-copy-id' <<<"${stream_setup}" || fail "streamed SSH setup dry-run did not render ssh-copy-id"
+grep -q 'atomically replace' <<<"${stream_setup}" || fail "streamed SSH key-rotation dry-run did not render replacement plan"
 rm -rf "${stream_tmp}"
 ok "published helper entrypoints bootstrap restore.common.sh when streamed"
+
+if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))); then
+  rotation_tmp="$(mktemp -d)"
+  rotation_bin="${rotation_tmp}/bin"
+  rotation_remote="${rotation_tmp}/remote"
+  rotation_identity="${rotation_tmp}/proxmox-restore-ed25519"
+  rotation_known_hosts="${rotation_tmp}/known_hosts"
+  mkdir -p "${rotation_bin}" "${rotation_remote}/.ssh"
+  printf 'OLD_PRIVATE\n' >"${rotation_identity}"
+  printf 'ssh-ed25519 U1RBTEVfUFVCTElDX0tFWQ== stale-public\n' >"${rotation_identity}.pub"
+  printf 'mock-known-host\n' >"${rotation_known_hosts}"
+  cat >"${rotation_remote}/.ssh/authorized_keys" <<'EOF'
+from="10.0.0.0/8" ssh-ed25519 T0xEX1BSSVZBVEVfS0VZ old-private
+ssh-ed25519 U1RBTEVfUFVCTElDX0tFWQ== stale-public
+ssh-ed25519 VU5SRUxBVEVEX0tFWQ== unrelated
+EOF
+  cat >"${rotation_bin}/ssh-keygen" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mode="generate"
+identity=""
+while (($#)); do
+  case "$1" in
+    -y) mode="derive"; shift ;;
+    -f) identity="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -n "${identity}" ]] || exit 2
+if [[ "${mode}" == derive ]]; then
+  if grep -Fxq 'NEW_PRIVATE' "${identity}"; then
+    printf 'ssh-ed25519 TkVXX1BVQkxJQ19LRVk=\n'
+  else
+    printf 'ssh-ed25519 T0xEX1BSSVZBVEVfS0VZ\n'
+  fi
+else
+  printf 'NEW_PRIVATE\n' >"${identity}"
+  printf 'ssh-ed25519 TkVXX1BVQkxJQ19LRVk= rotated\n' >"${identity}.pub"
+fi
+EOF
+  cat >"${rotation_bin}/ssh-copy-id" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+public_key=""
+while (($#)); do
+  case "$1" in
+    -i) public_key="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -f "${public_key}" ]]
+[[ "${MOCK_SSH_COPY_ID_FAIL:-0}" != 1 ]] || exit 1
+cat "${public_key}" >>"${MOCK_REMOTE_AUTHORIZED_KEYS}"
+EOF
+  cat >"${rotation_bin}/ssh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+while (($#)); do
+  if [[ "$1" == bash ]]; then
+    shift
+    PROXMOX_RESTORE_AUTHORIZED_KEYS="${MOCK_REMOTE_AUTHORIZED_KEYS}" /bin/bash "$@"
+    exit $?
+  fi
+  shift
+done
+exit 0
+EOF
+  chmod 0755 "${rotation_bin}/ssh-keygen" "${rotation_bin}/ssh-copy-id" "${rotation_bin}/ssh"
+
+  set +e
+  PATH="${rotation_bin}:${PATH}" \
+  MOCK_REMOTE_AUTHORIZED_KEYS="${rotation_remote}/.ssh/authorized_keys" \
+  MOCK_SSH_COPY_ID_FAIL=1 \
+    "${SSH_SYNC}" \
+      --action setup \
+      --remote-host 192.0.2.1 \
+      --identity "${rotation_identity}" \
+      --known-hosts "${rotation_known_hosts}" \
+      --key-rotation \
+      --yes >/dev/null 2>"${rotation_tmp}/failed-rotation.log"
+  failed_rotation_rc=$?
+  set -e
+  [[ "${failed_rotation_rc}" == "${RESTORE_EXIT_SSH:-20}" ]] || fail "failed key installation returned ${failed_rotation_rc}, expected 20"
+  grep -Fxq 'OLD_PRIVATE' "${rotation_identity}" || fail "failed key installation changed the old private key"
+  grep -q 'U1RBTEVfUFVCTElDX0tFWQ==' "${rotation_identity}.pub" || fail "failed key installation changed the old public key"
+
+  PATH="${rotation_bin}:${PATH}" \
+  MOCK_REMOTE_AUTHORIZED_KEYS="${rotation_remote}/.ssh/authorized_keys" \
+    "${SSH_SYNC}" \
+      --action setup \
+      --remote-host 192.0.2.1 \
+      --identity "${rotation_identity}" \
+      --known-hosts "${rotation_known_hosts}" \
+      --key-rotation \
+      --yes >/dev/null 2>"${rotation_tmp}/rotation.log"
+
+  grep -Fxq 'NEW_PRIVATE' "${rotation_identity}" || fail "key rotation did not install the fresh private key"
+  grep -q 'TkVXX1BVQkxJQ19LRVk=' "${rotation_identity}.pub" || fail "key rotation did not install the fresh public key"
+  grep -q 'TkVXX1BVQkxJQ19LRVk=' "${rotation_remote}/.ssh/authorized_keys" || fail "key rotation did not install the fresh remote key"
+  grep -q 'VU5SRUxBVEVEX0tFWQ==' "${rotation_remote}/.ssh/authorized_keys" || fail "key rotation removed an unrelated remote key"
+  if grep -Eq 'T0xEX1BSSVZBVEVfS0VZ|U1RBTEVfUFVCTElDX0tFWQ==' "${rotation_remote}/.ssh/authorized_keys"; then
+    fail "key rotation retained old remote key material"
+  fi
+  if compgen -G "${rotation_identity}.rotation-old.*" >/dev/null || compgen -G "${rotation_identity}.pub.rotation-old.*" >/dev/null; then
+    fail "key rotation retained old local key material after success"
+  fi
+  grep -q 'key rotation completed' "${rotation_tmp}/rotation.log" || fail "key rotation did not report successful cleanup"
+  rm -rf "${rotation_tmp}"
+  ok "key rotation replaces a mismatched pair and removes only exact old remote keys"
+else
+  ok "key rotation integration is deferred to GitHub Actions on Bash 4.3+"
+fi
 
 expect_exit 2 "${RUNNER}" --unknown
 expect_exit 2 "${RUNNER}" --action cleanup
 expect_exit 2 "${SSH_SYNC}" --unknown
+expect_exit 2 "${SSH_SYNC}" --action setup --remote-host 192.0.2.1 --key-rotation
+expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --key-rotation --yes
+expect_exit 2 "${SSH_SYNC}" --action setup --remote-host 192.0.2.1 --yes
 expect_exit 2 "${STORAGE_TEMP}" --unknown
 expect_exit 2 "${RSYNC_FETCH}" --unknown
 expect_exit 2 "${RUNNER}" positional

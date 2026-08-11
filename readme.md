@@ -27,6 +27,14 @@ wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh | \
   bash -s -- --action setup --remote-host 10.0.0.11
 ```
 
+Rotate the dedicated key only after the fresh key is installed and verified:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh | \
+  bash -s -- --action setup --remote-host 10.0.0.11 \
+    --key-rotation --yes
+```
+
 ```bash
 wget -qO- https://devs-guide.github.io/proxmox/cli/storage/temp.sh | \
   bash -s -- --action status --vm 200
