@@ -147,6 +147,112 @@ wget -qO /tmp/proxmox-vm-restore.sh \
 bash /tmp/proxmox-vm-restore.sh --help
 ```
 
+## Recover an interrupted transfer
+
+The staging state determines whether to resume, restart, reset, or clear the
+transfer. Download a fresh runner before recovery:
+
+```bash
+wget -qO /tmp/proxmox-vm-restore.sh \
+  https://devs-guide.github.io/proxmox/setup/vm/restore.sh
+```
+
+### Resume from the same source
+
+An interrupted rsync transfer leaves its partial archive and manifest-owned
+staging LV mounted intentionally. Rerun the same `all` command with the same
+target VM, remote host, remote path, and storage values. Do not add
+`--reset-incomplete-stage`:
+
+```bash
+bash /tmp/proxmox-vm-restore.sh \
+  --action all \
+  --vm 201 \
+  --source-vm 200 \
+  --remote-host 10.0.0.10 \
+  --remote-path /backup/vzdump-qemu-200-date.vma.zst \
+  --stage-storage local-lvm \
+  --target-storage local-lvm \
+  --unique
+```
+
+The workflow validates the existing LV, filesystem, manifest, source endpoint,
+archive path, size, and SHA-256 before rsync resumes the partial file with
+append verification.
+
+### Restart from a different source IP
+
+The ownership manifest pins the remote host used to create the stage. Even when
+two addresses reach the same physical source, do not edit the manifest or reuse
+the stage through a different address. First configure and check the dedicated
+SSH key for the new address:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh |
+  bash -s -- \
+    --action setup \
+    --remote-host 10.0.0.11 \
+    --key-rotation \
+    --yes
+```
+
+Then clear the manifest-owned stage. This safely unmounts and removes the exact
+staging LV, but it also deletes the partial archive:
+
+```bash
+bash /tmp/proxmox-vm-restore.sh \
+  --action cleanup \
+  --vm 201 \
+  --stage-storage local-lvm \
+  --target-storage local-lvm
+```
+
+Start a fresh transfer through the new address without
+`--reset-incomplete-stage` or `--yes`:
+
+```bash
+bash /tmp/proxmox-vm-restore.sh \
+  --action all \
+  --vm 201 \
+  --source-vm 200 \
+  --remote-host 10.0.0.11 \
+  --remote-path /backup/vzdump-qemu-200-date.vma.zst \
+  --stage-storage local-lvm \
+  --target-storage local-lvm \
+  --unique
+```
+
+A successful SSH check and remote archive inspection confirm that the restore
+control path reaches the new address. Test transfer throughput from the
+destination Proxmox host when confirming that rsync uses the intended network.
+
+### Reset an unmanifested creation failure
+
+Use `--reset-incomplete-stage` only when stage creation failed before its
+ownership manifest was committed. It is not the resume or clear option for an
+interrupted rsync transfer. Review the guarded operation first by adding these
+flags to the complete `all` command:
+
+```text
+--reset-incomplete-stage --yes --dry-run
+```
+
+After reviewing the exact LV, storage, size, mount state, filesystem signature,
+and ownership checks, remove `--dry-run` and retry once. The reset refuses a
+mounted stage or any stage that contains an ownership manifest.
+
+### Clear a manifest-owned stage without restoring
+
+Use the `cleanup` action when abandoning a partial transfer, changing its source
+endpoint, or deliberately starting again from zero. It validates ownership,
+unmounts the stage, removes only its deterministic LV, and removes the empty
+mount directory. It does not delete or alter the remote backup. Use
+`--dry-run` first when only reviewing the cleanup.
+
+Do not manually unmount the filesystem, remove its LV, or edit/delete
+`.proxmox-restore.tsv`; those actions bypass the ownership checks that make
+resume and cleanup safe.
+
 ## 3. Run each phase manually
 
 Use these steps when observing or resuming each boundary separately.
