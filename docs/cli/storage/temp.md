@@ -9,7 +9,7 @@ filesystem. It applies thin-pool data and metadata thresholds and writes an
 ownership manifest used for safe resume and cleanup.
 
 The complete restore workflow uses `--output json` for storage composition and
-therefore requires `jq` on the destination Proxmox host.
+requires `jq`, `blkid`, and `udevadm` on the destination Proxmox host.
 
 ## Create or resume a stage
 
@@ -38,6 +38,33 @@ source byte count is still useful manifest metadata.
 
 If the deterministic staging LV already exists and its filesystem and manifest
 match, the helper mounts and resumes it instead of recreating it.
+
+New stages use a bounded ext4 label (`prxvm<target-vm-id>`) and LVM ownership
+tags. Filesystem verification probes the device directly after waiting for
+udev, rather than depending on immediately refreshed display metadata.
+
+If creation previously stopped before writing its ownership manifest, the
+helper refuses to resume or delete that LV by default. After reviewing the
+reported VG, thin pool, LV, size, mount state, and filesystem signature, reset
+only that incomplete stage with:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/cli/storage/temp.sh |
+  bash -s -- \
+    --action create \
+    --vm 201 \
+    --storage local-lvm \
+    --source-bytes REPLACE_WITH_BYTES \
+    --reset-incomplete-stage \
+    --yes \
+    --dry-run
+```
+
+Remove `--dry-run` only after reviewing the rendered reset and recreation.
+The reset is refused if the LV is mounted, has a different size or signature,
+contains an ownership manifest, or the unmounted stage directory contains
+files. Failures during a newly initiated stage creation automatically roll
+back that invocation's uncommitted LV.
 
 ## Check stage status
 

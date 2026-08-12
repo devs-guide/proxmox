@@ -119,6 +119,7 @@ MOUNT_ROOT="/mnt/pve-restore"
 MAX_THIN_DATA_PERCENT="85"
 MAX_THIN_METADATA_PERCENT="75"
 CAPACITY_OVERRIDE=0
+RESET_INCOMPLETE_STAGE=0
 REPLACE_EXISTING=0
 UNIQUE=0
 START_VM=0
@@ -181,6 +182,7 @@ Storage and safety flags:
   --max-thin-data-percent PERCENT    Default: 85
   --max-thin-metadata-percent PERCENT Default: 75
   --capacity-override                Requires explicit confirmation
+  --reset-incomplete-stage           Reset only a guarded unmanifested stage
   --replace-existing                 Replace only a stopped local non-HA VM
   --unique                           Pass --unique 1 to qmrestore
   --start                            Start only after successful cleanup
@@ -232,6 +234,7 @@ while (($#)); do
     --max-thin-data-percent) restore.require_flag_value "$1" "${2-}"; MAX_THIN_DATA_PERCENT="$2"; shift 2 ;;
     --max-thin-metadata-percent) restore.require_flag_value "$1" "${2-}"; MAX_THIN_METADATA_PERCENT="$2"; shift 2 ;;
     --capacity-override) CAPACITY_OVERRIDE=1; shift ;;
+    --reset-incomplete-stage) RESET_INCOMPLETE_STAGE=1; shift ;;
     --replace-existing) REPLACE_EXISTING=1; shift ;;
     --unique) UNIQUE=1; shift ;;
     --start) START_VM=1; shift ;;
@@ -295,6 +298,11 @@ validate_arguments() {
   if ((START_VM)) && [[ "${CLEANUP_POLICY}" == never && ( "${ACTION}" == all || "${ACTION}" == restore ) ]]; then
     restore.die "${RESTORE_EXIT_USAGE}" "--start cannot be combined with --cleanup never"
   fi
+  if ((RESET_INCOMPLETE_STAGE)); then
+    [[ "${ACTION}" == transfer || "${ACTION}" == all ]] || \
+      restore.die "${RESTORE_EXIT_USAGE}" "--reset-incomplete-stage requires --action transfer or all"
+    ((YES)) || restore.die "${RESTORE_EXIT_USAGE}" "--reset-incomplete-stage requires --yes"
+  fi
   case "${ACTION}" in
     preflight) restore.validate_output "${OUTPUT}" human json ;;
     cleanup) restore.validate_output "${OUTPUT}" human path json ;;
@@ -312,7 +320,11 @@ on_exit() {
       restore.manifest_put "${ACTIVE_MANIFEST}" phase "failed:${CURRENT_PHASE}" 2>/dev/null || true
       restore.manifest_put "${ACTIVE_MANIFEST}" resume_action "${ACTION}" 2>/dev/null || true
     fi
-    restore.error "phase ${CURRENT_PHASE} failed with exit ${exit_code}; any verified staging archive was retained"
+    if [[ -n "${ACTIVE_MANIFEST}" && -f "${ACTIVE_MANIFEST}" ]]; then
+      restore.error "phase ${CURRENT_PHASE} failed with exit ${exit_code}; the manifest-owned staging archive was retained"
+    else
+      restore.error "phase ${CURRENT_PHASE} failed with exit ${exit_code}; no verified staging archive was retained"
+    fi
   fi
   exit "${exit_code}"
 }
@@ -359,7 +371,7 @@ local_preflight() {
   restore.log "preflight: checking required restore commands"
   restore.require_commands "${RESTORE_EXIT_PREFLIGHT}" \
     qm qmrestore pvesm lvs vgs lvcreate lvremove mkfs.ext4 mount umount findmnt flock \
-    ssh rsync sha256sum zstd vma lsblk stat awk grep sed tee sync ha-manager jq
+    ssh rsync sha256sum zstd vma blkid udevadm stat find awk grep sed tee sync ha-manager jq
   restore.log "preflight: acquiring the restore lock for VM ${VM_ID}"
   restore.acquire_lock "${VM_ID}"
   restore.log "preflight: checking stage storage ${STAGE_STORAGE}"
@@ -371,14 +383,14 @@ local_preflight() {
   local -a stage_args=()
   storage_args stage_args
   restore.log "preflight: inspecting temporary-stage state for VM ${VM_ID}"
-  if ! "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output json >/dev/null; then
+  if ! restore.child "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output json >/dev/null; then
     restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage-storage inspection failed"
   fi
   if [[ -n "${REMOTE_HOST}" ]]; then
     local -a ssh_args=()
     connection_args ssh_args
     restore.log "preflight: checking passwordless SSH access to ${REMOTE_USER}@${REMOTE_HOST}"
-    "${SSH_SYNC}" --action check "${ssh_args[@]}" --output human
+    restore.child "${SSH_SYNC}" --action check "${ssh_args[@]}" --output human
   fi
   restore.log "preflight passed for target VM ${VM_ID}; dependency playbook: ${PLAYBOOK_PATH}"
 }
@@ -388,7 +400,7 @@ inspect_remote_archive() {
   local -a ssh_args=()
   local metadata
   connection_args ssh_args
-  metadata="$("${RSYNC_FETCH}" --action inspect "${ssh_args[@]}" --remote-path "${REMOTE_PATH}" --output json)"
+  metadata="$(restore.child "${RSYNC_FETCH}" --action inspect "${ssh_args[@]}" --remote-path "${REMOTE_PATH}" --output json)"
   restore.json_require "${metadata}" '
     type == "object"
     and (.bytes | type == "number" and . > 0 and floor == .)
@@ -413,8 +425,8 @@ resolve_source_vm() {
 }
 
 perform_transfer() {
-  CURRENT_PHASE="staging"
   inspect_remote_archive
+  CURRENT_PHASE="staging"
   local -a stage_args=()
   local -a ssh_args=()
   local -a create_args=()
@@ -430,9 +442,11 @@ perform_transfer() {
     --archive-basename "${REMOTE_BASENAME}"
   )
   ((CAPACITY_OVERRIDE)) && create_args+=(--capacity-override)
+  ((RESET_INCOMPLETE_STAGE)) && create_args+=(--reset-incomplete-stage)
   ((YES)) && create_args+=(--yes)
   local stage_dir
-  stage_dir="$("${STORAGE_TEMP}" --action create "${create_args[@]}" --output path)"
+  ACTIVE_MANIFEST="${MOUNT_ROOT%/}/${VM_ID}/.proxmox-restore.tsv"
+  stage_dir="$(restore.child "${STORAGE_TEMP}" --action create "${create_args[@]}" --output path)"
   [[ -n "${stage_dir}" ]] || restore.die "${RESTORE_EXIT_STORAGE}" "storage helper did not return a stage path"
   ACTIVE_MANIFEST="${stage_dir}/.proxmox-restore.tsv"
 
@@ -447,7 +461,7 @@ perform_transfer() {
   )
   [[ -z "${RSYNC_BWLIMIT_KBPS}" ]] || fetch_args+=(--rsync-bwlimit-kbps "${RSYNC_BWLIMIT_KBPS}")
   ((DRY_RUN)) && fetch_args+=(--dry-run)
-  ARCHIVE="$("${RSYNC_FETCH}" "${fetch_args[@]}")"
+  ARCHIVE="$(restore.child "${RSYNC_FETCH}" "${fetch_args[@]}")"
   [[ -n "${ARCHIVE}" ]] || restore.die "${RESTORE_EXIT_TRANSFER}" "transfer helper did not return an archive path"
   if ((DRY_RUN == 0)); then
     restore.manifest_put "${ACTIVE_MANIFEST}" archive "${ARCHIVE}"
@@ -533,7 +547,7 @@ verify_archive() {
 check_restore_capacity() {
   CURRENT_PHASE="capacity"
   local metadata pool_size data_percent metadata_percent projected
-  metadata="$("${STORAGE_TEMP}" --action status --vm "${VM_ID}" --storage "${TARGET_STORAGE}" \
+  metadata="$(restore.child "${STORAGE_TEMP}" --action status --vm "${VM_ID}" --storage "${TARGET_STORAGE}" \
     --mount-root "${MOUNT_ROOT}" --max-thin-data-percent "${MAX_THIN_DATA_PERCENT}" \
     --max-thin-metadata-percent "${MAX_THIN_METADATA_PERCENT}" --output json)"
   restore.json_require "${metadata}" '
@@ -633,7 +647,7 @@ cleanup_stage_if_owned() {
   fi
   local -a stage_args=()
   storage_args stage_args
-  "${STORAGE_TEMP}" --action remove "${stage_args[@]}" --output human || \
+  restore.child "${STORAGE_TEMP}" --action remove "${stage_args[@]}" --output human || \
     restore.die "${RESTORE_EXIT_CLEANUP}" "staging cleanup failed"
   ACTIVE_MANIFEST=""
 }
@@ -735,7 +749,7 @@ case "${ACTION}" in
     ACTIVE_MANIFEST="${MOUNT_ROOT%/}/${VM_ID}/.proxmox-restore.tsv"
     declare -a local_cleanup_args=(--vm "${VM_ID}" --storage "${STAGE_STORAGE}" --mount-root "${MOUNT_ROOT}" --output path)
     ((DRY_RUN)) && local_cleanup_args+=(--dry-run)
-    if ! ARCHIVE="$("${STORAGE_TEMP}" --action remove "${local_cleanup_args[@]}")"; then
+    if ! ARCHIVE="$(restore.child "${STORAGE_TEMP}" --action remove "${local_cleanup_args[@]}")"; then
       restore.die "${RESTORE_EXIT_CLEANUP}" "staging cleanup failed"
     fi
     ACTIVE_MANIFEST=""

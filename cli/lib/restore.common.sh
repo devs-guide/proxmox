@@ -195,7 +195,16 @@ restore.run() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     return 0
   fi
-  "$@" >&2
+  restore.child "$@" >&2
+}
+
+restore.child() {
+  (
+    if [[ "${RESTORE_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+      eval "exec ${RESTORE_LOCK_FD}>&-"
+    fi
+    exec "$@"
+  )
 }
 
 restore.ensure_parent_dir() {

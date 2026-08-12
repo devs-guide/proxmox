@@ -11,6 +11,9 @@
       - openssh-client
       - lvm2
       - e2fsprogs
+      - findutils
+      - util-linux
+      - udev
       - zstd
       - jq
 

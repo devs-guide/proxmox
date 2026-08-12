@@ -52,9 +52,11 @@ done
 for required_flag in --key-rotation --yes; do
   grep -q -- "${required_flag}" <<<"$("${SSH_SYNC}" --help)" || fail "SSH helper help missing ${required_flag}"
 done
-for required_flag in --vm --action --stage-storage --target-storage --replace-existing --unique --cleanup --output; do
+for required_flag in --vm --action --stage-storage --target-storage --reset-incomplete-stage --replace-existing --unique --cleanup --output; do
   grep -q -- "${required_flag}" <<<"$("${RUNNER}" --help)" || fail "runner help missing ${required_flag}"
 done
+grep -q -- '--reset-incomplete-stage' <<<"$("${STORAGE_TEMP}" --help)" || \
+  fail "storage helper help missing --reset-incomplete-stage"
 ok "help and named-flag contracts are present"
 
 stream_tmp="$(mktemp -d)"
@@ -154,6 +156,192 @@ if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)));
   ok "real-mode argument builders and optional dry-run actions remain successful under set -e"
 else
   ok "argument-builder regression is deferred to GitHub Actions on Bash 4.3+"
+fi
+
+if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))); then
+  stage_tmp="$(mktemp -d)"
+  stage_child="${stage_tmp}/check-child-fd"
+  cat >"${stage_child}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ! -e "/proc/self/fd/$1" ]]
+printf 'child-closed\n'
+EOF
+  chmod 0755 "${stage_child}"
+  child_fd_output="$(bash -c '
+    set -euo pipefail
+    source "$1"
+    exec {RESTORE_LOCK_FD}>"$2"
+    restore.child "$3" "${RESTORE_LOCK_FD}"
+    [[ -e "/proc/$$/fd/${RESTORE_LOCK_FD}" ]]
+    printf "parent-open\n"
+  ' _ "${COMMON}" "${stage_tmp}/lock" "${stage_child}")"
+  [[ "${child_fd_output}" == $'child-closed\nparent-open' ]] || \
+    fail "restore.child did not isolate the lock descriptor while preserving the parent lock"
+
+  probe_definition="$(awk '
+    /^probe_stage_filesystem\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${STORAGE_TEMP}")"
+  validate_filesystem_definition="$(awk '
+    /^validate_stage_filesystem\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${STORAGE_TEMP}")"
+  [[ -n "${probe_definition}" && -n "${validate_filesystem_definition}" ]] || \
+    fail "could not extract authoritative filesystem probing functions"
+  probe_output="$(bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    eval "$3"
+    blkid() {
+      printf "%s\n" \
+        "DEVNAME=/dev/pve/restore_stage_vm100" \
+        "UUID=11111111-2222-3333-4444-555555555555" \
+        "TYPE=ext4" \
+        "LABEL=prxvm100"
+    }
+    DEVICE=/dev/pve/restore_stage_vm100
+    FS_LABEL=prxvm100
+    FS_TYPE=""
+    FS_PROBE_LABEL=""
+    FS_UUID=""
+    validate_stage_filesystem
+    printf "%s|%s|%s\n" "${FS_TYPE}" "${FS_PROBE_LABEL}" "${FS_UUID}"
+  ' _ "${COMMON}" "${probe_definition}" "${validate_filesystem_definition}")"
+  [[ "${probe_output}" == 'ext4|prxvm100|11111111-2222-3333-4444-555555555555' ]] || \
+    fail "blkid probing did not validate the expected ext4 type, label, and UUID"
+
+  reset_definition="$(awk '
+    /^reset_incomplete_stage\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${STORAGE_TEMP}")"
+  [[ -n "${reset_definition}" ]] || fail "could not extract guarded incomplete-stage reset"
+  for reset_mode in success wrong_size wrong_pool mounted nonempty unknown_label unexpected_tags manifest; do
+    reset_marker="${stage_tmp}/reset-${reset_mode}"
+    set +e
+    RESET_MODE="${reset_mode}" RESET_MARKER="${reset_marker}" bash -c '
+      set -euo pipefail
+      source "$1"
+      eval "$2"
+      validate_stage_lv() {
+        ACTUAL_STAGE_BYTES=4096
+        LV_TAGS=""
+        [[ "${RESET_MODE}" != wrong_size ]] || ACTUAL_STAGE_BYTES=8192
+        [[ "${RESET_MODE}" != wrong_pool ]] || restore.die "${RESTORE_EXIT_STORAGE}" "wrong thin pool"
+        [[ "${RESET_MODE}" != unexpected_tags ]] || LV_TAGS=unrelated
+      }
+      findmnt() {
+        [[ "${RESET_MODE}" != mounted ]] || printf "/mnt/pve-restore/100\n"
+      }
+      probe_stage_filesystem() {
+        FS_TYPE=ext4
+        FS_PROBE_LABEL=pve_restore_vm10
+        FS_UUID=11111111-2222-3333-4444-555555555555
+        [[ "${RESET_MODE}" != unknown_label ]] || FS_PROBE_LABEL=unrelated
+      }
+      lv_has_tag() { return 1; }
+      inspect_device_manifest() {
+        DEVICE_MANIFEST_PRESENT=0
+        [[ "${RESET_MODE}" != manifest ]] || DEVICE_MANIFEST_PRESENT=1
+      }
+      restore.confirm_exact() { :; }
+      lvremove() { printf "removed\n" >"${RESET_MARKER}"; }
+      udevadm() { :; }
+      stage_exists() { return 1; }
+      read_pool_status() { :; }
+      VM_ID=100
+      VG_NAME=pve
+      THIN_POOL=data
+      LV_NAME=restore_stage_vm100
+      DEVICE=/dev/pve/restore_stage_vm100
+      MOUNTPOINT="$3/mount-${RESET_MODE}"
+      mkdir -p "${MOUNTPOINT}"
+      [[ "${RESET_MODE}" != nonempty ]] || printf "unrelated\n" >"${MOUNTPOINT}/unrelated"
+      MANIFEST="${MOUNTPOINT}/.proxmox-restore.tsv"
+      STAGE_BYTES=4096
+      LV_OWNER_TAG=pve_restore_stage
+      LV_VM_TAG=pve_restore_vm_100
+      LEGACY_FS_LABEL=pve_restore_vm10
+      FS_LABEL=prxvm100
+      DRY_RUN=0
+      RESET_COMPLETED=0
+      reset_incomplete_stage
+      [[ "${RESET_COMPLETED}" == 1 ]]
+    ' _ "${COMMON}" "${reset_definition}" "${stage_tmp}" \
+      >"${stage_tmp}/reset-${reset_mode}.out" 2>"${stage_tmp}/reset-${reset_mode}.log"
+    reset_rc=$?
+    set -e
+    if [[ "${reset_mode}" == success ]]; then
+      [[ "${reset_rc}" == 0 && -f "${reset_marker}" ]] || \
+        fail "guarded legacy-stage reset did not complete"
+    else
+      [[ "${reset_rc}" == 30 && ! -e "${reset_marker}" ]] || \
+        fail "guarded reset mode ${reset_mode} did not refuse safely"
+    fi
+  done
+
+  rollback_definition="$(awk '
+    /^rollback_new_stage\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "${STORAGE_TEMP}")"
+  [[ -n "${rollback_definition}" ]] || fail "could not extract incomplete-stage rollback"
+  set +e
+  ROLLBACK_LOG="${stage_tmp}/rollback.log" bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    umount() { printf "umount\n" >>"${ROLLBACK_LOG}"; }
+    lvremove() { printf "lvremove\n" >>"${ROLLBACK_LOG}"; }
+    udevadm() { printf "udevadm\n" >>"${ROLLBACK_LOG}"; }
+    rmdir() { printf "rmdir\n" >>"${ROLLBACK_LOG}"; }
+    stage_exists() { return 1; }
+    CREATED_THIS_RUN=1
+    MANIFEST_COMMITTED=0
+    MOUNTED_THIS_RUN=1
+    MOUNTPOINT=/mnt/pve-restore/100
+    VG_NAME=pve
+    LV_NAME=restore_stage_vm100
+    trap rollback_new_stage EXIT
+    exit 30
+  ' _ "${COMMON}" "${rollback_definition}" >/dev/null 2>"${stage_tmp}/rollback.stderr"
+  rollback_rc=$?
+  set -e
+  [[ "${rollback_rc}" == 30 ]] || fail "transactional rollback changed the original failure status"
+  [[ "$(sort "${stage_tmp}/rollback.log")" == $'lvremove\nrmdir\nudevadm\numount' ]] || \
+    fail "transactional rollback did not unmount, remove, settle, and clean the stage directory"
+  set +e
+  ROLLBACK_LOG="${stage_tmp}/committed-rollback.log" bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    lvremove() { printf "unexpected-removal\n" >>"${ROLLBACK_LOG}"; }
+    stage_exists() { return 0; }
+    CREATED_THIS_RUN=1
+    MANIFEST_COMMITTED=1
+    MOUNTED_THIS_RUN=1
+    MOUNTPOINT=/mnt/pve-restore/100
+    VG_NAME=pve
+    LV_NAME=restore_stage_vm100
+    trap rollback_new_stage EXIT
+    exit 40
+  ' _ "${COMMON}" "${rollback_definition}" >/dev/null 2>"${stage_tmp}/committed-rollback.stderr"
+  committed_rc=$?
+  set -e
+  [[ "${committed_rc}" == 40 && ! -e "${stage_tmp}/committed-rollback.log" ]] || \
+    fail "transactional rollback removed a manifest-committed resumable stage"
+
+  grep -q 'FS_LABEL="prxvm${VM_ID}"' "${STORAGE_TEMP}" || fail "storage helper does not use the bounded ext4 label"
+  maximum_vm_label="prxvm999999999"
+  [[ "${#maximum_vm_label}" -le 16 ]] || fail "maximum accepted VM ID exceeds the ext4 label limit"
+  rm -rf "${stage_tmp}"
+  ok "stage labels, blkid probing, guarded reset, transactional rollback, and lock-FD isolation are enforced"
+else
+  ok "staging lifecycle integration is deferred to GitHub Actions on Bash 4.3+"
 fi
 
 if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))); then
@@ -622,6 +810,11 @@ expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --key-rotatio
 expect_exit 2 "${SSH_SYNC}" --action setup --remote-host 192.0.2.1 --yes
 expect_exit 2 "${STORAGE_TEMP}" --unknown
 expect_exit 2 "${RSYNC_FETCH}" --unknown
+expect_exit 2 "${RUNNER}" --action transfer --vm 100 --remote-host 192.0.2.1 \
+  --remote-path /backup/vzdump-qemu-200-test.vma.zst --reset-incomplete-stage
+expect_exit 2 "${RUNNER}" --action preflight --vm 100 --reset-incomplete-stage --yes
+expect_exit 2 "${STORAGE_TEMP}" --action create --vm 100 --source-bytes 4096 --reset-incomplete-stage
+expect_exit 2 "${STORAGE_TEMP}" --action status --vm 100 --reset-incomplete-stage --yes
 expect_exit 2 "${RUNNER}" --action preflight --vm 100 --output tsv
 expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --output tsv
 expect_exit 2 "${STORAGE_TEMP}" --action status --vm 100 --output tsv
@@ -683,7 +876,12 @@ fi
 grep -q 'storage.cfg' "${STORAGE_TEMP}" || fail "stage storage is not resolved from Proxmox configuration"
 grep -q 'validate_manifest' "${STORAGE_TEMP}" || fail "stage cleanup lacks manifest validation"
 grep -q 'nodev,nosuid,noexec' "${STORAGE_TEMP}" || fail "stage mount options are incomplete"
-ok "temporary-storage safety boundary is present"
+grep -q 'blkid --probe --output export' "${STORAGE_TEMP}" || fail "filesystem verification does not use authoritative blkid probing"
+grep -q 'udevadm settle --timeout=10' "${STORAGE_TEMP}" || fail "storage lifecycle does not synchronize with udev"
+grep -q -- '--addtag "${LV_OWNER_TAG}" --addtag "${LV_VM_TAG}"' "${STORAGE_TEMP}" || fail "new stages lack ownership tags"
+grep -q 'trap rollback_new_stage EXIT' "${STORAGE_TEMP}" || fail "new-stage creation lacks transactional rollback"
+grep -q 'reset_incomplete_stage' "${STORAGE_TEMP}" || fail "guarded incomplete-stage recovery is missing"
+ok "temporary-storage ownership, probing, recovery, and cleanup boundaries are present"
 
 grep -q 'zstd --no-progress --decompress --stdout' "${RUNNER}" || fail "zstd stream verification is missing"
 grep -q 'vma verify -v /dev/stdin' "${RUNNER}" || fail "VMA stream verification is missing"
@@ -697,7 +895,15 @@ start_line="$(grep -n 'start_vm_if_requested' "${RUNNER}" | tail -n1 | cut -d: -
 [[ -n "${cleanup_line}" && -n "${start_line}" && "${cleanup_line}" -lt "${start_line}" ]] || \
   fail "all workflow does not order cleanup before start"
 grep -q 'archive and staging LV were retained' "${RUNNER}" || fail "restore failure retention contract is missing"
-ok "restore failure retention and cleanup-before-start ordering are explicit"
+inspection_line="$(grep -n '^  inspect_remote_archive$' "${RUNNER}" | cut -d: -f1)"
+staging_line="$(grep -n '^  CURRENT_PHASE="staging"$' "${RUNNER}" | cut -d: -f1)"
+stage_create_line="$(grep -n 'stage_dir="$(restore.child "${STORAGE_TEMP}" --action create' "${RUNNER}" | cut -d: -f1)"
+[[ -n "${inspection_line}" && -n "${staging_line}" && -n "${stage_create_line}" \
+  && "${inspection_line}" -lt "${staging_line}" && "${staging_line}" -lt "${stage_create_line}" ]] || \
+  fail "remote inspection and staging phases are not ordered accurately"
+grep -q 'no verified staging archive was retained' "${RUNNER}" || fail "pre-manifest failure reporting is not explicit"
+grep -q 'restore.child' "${RUNNER}" || fail "runner does not isolate its lock descriptor from helpers"
+ok "restore retention, phase reporting, lock isolation, and cleanup-before-start ordering are explicit"
 
 grep -q 'FEATURE_PLAYBOOKS=(' "${RUNNER}" || fail "runner does not declare playbook dependencies"
 grep -q 'FEATURE_CLI_FILES=(' "${RUNNER}" || fail "runner does not declare CLI dependencies"
@@ -726,7 +932,7 @@ if grep -q 'ansible.builtin.shell' "${PLAYBOOK}"; then
   fail "dependency playbook contains shell mutation logic"
 fi
 grep -q 'ansible.builtin.apt' "${PLAYBOOK}" || fail "dependency playbook does not install packages"
-for package in rsync openssh-client lvm2 e2fsprogs zstd jq; do
+for package in rsync openssh-client lvm2 e2fsprogs findutils util-linux udev zstd jq; do
   grep -q -- "- ${package}" "${PLAYBOOK}" || fail "dependency playbook missing ${package}"
 done
 grep -A80 'dev_tools:' "${ROOT}/ansible/debian/packages.yml" | grep -q -- '- jq' || \

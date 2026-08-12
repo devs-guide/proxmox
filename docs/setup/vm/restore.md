@@ -27,8 +27,9 @@ The target VM ID should be unused. Replacing an existing VM requires the
 explicit `--replace-existing` gate; the existing VM must be stopped, local to
 the current node, and not HA-managed.
 
-The restore dependency set includes `jq`. Published helpers use typed JSON for
-machine-to-machine composition.
+The restore dependency set includes `jq`, `util-linux` (`blkid`), and `udev`
+(`udevadm`). Published helpers use typed JSON for machine-to-machine
+composition.
 
 ## 1. Set up or rotate the SSH key
 
@@ -120,6 +121,22 @@ transfer, or `qmrestore`.
 If an older copy reports malformed helper metadata, download the runner and
 helpers again. That build stopped during remote inspection, before stage
 creation, transfer, or `qmrestore`.
+
+If an earlier stage-creation attempt reports a truncated filesystem label or a
+missing filesystem immediately after `lvcreate`, it may have left the exact
+unmanifested staging LV for that target VM. A current runner will refuse to
+delete it unless the guarded reset is explicitly requested. Review first with
+the complete command plus:
+
+```text
+--reset-incomplete-stage --yes --dry-run
+```
+
+Then remove `--dry-run` and retry once. The runner verifies the deterministic
+LV name, VG, thin pool, requested size, unmounted state, filesystem signature,
+empty unmounted stage directory, and absence of an ownership manifest before
+removal. A manifest-owned stage is never deleted by this flag; omit the reset
+flag to resume it.
 
 Both published execution forms are supported. Streaming is convenient for a
 single run; downloading first keeps the exact runner available for inspection:
