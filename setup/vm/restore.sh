@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Canonical remote Proxmox VM restore feature runner.
+# Canonical remote/local Proxmox VM restore feature runner.
 set -euo pipefail
 
 FEATURE_PLAYBOOKS=(
@@ -101,6 +101,7 @@ STORAGE_TEMP="${CLI_ROOT}/storage/temp.sh"
 RSYNC_FETCH="${CLI_ROOT}/rsync/fetch.sh"
 
 ACTION="all"
+SOURCE_MODE=""
 VM_ID=""
 SOURCE_VM_ID=""
 REMOTE_HOST=""
@@ -112,6 +113,7 @@ KNOWN_HOSTS="/root/.ssh/known_hosts"
 HOST_KEY_FINGERPRINT=""
 CONNECT_TIMEOUT="10"
 ARCHIVE=""
+ARCHIVE_PATH=""
 STAGE_STORAGE="local-lvm"
 TARGET_STORAGE="local-lvm"
 STAGE_SIZE="auto"
@@ -130,6 +132,12 @@ YES=0
 DRY_RUN=0
 OUTPUT="human"
 
+CONNECTION_OPTIONS_EXPLICIT=0
+STAGE_STORAGE_EXPLICIT=0
+STAGE_SIZE_EXPLICIT=0
+MOUNT_ROOT_EXPLICIT=0
+CLEANUP_EXPLICIT=0
+
 CURRENT_PHASE="arguments"
 ACTIVE_MANIFEST=""
 REMOTE_BYTES=""
@@ -147,23 +155,25 @@ usage() {
   cat <<'EOF'
 Usage: setup/vm/restore.sh --vm ID --action ACTION [options]
 
-Fetch a remote QEMU VMA backup to a temporary filesystem-backed thin LV,
-verify it completely, restore it with qmrestore, and safely remove the stage.
+Restore a remote or local QEMU VMA backup with full verification and explicit
+source-mode safety boundaries.
 
 Actions:
-  preflight   Read-only local, storage, SSH, and optional remote-file checks
-  transfer    Create/resume the stage and resumably transfer the archive
-  verify      Verify one local --archive without mutating VM state
-  restore     Verify and restore one local --archive
+  preflight   Validate the selected source and destination Proxmox node
+  transfer    Remote only: create/resume a stage and transfer the archive
+  verify      Local only: verify one --archive-path without mutating VM state
+  restore     Local only: verify and restore one --archive-path
   cleanup     Remove only the manifest-owned staging LV
-  all         Run preflight, transfer, verify, restore, cleanup (default)
+  all         Run the complete selected remote or local workflow (default)
 
 Core flags:
   --vm ID                            Required target VM ID
   --source-vm ID                     Optional expected source VM ID
-  --remote-host HOST                 Required for transfer/all
-  --remote-path PATH                 Required for transfer/all
-  --archive PATH                     Required for verify/restore
+  --remote                           Select remote archive transfer mode
+  --local                            Select local archive mode
+  --remote-host HOST                 Required in remote mode
+  --remote-path PATH                 Required in remote mode
+  --archive-path PATH                Required in local mode
   --action preflight|transfer|verify|restore|cleanup|all
 
 Connection flags:
@@ -185,7 +195,7 @@ Storage and safety flags:
   --reset-incomplete-stage           Reset only a guarded unmanifested stage
   --replace-existing                 Replace only a stopped local non-HA VM
   --unique                           Pass --unique 1 to qmrestore
-  --start                            Start only after successful cleanup
+  --start                            Start only after successful restore checks
   --cleanup success|never            Default: success
   --rsync-bwlimit-kbps RATE
   --restore-bwlimit-kbps RATE
@@ -200,37 +210,53 @@ Passwordless SSH is intentionally separate:
     --key-rotation --yes
 
 Complete restore example:
-  setup/vm/restore.sh --action all --vm 201 --source-vm 200 \
+  setup/vm/restore.sh --remote --action all --vm 201 --source-vm 200 \
     --remote-host 10.0.0.11 \
     --remote-path /media/backup/vzdump-qemu-200-date.vma.zst \
     --stage-storage local-lvm --target-storage local-lvm --unique
+
+Local restore example:
+  setup/vm/restore.sh --local --action all --vm 201 --source-vm 200 \
+    --archive-path /var/lib/vz/dump/vzdump-qemu-200-date.vma.zst \
+    --target-storage local-lvm --unique
 
 Published runner:
   wget -qO /tmp/proxmox-vm-restore.sh \
     https://devs-guide.github.io/proxmox/setup/vm/restore.sh
   chmod 0755 /tmp/proxmox-vm-restore.sh
-  /tmp/proxmox-vm-restore.sh --action preflight --vm 200
+  /tmp/proxmox-vm-restore.sh --local --action preflight --vm 201 \
+    --archive-path /var/lib/vz/dump/vzdump-qemu-200-date.vma.zst
 EOF
 }
 
 while (($#)); do
   case "$1" in
     --action) restore.require_flag_value "$1" "${2-}"; ACTION="$2"; shift 2 ;;
+    --remote)
+      [[ -z "${SOURCE_MODE}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "select exactly one source mode: --remote or --local"
+      SOURCE_MODE="remote"
+      shift
+      ;;
+    --local)
+      [[ -z "${SOURCE_MODE}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "select exactly one source mode: --remote or --local"
+      SOURCE_MODE="local"
+      shift
+      ;;
     --vm) restore.require_flag_value "$1" "${2-}"; VM_ID="$2"; shift 2 ;;
     --source-vm) restore.require_flag_value "$1" "${2-}"; SOURCE_VM_ID="$2"; shift 2 ;;
     --remote-host) restore.require_flag_value "$1" "${2-}"; REMOTE_HOST="$2"; shift 2 ;;
-    --remote-user) restore.require_flag_value "$1" "${2-}"; REMOTE_USER="$2"; shift 2 ;;
-    --remote-port) restore.require_flag_value "$1" "${2-}"; REMOTE_PORT="$2"; shift 2 ;;
+    --remote-user) restore.require_flag_value "$1" "${2-}"; REMOTE_USER="$2"; CONNECTION_OPTIONS_EXPLICIT=1; shift 2 ;;
+    --remote-port) restore.require_flag_value "$1" "${2-}"; REMOTE_PORT="$2"; CONNECTION_OPTIONS_EXPLICIT=1; shift 2 ;;
     --remote-path) restore.require_flag_value "$1" "${2-}"; REMOTE_PATH="$2"; shift 2 ;;
-    --identity) restore.require_flag_value "$1" "${2-}"; IDENTITY="$2"; shift 2 ;;
-    --known-hosts) restore.require_flag_value "$1" "${2-}"; KNOWN_HOSTS="$2"; shift 2 ;;
-    --host-key-fingerprint) restore.require_flag_value "$1" "${2-}"; HOST_KEY_FINGERPRINT="$2"; shift 2 ;;
-    --connect-timeout) restore.require_flag_value "$1" "${2-}"; CONNECT_TIMEOUT="$2"; shift 2 ;;
-    --archive) restore.require_flag_value "$1" "${2-}"; ARCHIVE="$2"; shift 2 ;;
-    --stage-storage) restore.require_flag_value "$1" "${2-}"; STAGE_STORAGE="$2"; shift 2 ;;
+    --archive-path) restore.require_flag_value "$1" "${2-}"; ARCHIVE_PATH="$2"; shift 2 ;;
+    --identity) restore.require_flag_value "$1" "${2-}"; IDENTITY="$2"; CONNECTION_OPTIONS_EXPLICIT=1; shift 2 ;;
+    --known-hosts) restore.require_flag_value "$1" "${2-}"; KNOWN_HOSTS="$2"; CONNECTION_OPTIONS_EXPLICIT=1; shift 2 ;;
+    --host-key-fingerprint) restore.require_flag_value "$1" "${2-}"; HOST_KEY_FINGERPRINT="$2"; CONNECTION_OPTIONS_EXPLICIT=1; shift 2 ;;
+    --connect-timeout) restore.require_flag_value "$1" "${2-}"; CONNECT_TIMEOUT="$2"; CONNECTION_OPTIONS_EXPLICIT=1; shift 2 ;;
+    --stage-storage) restore.require_flag_value "$1" "${2-}"; STAGE_STORAGE="$2"; STAGE_STORAGE_EXPLICIT=1; shift 2 ;;
     --target-storage) restore.require_flag_value "$1" "${2-}"; TARGET_STORAGE="$2"; shift 2 ;;
-    --stage-size) restore.require_flag_value "$1" "${2-}"; STAGE_SIZE="$2"; shift 2 ;;
-    --mount-root) restore.require_flag_value "$1" "${2-}"; MOUNT_ROOT="$2"; shift 2 ;;
+    --stage-size) restore.require_flag_value "$1" "${2-}"; STAGE_SIZE="$2"; STAGE_SIZE_EXPLICIT=1; shift 2 ;;
+    --mount-root) restore.require_flag_value "$1" "${2-}"; MOUNT_ROOT="$2"; MOUNT_ROOT_EXPLICIT=1; shift 2 ;;
     --max-thin-data-percent) restore.require_flag_value "$1" "${2-}"; MAX_THIN_DATA_PERCENT="$2"; shift 2 ;;
     --max-thin-metadata-percent) restore.require_flag_value "$1" "${2-}"; MAX_THIN_METADATA_PERCENT="$2"; shift 2 ;;
     --capacity-override) CAPACITY_OVERRIDE=1; shift ;;
@@ -238,7 +264,7 @@ while (($#)); do
     --replace-existing) REPLACE_EXISTING=1; shift ;;
     --unique) UNIQUE=1; shift ;;
     --start) START_VM=1; shift ;;
-    --cleanup) restore.require_flag_value "$1" "${2-}"; CLEANUP_POLICY="$2"; shift 2 ;;
+    --cleanup) restore.require_flag_value "$1" "${2-}"; CLEANUP_POLICY="$2"; CLEANUP_EXPLICIT=1; shift 2 ;;
     --rsync-bwlimit-kbps) restore.require_flag_value "$1" "${2-}"; RSYNC_BWLIMIT_KBPS="$2"; shift 2 ;;
     --restore-bwlimit-kbps) restore.require_flag_value "$1" "${2-}"; RESTORE_BWLIMIT_KBPS="$2"; shift 2 ;;
     --yes) YES=1; shift ;;
@@ -257,6 +283,18 @@ validate_arguments() {
   esac
   [[ -n "${VM_ID}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--vm is required"
   restore.validate_vm_id "${VM_ID}"
+  if [[ "${ACTION}" == cleanup ]]; then
+    [[ -z "${SOURCE_MODE}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--action cleanup does not accept --remote or --local"
+    [[ -z "${REMOTE_HOST}" && -z "${REMOTE_PATH}" && -z "${ARCHIVE_PATH}" && "${CONNECTION_OPTIONS_EXPLICIT}" == 0 ]] || \
+      restore.die "${RESTORE_EXIT_USAGE}" "--action cleanup does not accept source or connection flags"
+  else
+    [[ -n "${SOURCE_MODE}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "select exactly one source mode: --remote or --local"
+  fi
+  case "${SOURCE_MODE}:${ACTION}" in
+    remote:preflight|remote:transfer|remote:all|local:preflight|local:verify|local:restore|local:all|:cleanup) ;;
+    remote:*) restore.die "${RESTORE_EXIT_USAGE}" "--remote supports --action preflight, transfer, or all" ;;
+    local:*) restore.die "${RESTORE_EXIT_USAGE}" "--local supports --action preflight, verify, restore, or all" ;;
+  esac
   [[ -z "${SOURCE_VM_ID}" ]] || restore.validate_vm_id "${SOURCE_VM_ID}"
   restore.validate_port "${REMOTE_PORT}"
   restore.validate_positive_uint "--connect-timeout" "${CONNECT_TIMEOUT}"
@@ -274,32 +312,29 @@ validate_arguments() {
   [[ "${IDENTITY}" == /* ]] || restore.die "${RESTORE_EXIT_USAGE}" "--identity must be absolute"
   [[ "${KNOWN_HOSTS}" == /* ]] || restore.die "${RESTORE_EXIT_USAGE}" "--known-hosts must be absolute"
   [[ "${STAGE_SIZE}" == auto ]] || restore.parse_size_bytes "${STAGE_SIZE}" >/dev/null
-  if [[ -n "${REMOTE_HOST}" ]]; then
+  if [[ "${SOURCE_MODE}" == remote ]]; then
+    [[ -n "${REMOTE_HOST}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--remote-host is required with --remote"
+    [[ -n "${REMOTE_PATH}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--remote-path is required with --remote"
+    [[ -z "${ARCHIVE_PATH}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--archive-path is only valid with --local"
     restore.validate_host "${REMOTE_HOST}"
     restore.validate_remote_user "${REMOTE_USER}"
-  fi
-  if [[ "${ACTION}" == transfer || "${ACTION}" == all ]]; then
-    [[ -n "${REMOTE_HOST}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--remote-host is required for ${ACTION}"
-    [[ -n "${REMOTE_PATH}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--remote-path is required for ${ACTION}"
-  fi
-  if [[ "${ACTION}" == verify || "${ACTION}" == restore ]]; then
-    [[ -n "${ARCHIVE}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--archive is required for ${ACTION}"
-  fi
-  if [[ -n "${REMOTE_PATH}" && -z "${REMOTE_HOST}" ]]; then
-    restore.die "${RESTORE_EXIT_USAGE}" "--remote-path requires --remote-host"
-  fi
-  if [[ -n "${REMOTE_PATH}" ]]; then
     [[ "${REMOTE_PATH}" == /* ]] || restore.die "${RESTORE_EXIT_USAGE}" "--remote-path must be absolute"
     restore.validate_archive_name "${REMOTE_PATH}"
-  fi
-  if [[ -n "${ARCHIVE}" ]]; then
-    restore.validate_archive_name "${ARCHIVE}"
+  elif [[ "${SOURCE_MODE}" == local ]]; then
+    [[ -n "${ARCHIVE_PATH}" ]] || restore.die "${RESTORE_EXIT_USAGE}" "--archive-path is required with --local"
+    [[ "${ARCHIVE_PATH}" == /* ]] || restore.die "${RESTORE_EXIT_USAGE}" "--archive-path must be absolute"
+    restore.validate_archive_name "${ARCHIVE_PATH}"
+    [[ -z "${REMOTE_HOST}" && -z "${REMOTE_PATH}" && "${CONNECTION_OPTIONS_EXPLICIT}" == 0 ]] || \
+      restore.die "${RESTORE_EXIT_USAGE}" "remote host, path, and connection flags are not valid with --local"
+    [[ "${STAGE_STORAGE_EXPLICIT}" == 0 && "${STAGE_SIZE_EXPLICIT}" == 0 && "${MOUNT_ROOT_EXPLICIT}" == 0 \
+      && "${RESET_INCOMPLETE_STAGE}" == 0 && -z "${RSYNC_BWLIMIT_KBPS}" && "${CLEANUP_EXPLICIT}" == 0 ]] || \
+      restore.die "${RESTORE_EXIT_USAGE}" "staging, rsync, reset, and cleanup flags are not valid with --local"
   fi
   if ((START_VM)) && [[ "${CLEANUP_POLICY}" == never && ( "${ACTION}" == all || "${ACTION}" == restore ) ]]; then
     restore.die "${RESTORE_EXIT_USAGE}" "--start cannot be combined with --cleanup never"
   fi
   if ((RESET_INCOMPLETE_STAGE)); then
-    [[ "${ACTION}" == transfer || "${ACTION}" == all ]] || \
+    [[ "${SOURCE_MODE}" == remote && ( "${ACTION}" == transfer || "${ACTION}" == all ) ]] || \
       restore.die "${RESTORE_EXIT_USAGE}" "--reset-incomplete-stage requires --action transfer or all"
     ((YES)) || restore.die "${RESTORE_EXIT_USAGE}" "--reset-incomplete-stage requires --yes"
   fi
@@ -316,11 +351,13 @@ on_exit() {
   local exit_code="$?"
   trap - EXIT
   if ((exit_code != 0)); then
-    if [[ "${DRY_RUN}" != "1" && -n "${ACTIVE_MANIFEST}" && -f "${ACTIVE_MANIFEST}" ]]; then
+    if [[ "${SOURCE_MODE}" != local && "${DRY_RUN}" != "1" && -n "${ACTIVE_MANIFEST}" && -f "${ACTIVE_MANIFEST}" ]]; then
       restore.manifest_put "${ACTIVE_MANIFEST}" phase "failed:${CURRENT_PHASE}" 2>/dev/null || true
       restore.manifest_put "${ACTIVE_MANIFEST}" resume_action "${ACTION}" 2>/dev/null || true
     fi
-    if [[ -n "${ACTIVE_MANIFEST}" && -f "${ACTIVE_MANIFEST}" ]]; then
+    if [[ "${SOURCE_MODE}" == local ]]; then
+      restore.error "phase ${CURRENT_PHASE} failed with exit ${exit_code}; the local archive was left untouched"
+    elif [[ -n "${ACTIVE_MANIFEST}" && -f "${ACTIVE_MANIFEST}" ]]; then
       restore.error "phase ${CURRENT_PHASE} failed with exit ${exit_code}; the manifest-owned staging archive was retained"
     else
       restore.error "phase ${CURRENT_PHASE} failed with exit ${exit_code}; no verified staging archive was retained"
@@ -364,35 +401,58 @@ storage_args() {
   return 0
 }
 
-local_preflight() {
+run_preflight() {
   CURRENT_PHASE="preflight"
   restore.log "preflight: validating the local Proxmox node"
   restore.require_proxmox
   restore.log "preflight: checking required restore commands"
   restore.require_commands "${RESTORE_EXIT_PREFLIGHT}" \
-    qm qmrestore pvesm lvs vgs lvcreate lvremove mkfs.ext4 mount umount findmnt flock \
-    ssh rsync sha256sum zstd vma blkid udevadm stat find awk grep sed tee sync ha-manager jq
+    qm qmrestore pvesm lvs vgs flock sha256sum zstd vma stat awk grep sed tee sync ha-manager jq
+  if [[ "${SOURCE_MODE}" == remote ]]; then
+    restore.require_commands "${RESTORE_EXIT_PREFLIGHT}" \
+      lvcreate lvremove mkfs.ext4 mount umount findmnt ssh rsync blkid udevadm find
+  elif [[ "${ACTION}" == cleanup ]]; then
+    restore.require_commands "${RESTORE_EXIT_PREFLIGHT}" lvremove mount umount findmnt blkid udevadm find
+  fi
   restore.log "preflight: acquiring the restore lock for VM ${VM_ID}"
   restore.acquire_lock "${VM_ID}"
-  restore.log "preflight: checking stage storage ${STAGE_STORAGE}"
-  pvesm status --storage "${STAGE_STORAGE}" 2>/dev/null | awk -v storage="${STAGE_STORAGE}" '$1 == storage && $3 == "active" {found=1} END {exit !found}' || \
-    restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage storage is unavailable: ${STAGE_STORAGE}"
-  restore.log "preflight: checking target storage ${TARGET_STORAGE}"
-  pvesm status --storage "${TARGET_STORAGE}" 2>/dev/null | awk -v storage="${TARGET_STORAGE}" '$1 == storage && $3 == "active" {found=1} END {exit !found}' || \
-    restore.die "${RESTORE_EXIT_PREFLIGHT}" "target storage is unavailable: ${TARGET_STORAGE}"
-  local -a stage_args=()
-  storage_args stage_args
-  restore.log "preflight: inspecting temporary-stage state for VM ${VM_ID}"
-  if ! restore.child "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output json >/dev/null; then
-    restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage-storage inspection failed"
+  if [[ "${SOURCE_MODE}" == remote || "${ACTION}" == cleanup ]]; then
+    restore.log "preflight: checking stage storage ${STAGE_STORAGE}"
+    pvesm status --storage "${STAGE_STORAGE}" 2>/dev/null | awk -v storage="${STAGE_STORAGE}" '$1 == storage && $3 == "active" {found=1} END {exit !found}' || \
+      restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage storage is unavailable: ${STAGE_STORAGE}"
+    local -a stage_args=()
+    storage_args stage_args
+    restore.log "preflight: inspecting temporary-stage state for VM ${VM_ID}"
+    if ! restore.child "${STORAGE_TEMP}" --action status "${stage_args[@]}" --output json >/dev/null; then
+      restore.die "${RESTORE_EXIT_PREFLIGHT}" "stage-storage inspection failed"
+    fi
   fi
-  if [[ -n "${REMOTE_HOST}" ]]; then
+  if [[ "${ACTION}" != cleanup ]]; then
+    restore.log "preflight: checking target storage ${TARGET_STORAGE}"
+    pvesm status --storage "${TARGET_STORAGE}" 2>/dev/null | awk -v storage="${TARGET_STORAGE}" '$1 == storage && $3 == "active" {found=1} END {exit !found}' || \
+      restore.die "${RESTORE_EXIT_PREFLIGHT}" "target storage is unavailable: ${TARGET_STORAGE}"
+  fi
+  if [[ "${SOURCE_MODE}" == remote ]]; then
     local -a ssh_args=()
     connection_args ssh_args
     restore.log "preflight: checking passwordless SSH access to ${REMOTE_USER}@${REMOTE_HOST}"
     restore.child "${SSH_SYNC}" --action check "${ssh_args[@]}" --output human
+  elif [[ "${SOURCE_MODE}" == local ]]; then
+    inspect_local_archive
   fi
   restore.log "preflight passed for target VM ${VM_ID}; dependency playbook: ${PLAYBOOK_PATH}"
+}
+
+inspect_local_archive() {
+  CURRENT_PHASE="local-inspection"
+  ARCHIVE="${ARCHIVE_PATH}"
+  [[ -f "${ARCHIVE}" && ! -L "${ARCHIVE}" && -r "${ARCHIVE}" ]] || \
+    restore.die "${RESTORE_EXIT_INTEGRITY}" "archive must be a readable local regular non-symlink file: ${ARCHIVE}"
+  LOCAL_BYTES="$(stat -Lc %s -- "${ARCHIVE}")"
+  [[ "${LOCAL_BYTES}" =~ ^[0-9]+$ && "${LOCAL_BYTES}" -gt 0 ]] || \
+    restore.die "${RESTORE_EXIT_INTEGRITY}" "local archive has an invalid size"
+  resolve_source_vm "${ARCHIVE}"
+  restore.log "local archive accepted: ${ARCHIVE} ($(restore.human_bytes "${LOCAL_BYTES}"))"
 }
 
 inspect_remote_archive() {
@@ -485,7 +545,7 @@ verify_archive() {
   local archive_dir manifest expected_bytes expected_sha verify_log verify_rc=0
   archive_dir="$(cd "$(dirname "${ARCHIVE}")" && pwd)"
   manifest="${archive_dir}/.proxmox-restore.tsv"
-  if [[ -f "${manifest}" && ! -L "${manifest}" ]]; then
+  if [[ "${SOURCE_MODE}" == remote && -f "${manifest}" && ! -L "${manifest}" ]]; then
     ACTIVE_MANIFEST="${manifest}"
     restore.manifest_require "${manifest}" target_vm "${VM_ID}"
     expected_bytes="$(restore.manifest_get "${manifest}" source_bytes 2>/dev/null || true)"
@@ -620,6 +680,9 @@ restore_vm() {
   [[ -z "${RESTORE_BWLIMIT_KBPS}" ]] || command+=(--bwlimit "${RESTORE_BWLIMIT_KBPS}")
   restore.log "starting native qmrestore for target VM ${VM_ID}"
   if ! restore.run "${command[@]}"; then
+    if [[ "${SOURCE_MODE}" == local ]]; then
+      restore.die "${RESTORE_EXIT_RESTORE}" "qmrestore failed; the local archive was left untouched"
+    fi
     restore.die "${RESTORE_EXIT_RESTORE}" "qmrestore failed; the archive and staging LV were retained"
   fi
   if ((DRY_RUN)); then
@@ -720,32 +783,31 @@ dry_run_post_transfer() {
 
 case "${ACTION}" in
   preflight)
-    local_preflight
-    [[ -z "${REMOTE_PATH}" ]] || inspect_remote_archive
+    run_preflight
+    [[ "${SOURCE_MODE}" != remote ]] || inspect_remote_archive
     emit_result "preflight passed for target VM ${VM_ID}"
     ;;
   transfer)
-    local_preflight
+    run_preflight
     perform_transfer
     emit_result "archive transferred and checksum-matched: ${ARCHIVE}"
     ;;
   verify)
-    local_preflight
+    run_preflight
     verify_archive
     emit_result "archive verification passed: ${ARCHIVE}"
     ;;
   restore)
-    local_preflight
+    run_preflight
     verify_archive
     check_vm_collision
     check_restore_capacity
     restore_vm
-    [[ "${CLEANUP_POLICY}" == never ]] || cleanup_stage_if_owned
     start_vm_if_requested
     emit_result "VM ${VM_ID} restored successfully"
     ;;
   cleanup)
-    local_preflight
+    run_preflight
     ACTIVE_MANIFEST="${MOUNT_ROOT%/}/${VM_ID}/.proxmox-restore.tsv"
     declare -a local_cleanup_args=(--vm "${VM_ID}" --storage "${STAGE_STORAGE}" --mount-root "${MOUNT_ROOT}" --output path)
     ((DRY_RUN)) && local_cleanup_args+=(--dry-run)
@@ -756,18 +818,22 @@ case "${ACTION}" in
     emit_result "staging cleanup completed for VM ${VM_ID}"
     ;;
   all)
-    local_preflight
-    perform_transfer
-    if ((DRY_RUN)); then
-      dry_run_post_transfer
-      emit_result "dry-run completed without mutation"
-      exit 0
+    run_preflight
+    if [[ "${SOURCE_MODE}" == remote ]]; then
+      perform_transfer
+      if ((DRY_RUN)); then
+        dry_run_post_transfer
+        emit_result "dry-run completed without mutation"
+        exit 0
+      fi
     fi
     verify_archive
     check_vm_collision
     check_restore_capacity
     restore_vm
-    [[ "${CLEANUP_POLICY}" == never ]] || cleanup_stage_if_owned
+    if [[ "${SOURCE_MODE}" == remote && "${CLEANUP_POLICY}" != never ]]; then
+      cleanup_stage_if_owned
+    fi
     start_vm_if_requested
     emit_result "VM ${VM_ID} restored successfully"
     ;;

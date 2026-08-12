@@ -162,7 +162,15 @@ fi
   restore.die "${RESTORE_EXIT_USAGE}" "--remote-sha256 must be 64 hexadecimal characters"
 
 restore.require_proxmox
-restore.require_commands "${RESTORE_EXIT_STORAGE}" pvesm lvs vgs lvcreate lvremove mkfs.ext4 mount umount findmnt find blkid udevadm awk
+restore.require_commands "${RESTORE_EXIT_STORAGE}" pvesm lvs vgs awk
+case "${ACTION}" in
+  create)
+    restore.require_commands "${RESTORE_EXIT_STORAGE}" lvcreate lvremove mkfs.ext4 mount umount findmnt find blkid udevadm
+    ;;
+  remove)
+    restore.require_commands "${RESTORE_EXIT_STORAGE}" lvremove mount umount findmnt find blkid udevadm
+    ;;
+esac
 if [[ "${OUTPUT}" == json ]]; then
   restore.require_commands "${RESTORE_EXIT_STORAGE}" jq
 fi

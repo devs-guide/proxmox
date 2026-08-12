@@ -1,8 +1,8 @@
 # Proxmox VM restore runbook
 
-This runbook restores one remote QEMU VMA backup to a Proxmox VM. Run every
-command on the destination Proxmox host as `root`. The source host stores the
-backup and is reached over SSH.
+This runbook restores one remote or local QEMU VMA backup to a Proxmox VM. Run
+every command on the destination Proxmox host as `root`. Remote mode retrieves
+the backup over SSH and rsync; local mode reads an existing archive directly.
 
 All addresses, VM IDs, storage IDs, and paths below are examples. Replace them
 for the current environment; none are embedded in the published scripts.
@@ -29,7 +29,20 @@ the current node, and not HA-managed.
 
 The restore dependency set includes `jq`, `util-linux` (`blkid`), and `udev`
 (`udevadm`). Published helpers use typed JSON for machine-to-machine
-composition.
+composition. Source-consuming runner actions require exactly one explicit
+source selector:
+
+- `--remote` with `--remote-host` and `--remote-path`
+- `--local` with `--archive-path`
+
+The source-independent `cleanup` action accepts neither selector. The retired
+runner flag `--archive` is not accepted.
+
+| Mode | Supported actions | Source path |
+| --- | --- | --- |
+| `--remote` | `preflight`, `transfer`, `all` | `--remote-path` |
+| `--local` | `preflight`, `verify`, `restore`, `all` | `--archive-path` |
+| No mode | `cleanup` | Managed stage derived from `--vm` |
 
 ## 1. Set up or rotate the SSH key
 
@@ -72,6 +85,7 @@ stage cleanup:
 ```bash
 wget -qO- https://devs-guide.github.io/proxmox/setup/vm/restore.sh |
   bash -s -- \
+    --remote \
     --action all \
     --vm 201 \
     --source-vm 200 \
@@ -83,7 +97,31 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/vm/restore.sh |
 ```
 
 The restored VM remains stopped by default. Add `--start` only when it should
-start after successful restore verification and staging cleanup.
+start after successful restore verification and, in remote mode, staging
+cleanup. Remote mode may retain its managed stage with `--cleanup never`.
+
+### Restore an existing local archive
+
+Local mode skips SSH, remote inspection, rsync, temporary-stage creation, and
+temporary-stage cleanup. The input archive is externally owned and is never
+deleted or modified by the workflow:
+
+```bash
+wget -qO /tmp/proxmox-vm-restore.sh \
+  https://devs-guide.github.io/proxmox/setup/vm/restore.sh &&
+bash /tmp/proxmox-vm-restore.sh \
+  --local \
+  --action all \
+  --vm 201 \
+  --source-vm 200 \
+  --archive-path /var/lib/vz/dump/vzdump-qemu-200-date.vma.zst \
+  --target-storage local-lvm \
+  --unique
+```
+
+Local `all` performs local preflight, full archive and VMA verification, target
+capacity and VM-collision checks, `qmrestore`, and optional start. Connection,
+rsync, staging, reset, and cleanup flags are rejected in local mode.
 
 Add `--output json` when another tool needs the final result on standard
 output. Progress and phase messages continue on standard error. The final
@@ -111,6 +149,10 @@ VM mutation:
 [setup.vm.restore] preflight: inspecting temporary-stage state for VM 201
 [setup.vm.restore] preflight: checking passwordless SSH access to root@10.0.0.10
 ```
+
+Local preflight reports the node, command, lock, target-storage, and local-file
+checks only. It does not require or invoke SSH or rsync and does not inspect or
+create temporary-stage storage.
 
 If an older downloaded copy exits immediately with only `phase preflight failed
 with exit 1`, download `restore.sh` again before retrying. That earlier build
@@ -166,6 +208,7 @@ target VM, remote host, remote path, and storage values. Do not add
 
 ```bash
 bash /tmp/proxmox-vm-restore.sh \
+  --remote \
   --action all \
   --vm 201 \
   --source-vm 200 \
@@ -212,6 +255,7 @@ Start a fresh transfer through the new address without
 
 ```bash
 bash /tmp/proxmox-vm-restore.sh \
+  --remote \
   --action all \
   --vm 201 \
   --source-vm 200 \
@@ -255,7 +299,9 @@ cleanup safe.
 
 ## 3. Run each phase manually
 
-Use these steps when observing or resuming each boundary separately.
+Use these steps when observing or resuming each boundary separately. The
+standalone helpers retain their focused interfaces; the end-to-end runner uses
+the strict source-mode interface documented above.
 
 ### Inspect the remote file
 
@@ -310,22 +356,21 @@ before rsync appends to it.
 ```bash
 wget -qO- https://devs-guide.github.io/proxmox/setup/vm/restore.sh |
   bash -s -- \
+    --local \
     --action restore \
     --vm 201 \
     --source-vm 200 \
-    --archive /mnt/pve-restore/201/vzdump-qemu-200-date.vma.zst \
-    --stage-storage local-lvm \
+    --archive-path /mnt/pve-restore/201/vzdump-qemu-200-date.vma.zst \
     --target-storage local-lvm \
     --unique
 ```
 
-The restore action verifies the full archive before invoking `qmrestore`. On
-success it validates the resulting VM configuration and target volumes, then
-removes a manifest-owned staging LV. On failure it retains the verified stage
-for diagnosis or resumption.
-
-To retain the stage after success, add `--cleanup never`. Remove it later with
-the documented storage-helper remove action.
+The local restore action verifies the full archive before invoking `qmrestore`.
+On success it validates the resulting VM configuration and target volumes. It
+does not adopt a neighboring stage manifest and never removes the archive or
+its containing filesystem. If this archive came from the managed remote-stage
+workflow, remove that stage separately with the mode-free `cleanup` action
+after the restore succeeds.
 
 ## Raw directory transfer
 
@@ -345,7 +390,8 @@ outside the automated restore contract.
   bypass an unexplained safety refusal.
 - `--unique` passes `--unique 1` to `qmrestore` to generate unique properties
   such as network-interface addresses for the restored VM.
-- A transfer failure retains partial data for resume.
-- An integrity or restore failure retains the staging archive.
+- A remote transfer failure retains partial data for resume.
+- A remote integrity or restore failure retains its staging archive.
+- Local mode never edits, adopts, cleans up, or deletes its input archive.
 - Automatic cleanup removes only a stage whose LV, filesystem, mount source,
   and manifest all match the requested target VM.

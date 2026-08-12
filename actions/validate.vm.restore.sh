@@ -52,7 +52,7 @@ done
 for required_flag in --key-rotation --yes; do
   grep -q -- "${required_flag}" <<<"$("${SSH_SYNC}" --help)" || fail "SSH helper help missing ${required_flag}"
 done
-for required_flag in --vm --action --stage-storage --target-storage --reset-incomplete-stage --replace-existing --unique --cleanup --output; do
+for required_flag in --vm --action --remote --local --remote-path --archive-path --stage-storage --target-storage --reset-incomplete-stage --replace-existing --unique --cleanup --output; do
   grep -q -- "${required_flag}" <<<"$("${RUNNER}" --help)" || fail "runner help missing ${required_flag}"
 done
 grep -q -- '--reset-incomplete-stage' <<<"$("${STORAGE_TEMP}" --help)" || \
@@ -810,9 +810,10 @@ expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --key-rotatio
 expect_exit 2 "${SSH_SYNC}" --action setup --remote-host 192.0.2.1 --yes
 expect_exit 2 "${STORAGE_TEMP}" --unknown
 expect_exit 2 "${RSYNC_FETCH}" --unknown
-expect_exit 2 "${RUNNER}" --action transfer --vm 100 --remote-host 192.0.2.1 \
+expect_exit 2 "${RUNNER}" --remote --action transfer --vm 100 --remote-host 192.0.2.1 \
   --remote-path /backup/vzdump-qemu-200-test.vma.zst --reset-incomplete-stage
-expect_exit 2 "${RUNNER}" --action preflight --vm 100 --reset-incomplete-stage --yes
+expect_exit 2 "${RUNNER}" --remote --action preflight --vm 100 --remote-host 192.0.2.1 \
+  --remote-path /backup/vzdump-qemu-200-test.vma.zst --reset-incomplete-stage --yes
 expect_exit 2 "${STORAGE_TEMP}" --action create --vm 100 --source-bytes 4096 --reset-incomplete-stage
 expect_exit 2 "${STORAGE_TEMP}" --action status --vm 100 --reset-incomplete-stage --yes
 expect_exit 2 "${RUNNER}" --action preflight --vm 100 --output tsv
@@ -820,7 +821,215 @@ expect_exit 2 "${SSH_SYNC}" --action check --remote-host 192.0.2.1 --output tsv
 expect_exit 2 "${STORAGE_TEMP}" --action status --vm 100 --output tsv
 expect_exit 2 "${RSYNC_FETCH}" --action inspect --remote-host 192.0.2.1 --remote-path /backup/vzdump-qemu-200-test.vma.zst --output tsv
 expect_exit 2 "${RUNNER}" positional
-ok "unknown, positional, missing, and removed TSV arguments return usage exit 2"
+expect_exit 2 "${RUNNER}" --action all --vm 100
+expect_exit 2 "${RUNNER}" --remote --local --action all --vm 100 \
+  --remote-host 192.0.2.1 --remote-path /backup/vzdump-qemu-200-test.vma.zst
+expect_exit 2 "${RUNNER}" --local --action all --vm 100 --archive /backup/vzdump-qemu-200-test.vma.zst
+expect_exit 2 "${RUNNER}" --local --action transfer --vm 100 --archive-path /backup/vzdump-qemu-200-test.vma.zst
+expect_exit 2 "${RUNNER}" --remote --action verify --vm 100 --remote-host 192.0.2.1 \
+  --remote-path /backup/vzdump-qemu-200-test.vma.zst
+expect_exit 2 "${RUNNER}" --action cleanup --vm 100 --local
+expect_exit 2 "${RUNNER}" --local --action all --vm 100 --archive-path relative/vzdump-qemu-200-test.vma.zst
+expect_exit 2 "${RUNNER}" --local --action all --vm 100 --archive-path /backup/not-a-vma.tar
+expect_exit 2 "${RUNNER}" --local --action all --vm 100 --archive-path /backup/vzdump-qemu-200-test.vma.zst \
+  --remote-host 192.0.2.1
+expect_exit 2 "${RUNNER}" --local --action all --vm 100 --archive-path /backup/vzdump-qemu-200-test.vma.zst \
+  --stage-storage local-lvm
+expect_exit 2 "${RUNNER}" --local --action all --vm 100 --archive-path /backup/vzdump-qemu-200-test.vma.zst \
+  --rsync-bwlimit-kbps 1000
+expect_exit 10 "${RUNNER}" --remote --action preflight --vm 100 --remote-host 192.0.2.1 \
+  --remote-path /backup/vzdump-qemu-200-test.vma.zst
+expect_exit 10 "${RUNNER}" --local --action preflight --vm 100 \
+  --archive-path /backup/vzdump-qemu-200-test.vma.zst
+ok "source modes, action matrix, retired flags, and malformed arguments enforce their exit contracts"
+
+local_source_tmp="$(mktemp -d)"
+local_archive="${local_source_tmp}/vzdump-qemu-200-local-test.vma"
+local_symlink="${local_source_tmp}/vzdump-qemu-200-symlink-test.vma"
+local_directory="${local_source_tmp}/vzdump-qemu-200-directory-test.vma"
+printf 'local-vma-fixture\n' >"${local_archive}"
+ln -s "${local_archive}" "${local_symlink}"
+mkdir "${local_directory}"
+inspect_local_definition="$(awk '
+  /^inspect_local_archive\(\) \{/ { capture=1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${RUNNER}")"
+resolve_source_definition="$(awk '
+  /^resolve_source_vm\(\) \{/ { capture=1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${RUNNER}")"
+preflight_definition="$(awk '
+  /^run_preflight\(\) \{/ { capture=1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${RUNNER}")"
+[[ -n "${inspect_local_definition}" && -n "${resolve_source_definition}" && -n "${preflight_definition}" ]] || \
+  fail "could not extract local-source runner functions"
+
+bash -c '
+  set -euo pipefail
+  source "$1"
+  eval "$2"
+  eval "$3"
+  SOURCE_MODE=local
+  SOURCE_VM_ID=200
+  ARCHIVE_PATH="$4"
+  ARCHIVE=""
+  LOCAL_BYTES=""
+  CURRENT_PHASE=test
+  inspect_local_archive
+  [[ "${ARCHIVE}" == "${ARCHIVE_PATH}" && "${LOCAL_BYTES}" -gt 0 && "${SOURCE_VM_ID}" == 200 ]]
+' _ "${COMMON}" "${resolve_source_definition}" "${inspect_local_definition}" "${local_archive}" || \
+  fail "local archive inspection did not accept a valid regular archive"
+
+for invalid_local in "${local_symlink}" "${local_directory}" "${local_source_tmp}/vzdump-qemu-200-missing-test.vma"; do
+  set +e
+  bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    eval "$3"
+    SOURCE_MODE=local
+    SOURCE_VM_ID=200
+    ARCHIVE_PATH="$4"
+    ARCHIVE=""
+    LOCAL_BYTES=""
+    CURRENT_PHASE=test
+    inspect_local_archive
+  ' _ "${COMMON}" "${resolve_source_definition}" "${inspect_local_definition}" "${invalid_local}" \
+    >"${local_source_tmp}/invalid.out" 2>"${local_source_tmp}/invalid.log"
+  invalid_local_rc=$?
+  set -e
+  [[ "${invalid_local_rc}" == 50 ]] || fail "invalid local archive returned ${invalid_local_rc}, expected 50"
+done
+
+if ((EUID != 0)); then
+  unreadable_local="${local_source_tmp}/vzdump-qemu-200-unreadable-test.vma"
+  printf 'unreadable-fixture\n' >"${unreadable_local}"
+  chmod 000 "${unreadable_local}"
+  set +e
+  bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+    eval "$3"
+    SOURCE_MODE=local
+    SOURCE_VM_ID=200
+    ARCHIVE_PATH="$4"
+    ARCHIVE=""
+    LOCAL_BYTES=""
+    CURRENT_PHASE=test
+    inspect_local_archive
+  ' _ "${COMMON}" "${resolve_source_definition}" "${inspect_local_definition}" "${unreadable_local}" \
+    >"${local_source_tmp}/unreadable.out" 2>"${local_source_tmp}/unreadable.log"
+  unreadable_rc=$?
+  set -e
+  chmod 0600 "${unreadable_local}"
+  [[ "${unreadable_rc}" == 50 ]] || fail "unreadable local archive returned ${unreadable_rc}, expected 50"
+fi
+
+set +e
+bash -c '
+  set -euo pipefail
+  source "$1"
+  eval "$2"
+  eval "$3"
+  SOURCE_MODE=local
+  SOURCE_VM_ID=201
+  ARCHIVE_PATH="$4"
+  ARCHIVE=""
+  LOCAL_BYTES=""
+  CURRENT_PHASE=test
+  inspect_local_archive
+' _ "${COMMON}" "${resolve_source_definition}" "${inspect_local_definition}" "${local_archive}" \
+  >"${local_source_tmp}/mismatch.out" 2>"${local_source_tmp}/mismatch.log"
+local_mismatch_rc=$?
+set -e
+[[ "${local_mismatch_rc}" == 50 ]] || fail "local source-VM mismatch returned ${local_mismatch_rc}, expected 50"
+
+required_log="${local_source_tmp}/required.log"
+preflight_log="${local_source_tmp}/preflight.log"
+REQUIRED_LOG="${required_log}" bash -c '
+  set -euo pipefail
+  source "$1"
+  eval "$2"
+  eval "$3"
+  eval "$4"
+  restore.require_proxmox() { :; }
+  restore.require_commands() { shift; printf "%s\n" "$*" >>"${REQUIRED_LOG}"; }
+  restore.acquire_lock() { :; }
+  pvesm() { printf "Name Type Status\nlocal-lvm lvmthin active\n"; }
+  SOURCE_MODE=local
+  ACTION=preflight
+  VM_ID=100
+  SOURCE_VM_ID=200
+  ARCHIVE_PATH="$5"
+  ARCHIVE=""
+  LOCAL_BYTES=""
+  TARGET_STORAGE=local-lvm
+  STAGE_STORAGE=local-lvm
+  MOUNT_ROOT=/mnt/pve-restore
+  MAX_THIN_DATA_PERCENT=85
+  MAX_THIN_METADATA_PERCENT=75
+  DRY_RUN=0
+  SSH_SYNC=/bin/false
+  STORAGE_TEMP=/bin/false
+  PLAYBOOK_PATH=/tmp/vm.restore.yml
+  CURRENT_PHASE=test
+  run_preflight
+' _ "${COMMON}" "${resolve_source_definition}" "${inspect_local_definition}" "${preflight_definition}" "${local_archive}" \
+  >"${local_source_tmp}/preflight.out" 2>"${preflight_log}" || \
+  fail "local preflight invoked a remote or staging dependency"
+if grep -Eq '(^| )(ssh|rsync|lvcreate|mkfs\.ext4)( |$)' "${required_log}"; then
+  fail "local preflight requires remote transport or stage-creation commands"
+fi
+if grep -Eq 'checking stage storage|passwordless SSH' "${preflight_log}"; then
+  fail "local preflight entered a remote staging or SSH phase"
+fi
+
+verify_definition="$(awk '
+  /^verify_archive\(\) \{/ { capture=1 }
+  /^check_restore_capacity\(\) \{/ { exit }
+  capture { print }
+' "${RUNNER}")"
+[[ -n "${verify_definition}" ]] || fail "could not extract local archive verification"
+local_manifest="${local_source_tmp}/.proxmox-restore.tsv"
+printf 'target_vm\t999\n' >"${local_manifest}"
+manifest_before="$(sha256sum "${local_manifest}")"
+bash -c '
+  set -euo pipefail
+  source "$1"
+  eval "$2"
+  eval "$3"
+  vma() {
+    printf "DEV: dev_id: 0 size: 4096\n"
+    printf "qemu-server.conf\n"
+    printf "total bytes read 4096\n"
+  }
+  SOURCE_MODE=local
+  SOURCE_VM_ID=200
+  VM_ID=100
+  ARCHIVE="$4"
+  ACTIVE_MANIFEST=""
+  LOCAL_BYTES=""
+  LOCAL_SHA256=""
+  VMA_DEVICE_BYTES=0
+  VMA_SPARSE_BYTES=0
+  VMA_STREAM_BYTES=0
+  VMA_ESTIMATED_BYTES=0
+  DRY_RUN=0
+  CURRENT_PHASE=test
+  verify_archive
+  [[ -z "${ACTIVE_MANIFEST}" && "${LOCAL_BYTES}" -gt 0 && "${LOCAL_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+' _ "${COMMON}" "${resolve_source_definition}" "${verify_definition}" "${local_archive}" \
+  >"${local_source_tmp}/verify.out" 2>"${local_source_tmp}/verify.log" || \
+  fail "local verification adopted a neighboring manifest or failed its integrity path"
+manifest_after="$(sha256sum "${local_manifest}")"
+[[ "${manifest_after}" == "${manifest_before}" ]] || fail "local verification modified a neighboring manifest"
+rm -rf "${local_source_tmp}"
+ok "local archives are validated without SSH, rsync, staging, manifest adoption, or mutation"
 
 derived="$(bash -u -c '
   source "$1"
@@ -903,13 +1112,30 @@ stage_create_line="$(grep -n 'stage_dir="$(restore.child "${STORAGE_TEMP}" --act
   fail "remote inspection and staging phases are not ordered accurately"
 grep -q 'no verified staging archive was retained' "${RUNNER}" || fail "pre-manifest failure reporting is not explicit"
 grep -q 'restore.child' "${RUNNER}" || fail "runner does not isolate its lock descriptor from helpers"
-ok "restore retention, phase reporting, lock isolation, and cleanup-before-start ordering are explicit"
+grep -q 'the local archive was left untouched' "${RUNNER}" || fail "local failure retention is not explicit"
+grep -q '\[\[ "${SOURCE_MODE}" == remote && -f "${manifest}"' "${RUNNER}" || \
+  fail "local verification can adopt a neighboring stage manifest"
+all_action_definition="$(awk '
+  /^  all\)/ { capture=1 }
+  capture { print }
+  capture && /^    ;;/ { exit }
+' "${RUNNER}")"
+[[ -n "${all_action_definition}" ]] || fail "could not extract the all-action source switch"
+grep -q '\[\[ "${SOURCE_MODE}" == remote \]\]' <<<"${all_action_definition}" || \
+  fail "all action does not gate transfer behind remote mode"
+grep -q 'SOURCE_MODE.*remote.*CLEANUP_POLICY' <<<"${all_action_definition}" || \
+  fail "all action does not gate staging cleanup behind remote mode"
+if grep -q -- '--archive)' "${RUNNER}"; then
+  fail "runner still parses the retired --archive flag"
+fi
+ok "source-aware retention, manifest isolation, phase reporting, lock isolation, and cleanup ordering are explicit"
 
 grep -q 'FEATURE_PLAYBOOKS=(' "${RUNNER}" || fail "runner does not declare playbook dependencies"
 grep -q 'FEATURE_CLI_FILES=(' "${RUNNER}" || fail "runner does not declare CLI dependencies"
 for cli_ref in lib/restore.common.sh ssh/sync.sh storage/temp.sh rsync/fetch.sh; do
   grep -q "\"${cli_ref}\"" "${RUNNER}" || fail "runner is missing .sh CLI dependency: ${cli_ref}"
 done
+grep -q 'case "${ACTION}" in' "${STORAGE_TEMP}" || fail "storage helper does not scope command dependencies by action"
 if grep -Eq '"(lib/restore\.common|ssh/sync|storage/temp|rsync/fetch)"' "${RUNNER}"; then
   fail "runner retains an extensionless CLI dependency"
 fi
