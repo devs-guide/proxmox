@@ -249,9 +249,9 @@ unmounts the stage, removes only its deterministic LV, and removes the empty
 mount directory. It does not delete or alter the remote backup. Use
 `--dry-run` first when only reviewing the cleanup.
 
-Do not manually unmount the filesystem, remove its LV, or edit/delete
-`.proxmox-restore.tsv`; those actions bypass the ownership checks that make
-resume and cleanup safe.
+Do not manually unmount the filesystem, remove its LV, or edit or delete its
+ownership manifest; those actions bypass the checks that make resume and
+cleanup safe.
 
 ## 3. Run each phase manually
 
