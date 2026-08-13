@@ -1541,6 +1541,7 @@ run_package_check() {
     ansible-playbook \
     -i localhost, \
     -c local \
+    -e "@${ROOT}/ansible/group_vars/all.yml" \
     -e host_platform_family=proxmox \
     -e apt_skip_cache_refresh=true \
     "$@" \
@@ -1548,8 +1549,12 @@ run_package_check() {
     "${ROOT}/ansible/debian/install.packages.yml"
 }
 
-run_package_check "9.1/Trixie"
-run_package_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
+run_package_check "9.1/Trixie" \
+  -e "@${ROOT}/ansible/group_vars/trixie.yml" \
+  -e "@${ROOT}/ansible/release/9.1/group_vars/all.yml"
+run_package_check "6.4/Buster" \
+  -e "@${ROOT}/ansible/group_vars/buster.yml" \
+  -e "@${ROOT}/ansible/release/6.4/group_vars/all.yml"
 
 run_runner_model_check() {
   local release_label="$1"
@@ -1558,19 +1563,29 @@ run_runner_model_check() {
   echo "[validate.runtime] exercising users -> lan -> network for ${release_label} ..."
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
-    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/users.yml"
+    ansible-playbook -i localhost, -c local \
+      -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      --check "${ROOT}/ansible/debian/users.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
-    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/lan.yml"
+    ansible-playbook -i localhost, -c local \
+      -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      --check "${ROOT}/ansible/debian/lan.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
-    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/network.yml"
+    ansible-playbook -i localhost, -c local \
+      -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      --check "${ROOT}/ansible/debian/network.yml"
 }
 
-run_runner_model_check "9.1/Trixie"
-run_runner_model_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
+run_runner_model_check "9.1/Trixie" \
+  -e "@${ROOT}/ansible/group_vars/trixie.yml" \
+  -e "@${ROOT}/ansible/release/9.1/group_vars/all.yml"
+run_runner_model_check "6.4/Buster" \
+  -e "@${ROOT}/ansible/group_vars/buster.yml" \
+  -e "@${ROOT}/ansible/release/6.4/group_vars/all.yml"
 
 run_proxmox_feature_check() {
   local feature_label="$1"
