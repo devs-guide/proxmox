@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 15
     env:
-      ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/ansible-collections
+      ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/.ansible-collections
 
     steps:
       - name: Checkout exact candidate
