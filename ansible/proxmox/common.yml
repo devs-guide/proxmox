@@ -11,4 +11,3 @@ proxmox_common_baseline_users:
         password: "proxmox"
       - name: "agent"
         password: "agent"
-

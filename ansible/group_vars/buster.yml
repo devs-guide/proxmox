@@ -1,3 +1,4 @@
 ---
 # Platform-specific defaults for Debian Buster (Proxmox VE 6.x hosts).
 # Keep overrides minimal; merged with ansible/group_vars/all.yml and release vars at publish time.
+debian_release: "buster"

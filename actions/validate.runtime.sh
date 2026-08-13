@@ -17,6 +17,7 @@ files=(
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
+  "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network.sh"
   "setup/cli.codex.sh"
@@ -1501,6 +1502,9 @@ if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
 fi
 echo "[validate.runtime][ok] publish wiring follows setup/vlan.sh FEATURE_PLAYBOOKS model"
 
+echo "[validate.runtime] checking remote VM restore CLI contracts..."
+"${ROOT}/actions/validate.vm.restore.sh"
+
 echo "[validate.runtime] checking shell syntax..."
 bash -n "${ROOT}/bootstrap/release.6.4.sh"
 bash -n "${ROOT}/bootstrap/release.9.1.sh"
@@ -1514,11 +1518,24 @@ bash -n "${ROOT}/setup/lxc/samba.sh"
 bash -n "${ROOT}/setup/lxc/network.sh"
 bash -n "${ROOT}/setup/lxc/codex.sh"
 bash -n "${ROOT}/setup/lxc/users.sh"
+bash -n "${ROOT}/setup/vm/restore.sh"
+bash -n "${ROOT}/cli/lib/restore.common.sh"
+bash -n "${ROOT}/cli/ssh/sync.sh"
+bash -n "${ROOT}/cli/storage/temp.sh"
+bash -n "${ROOT}/cli/rsync/fetch.sh"
+bash -n "${ROOT}/actions/validate.vm.restore.sh"
+bash -n "${ROOT}/actions/validate.release.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
   echo "[validate.runtime][warn] ansible-playbook not found; skipping check-mode validation"
   exit 0
+fi
+
+ANSIBLE_CHECK_PYTHON="${ANSIBLE_CHECK_PYTHON:-$(command -v python3)}"
+if [[ ! -x "${ANSIBLE_CHECK_PYTHON}" ]]; then
+  echo "[validate.runtime][error] CI check-mode Python is unavailable: ${ANSIBLE_CHECK_PYTHON}"
+  exit 1
 fi
 
 run_package_check() {
@@ -1530,15 +1547,21 @@ run_package_check() {
     ansible-playbook \
     -i localhost, \
     -c local \
+    -e "@${ROOT}/ansible/group_vars/all.yml" \
     -e host_platform_family=proxmox \
     -e apt_skip_cache_refresh=true \
     "$@" \
+    -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
     --check \
     "${ROOT}/ansible/debian/install.packages.yml"
 }
 
-run_package_check "9.1/Trixie"
-run_package_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
+run_package_check "9.1/Trixie" \
+  -e "@${ROOT}/ansible/group_vars/trixie.yml" \
+  -e "@${ROOT}/ansible/release/9.1/group_vars/all.yml"
+run_package_check "6.4/Buster" \
+  -e "@${ROOT}/ansible/group_vars/buster.yml" \
+  -e "@${ROOT}/ansible/release/6.4/group_vars/all.yml"
 
 run_runner_model_check() {
   local release_label="$1"
@@ -1547,19 +1570,32 @@ run_runner_model_check() {
   echo "[validate.runtime] exercising users -> lan -> network for ${release_label} ..."
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
-    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/users.yml"
+    ansible-playbook -i localhost, -c local \
+      -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
+      --check "${ROOT}/ansible/debian/users.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
-    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/lan.yml"
+    ansible-playbook -i localhost, -c local \
+      -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
+      --check "${ROOT}/ansible/debian/lan.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
-    ansible-playbook -i localhost, -c local "$@" --check "${ROOT}/ansible/debian/network.yml"
+    ansible-playbook -i localhost, -c local \
+      -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
+      --check "${ROOT}/ansible/debian/network.yml"
 }
 
-run_runner_model_check "9.1/Trixie"
-run_runner_model_check "6.4/Buster" -e @${ROOT}/ansible/group_vars/buster.yml -e @${ROOT}/ansible/release/6.4/group_vars/all.yml
+run_runner_model_check "9.1/Trixie" \
+  -e "@${ROOT}/ansible/group_vars/trixie.yml" \
+  -e "@${ROOT}/ansible/release/9.1/group_vars/all.yml"
+run_runner_model_check "6.4/Buster" \
+  -e "@${ROOT}/ansible/group_vars/buster.yml" \
+  -e "@${ROOT}/ansible/release/6.4/group_vars/all.yml"
 
 run_proxmox_feature_check() {
   local feature_label="$1"

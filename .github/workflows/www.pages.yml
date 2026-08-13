@@ -9,54 +9,150 @@ on:
       - 'bootstrap/**'
       - 'ansible/**'
       - 'setup/**'
+      - 'setup/vm/**'
+      - 'cli/**'
       - 'docs/**'
       - 'www/**'
       - 'actions/validate.pages.sh'
+      - 'actions/validate.release.sh'
+      - 'actions/validate.runtime.sh'
+      - 'actions/validate.vm.restore.sh'
       - 'actions/www.pages.sh'
       - '.github/workflows/www.pages.yml'
+      - '.github/workflows/www.pages.remote.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'bootstrap/**'
+      - 'ansible/**'
+      - 'setup/**'
+      - 'setup/vm/**'
+      - 'cli/**'
+      - 'docs/**'
+      - 'www/**'
+      - 'actions/validate.pages.sh'
+      - 'actions/validate.release.sh'
+      - 'actions/validate.runtime.sh'
+      - 'actions/validate.vm.restore.sh'
+      - 'actions/www.pages.sh'
+      - '.github/workflows/www.pages.yml'
+      - '.github/workflows/www.pages.remote.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write   # required to push to www
+  contents: read
 
 concurrency:
-  group: www-pages-${{ github.ref }}
+  group: www-pages-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  deploy-www:
-    runs-on: ubuntu-slim
-    timeout-minutes: 10
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/.ansible-collections
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout exact candidate
+        uses: actions/checkout@v6
         with:
-          # preserve full history, as in the original workflow
           fetch-depth: 0
-          
-      - name: Install rsync
-        run: sudo apt-get update ; sudo apt-get install -y rsync
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
-      - name: Build static/ tree for GitHub Pages
+      - name: Configure Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          check-latest: false
+
+      - name: Install pinned validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq openssh-client rsync udev ufw util-linux
+          python -m pip install --disable-pip-version-check \
+            'ansible-core==2.20.5' \
+            'PyYAML==6.0.2' \
+            'passlib==1.7.4'
+          ansible-galaxy collection install \
+            -p "${ANSIBLE_COLLECTIONS_PATH}" \
+            'community.general:==13.2.0'
+
+      - name: Verify pinned validation environment
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import sys
+
+          expected = {
+              "ansible-core": "2.20.5",
+              "PyYAML": "6.0.2",
+              "passlib": "1.7.4",
+          }
+          if sys.version_info[:2] != (3, 13):
+              raise SystemExit(f"expected Python 3.13, found {sys.version}")
+          for package, version in expected.items():
+              observed = importlib.metadata.version(package)
+              if observed != version:
+                  raise SystemExit(
+                      f"expected {package}=={version}, found {observed}"
+                  )
+          PY
+          observed_collection="$(
+            ansible-galaxy collection list community.general \
+              | awk '$1 == "community.general" {print $2; exit}'
+          )"
+          test "${observed_collection}" = '13.2.0'
+
+      - name: Validate release hygiene and host-state branding
+        run: ./actions/validate.release.sh
+
+      - name: Validate runtime, Ansible, and VM restore contracts
+        run: ./actions/validate.runtime.sh
+
+      - name: Build static Pages tree
         env:
-          PUBLISH_DIR: static       # optional; defaults to "static" anyway
+          PUBLISH_DIR: static
         run: ./actions/www.pages.sh
 
-      - name: Validate local Pages artifacts before deploy
+      - name: Validate local Pages tree and dependency graph
         env:
           VALIDATE_PAGES_MODE: local
           STATIC_DIR: ./static
         run: ./actions/validate.pages.sh
 
-      - name: Validate staged wrapper dependency graph before deploy
-        env:
-          VALIDATE_PAGES_MODE: local
-          STATIC_DIR: ./static
-          VALIDATE_PAGES_GRAPH_ONLY: 1
-        run: ./actions/validate.pages.sh
+      - name: Upload immutable Pages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          path: ./static
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
 
-      - name: Deploy static/ to www branch (GitHub Pages)
+  deploy-www:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout deployment repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact validated Pages artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: pages-${{ github.sha }}
+          path: ./static
+
+      - name: Deploy validated artifact to www branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

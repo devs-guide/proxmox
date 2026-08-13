@@ -69,7 +69,13 @@ FILES=(
   "setup/lxc/network.sh:setup/lxc/network.sh"
   "setup/lxc/codex.sh:setup/lxc/codex.sh"
   "setup/lxc/users.sh:setup/lxc/users.sh"
+  "setup/vm/restore.sh:setup/vm/restore.sh"
+  "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
+  "cli/ssh/sync.sh:cli/ssh/sync.sh"
+  "cli/storage/temp.sh:cli/storage/temp.sh"
+  "cli/rsync/fetch.sh:cli/rsync/fetch.sh"
   "ansible/proxmox/common.yml:ansible/proxmox/common.yml"
+  "ansible/proxmox/helper/vm.restore.yml:ansible/proxmox/helper/vm.restore.yml"
   "ansible/proxmox/container/common.yml:ansible/proxmox/container/common.yml"
   "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.yml:ansible/proxmox/container/debian.yml"
@@ -251,6 +257,87 @@ check_setup_feature_refs() {
   done
 }
 
+check_setup_cli_refs() {
+  local runner_rel="$1"
+  local runner_path="${WORKDIR}/${runner_rel}"
+  local cli_ref=""
+  local local_helper=""
+  local remote_helper=""
+  local tmp_helper=""
+  local compare_hint=""
+
+  if [[ ! -f "${runner_path}" ]]; then
+    echo "[validate.pages][error] missing local setup runner: ${runner_path}"
+    rc=1
+    return
+  fi
+  if ! read.runner.array "${runner_path}" "FEATURE_CLI_FILES" "1"; then
+    return
+  fi
+
+  for cli_ref in "${RUNNER_ARRAY_REFS[@]}"; do
+    if [[ "${cli_ref}" != *.sh ]]; then
+      echo "[validate.pages][error] published Bash helper reference must end in .sh: cli/${cli_ref}"
+      rc=1
+      continue
+    fi
+    local_helper="cli/${cli_ref}"
+    remote_helper="${local_helper}"
+    tmp_helper="${TMPDIR}/${remote_helper}"
+    if [[ ! -f "${WORKDIR}/${local_helper}" ]]; then
+      echo "[validate.pages][error] ${runner_rel} references missing local CLI artifact: ${local_helper}"
+      rc=1
+      continue
+    fi
+    if ! fetch_artifact "${remote_helper}" "${tmp_helper}"; then
+      echo "[validate.pages][error] failed to fetch setup CLI dependency: ${remote_helper}"
+      rc=1
+      continue
+    fi
+    if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+      compare_hint="${STATIC_DIR}/${remote_helper}"
+    else
+      compare_hint="${BASE_URL}/${remote_helper}"
+    fi
+    if ! diff -u "${WORKDIR}/${local_helper}" "${tmp_helper}" >/dev/null; then
+      echo "[validate.pages][diff] ${local_helper} differs from ${compare_hint}"
+      diff -u "${WORKDIR}/${local_helper}" "${tmp_helper}" || true
+      rc=1
+      continue
+    fi
+    echo "[validate.pages][ok] ${local_helper} matches ${compare_hint}"
+  done
+}
+
+check_published_bash_extensions() {
+  local artifact first_line relative_path legacy_path
+
+  if [[ "${VALIDATE_PAGES_MODE}" != "local" ]]; then
+    return
+  fi
+
+  while IFS= read -r artifact; do
+    IFS= read -r first_line < "${artifact}" || first_line=""
+    [[ "${first_line}" == '#!'*bash* ]] || continue
+    relative_path="${artifact#${STATIC_DIR}/}"
+    if [[ "${relative_path}" != *.sh ]]; then
+      echo "[validate.pages][error] generated Bash artifact must end in .sh: ${relative_path}"
+      rc=1
+    fi
+  done < <(find "${STATIC_DIR}" -type f -print)
+
+  for legacy_path in \
+    cli/lib/restore.common \
+    cli/ssh/sync \
+    cli/storage/temp \
+    cli/rsync/fetch; do
+    if [[ -e "${STATIC_DIR}/${legacy_path}" ]]; then
+      echo "[validate.pages][error] extensionless legacy artifact must not be published: ${legacy_path}"
+      rc=1
+    fi
+  done
+}
+
 check_wrapper_dependency_graph() {
   local wrapper_rel="$1"
   local wrapper_tmp="${TMPDIR}/${wrapper_rel}"
@@ -392,6 +479,9 @@ check_setup_feature_refs "setup/lxc/samba.sh"
 check_setup_feature_refs "setup/lxc/network.sh"
 check_setup_feature_refs "setup/lxc/codex.sh"
 check_setup_feature_refs "setup/lxc/users.sh"
+check_setup_feature_refs "setup/vm/restore.sh"
+check_setup_cli_refs "setup/vm/restore.sh"
+check_published_bash_extensions
 check_wrapper_dependency_graph "ansible/proxmox/container/node.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/codex.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/users.yml"

@@ -21,6 +21,7 @@ SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
 SETUP_LXC_NETWORK_RUNNER="setup/lxc/network.sh"
 SETUP_LXC_CODEX_RUNNER="setup/lxc/codex.sh"
 SETUP_LXC_USERS_RUNNER="setup/lxc/users.sh"
+SETUP_VM_RESTORE_RUNNER="setup/vm/restore.sh"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -354,6 +355,50 @@ publish.setup.features() {
   else
     log.warn "[www.pages] ${SETUP_LXC_USERS_RUNNER} not found; skipping structured LXC users runner publish"
   fi
+
+  if [[ -f "${SETUP_VM_RESTORE_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_VM_RESTORE_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/vm"
+    install -m 0755 "${SETUP_VM_RESTORE_RUNNER}" "${PATH_TO[publish]}/${SETUP_VM_RESTORE_RUNNER}"
+
+    load.runner.array_from_script "${PATH_TO[root]}/${SETUP_VM_RESTORE_RUNNER}" "FEATURE_CLI_FILES" "setup_vm_restore_cli" "1"
+    local cli_ref cli_source cli_destination cli_mode
+    for cli_ref in ${PKGS[setup_vm_restore_cli]}; do
+      [[ "${cli_ref}" == *.sh ]] || {
+        log.error "[www.pages] ERROR[restore]: published Bash helper must end in .sh: cli/${cli_ref}"
+        exit 1
+      }
+      cli_source="${PATH_TO[root]}/cli/${cli_ref}"
+      cli_destination="${PATH_TO[publish]}/cli/${cli_ref}"
+      [[ -f "${cli_source}" ]] || {
+        log.error "[www.pages] ERROR[restore]: declared CLI helper is missing: cli/${cli_ref}"
+        exit 1
+      }
+      cli_mode="0755"
+      [[ "${cli_ref}" == lib/* ]] && cli_mode="0644"
+      mkdir -p "$(dirname "${cli_destination}")"
+      install -m "${cli_mode}" "${cli_source}" "${cli_destination}"
+      log.info "[www.pages] installing cli/${cli_ref}"
+    done
+  else
+    log.warn "[www.pages] ${SETUP_VM_RESTORE_RUNNER} not found; skipping structured VM restore runner publish"
+  fi
+}
+
+validate.published.bash.extensions() {
+  local artifact first_line relative_path
+
+  while IFS= read -r artifact; do
+    IFS= read -r first_line < "${artifact}" || first_line=""
+    [[ "${first_line}" == '#!'*bash* ]] || continue
+    relative_path="${artifact#${PATH_TO[publish]}/}"
+    [[ "${relative_path}" == *.sh ]] || {
+      log.error "[www.pages] ERROR[extension]: published Bash artifact must end in .sh: ${relative_path}"
+      exit 1
+    }
+  done < <(find "${PATH_TO[publish]}" -type f -print)
+
+  log.info "[www.pages] all published Bash artifacts use .sh"
 }
 
 publish.ansible() {
@@ -421,6 +466,10 @@ publish.ansible() {
   add.pkg.refs_to_shared_playbooks "setup_debian_lxc" shared_playbooks
   add.pkg.refs_to_shared_playbooks "setup_debian_lxc_support" shared_playbooks
 
+  load.setup.runner.refs "${SETUP_VM_RESTORE_RUNNER}" "setup_vm_restore"
+  add.pkg.refs_to_shared_playbooks "setup_vm_restore" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_vm_restore_support" shared_playbooks
+
   for playbook_to_run in "${!shared_playbooks[@]}"; do
     rsync_includes+=( "--include=${playbook_to_run}" )
   done
@@ -444,6 +493,8 @@ publish.ansible() {
   log.pkg.entries "setup_lxc_users_support" "setup lxc users support entries"
   log.pkg.entries "setup_debian_lxc" "setup debian lxc entries"
   log.pkg.entries "setup_debian_lxc_support" "setup debian lxc support entries"
+  log.pkg.entries "setup_vm_restore" "setup vm restore entries"
+  log.pkg.entries "setup_vm_restore_support" "setup vm restore support entries"
 
   rsync -av \
     --include='*/' \
@@ -536,6 +587,7 @@ run.pages() {
   publish.ansible
   publish.ansible.release64
   publish.ansible.release91
+  validate.published.bash.extensions
 
   log.info "${MSG[done]}"
 }
