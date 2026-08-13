@@ -17,6 +17,7 @@ files=(
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
+  "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network.sh"
   "setup/cli.codex.sh"
@@ -1523,6 +1524,7 @@ bash -n "${ROOT}/cli/ssh/sync.sh"
 bash -n "${ROOT}/cli/storage/temp.sh"
 bash -n "${ROOT}/cli/rsync/fetch.sh"
 bash -n "${ROOT}/actions/validate.vm.restore.sh"
+bash -n "${ROOT}/actions/validate.release.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
