@@ -50,6 +50,8 @@ jobs:
   validate:
     runs-on: ubuntu-slim
     timeout-minutes: 15
+    env:
+      ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/ansible-collections
 
     steps:
       - name: Checkout exact candidate
@@ -73,6 +75,9 @@ jobs:
             'ansible-core==2.20.5' \
             'PyYAML==6.0.2' \
             'passlib==1.7.4'
+          ansible-galaxy collection install \
+            -p "${ANSIBLE_COLLECTIONS_PATH}" \
+            'community.general:==13.2.0'
 
       - name: Verify pinned validation environment
         run: |
@@ -94,6 +99,11 @@ jobs:
                       f"expected {package}=={version}, found {observed}"
                   )
           PY
+          observed_collection="$(
+            ansible-galaxy collection list community.general \
+              | awk '$1 == "community.general" {print $2; exit}'
+          )"
+          test "${observed_collection}" = '13.2.0'
 
       - name: Validate release hygiene and host-state branding
         run: ./actions/validate.release.sh
