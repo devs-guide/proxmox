@@ -70,7 +70,7 @@ jobs:
       - name: Install pinned validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq openssh-client rsync udev util-linux
+          sudo apt-get install -y jq openssh-client rsync udev ufw util-linux
           python -m pip install --disable-pip-version-check \
             'ansible-core==2.20.5' \
             'PyYAML==6.0.2' \

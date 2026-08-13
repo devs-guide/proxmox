@@ -123,7 +123,9 @@
       service:
         name: "{{ ssh_service_name }}"
         state: reloaded
-      when: ssh_service_name is defined
+      when:
+        - ssh_service_name is defined
+        - not ansible_check_mode
 
     - name: Allow SSH from permitted subnets
       ufw:
