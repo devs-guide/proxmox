@@ -1532,6 +1532,12 @@ if ! command -v ansible-playbook >/dev/null 2>&1; then
   exit 0
 fi
 
+ANSIBLE_CHECK_PYTHON="${ANSIBLE_CHECK_PYTHON:-$(command -v python3)}"
+if [[ ! -x "${ANSIBLE_CHECK_PYTHON}" ]]; then
+  echo "[validate.runtime][error] CI check-mode Python is unavailable: ${ANSIBLE_CHECK_PYTHON}"
+  exit 1
+fi
+
 run_package_check() {
   local release_label="$1"
   shift
@@ -1545,6 +1551,7 @@ run_package_check() {
     -e host_platform_family=proxmox \
     -e apt_skip_cache_refresh=true \
     "$@" \
+    -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
     --check \
     "${ROOT}/ansible/debian/install.packages.yml"
 }
@@ -1565,18 +1572,21 @@ run_runner_model_check() {
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local \
       -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
       --check "${ROOT}/ansible/debian/users.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local \
       -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
       --check "${ROOT}/ansible/debian/lan.yml"
 
   ANSIBLE_NOCOLOR=1 \
   ANSIBLE_FORCE_COLOR=0 \
     ansible-playbook -i localhost, -c local \
       -e "@${ROOT}/ansible/group_vars/all.yml" "$@" \
+      -e "ansible_python_interpreter_managed=${ANSIBLE_CHECK_PYTHON}" \
       --check "${ROOT}/ansible/debian/network.yml"
 }
 
