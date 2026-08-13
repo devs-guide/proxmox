@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/.ansible-collections
