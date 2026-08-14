@@ -70,6 +70,7 @@ FILES=(
   "setup/lxc/codex.sh:setup/lxc/codex.sh"
   "setup/lxc/users.sh:setup/lxc/users.sh"
   "setup/vm/restore.sh:setup/vm/restore.sh"
+  "setup/vm/gpu.sh:setup/vm/gpu.sh"
   "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
   "cli/ssh/sync.sh:cli/ssh/sync.sh"
   "cli/storage/temp.sh:cli/storage/temp.sh"

@@ -4,7 +4,7 @@ name: Publish static assets to www (GitHub Pages)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature/vm/gpu ]
     paths:
       - 'bootstrap/**'
       - 'ansible/**'
@@ -17,6 +17,7 @@ on:
       - 'actions/validate.release.sh'
       - 'actions/validate.runtime.sh'
       - 'actions/validate.vm.restore.sh'
+      - 'actions/validate.vm.gpu.sh'
       - 'actions/www.pages.sh'
       - '.github/workflows/www.pages.yml'
       - '.github/workflows/www.pages.remote.yml'
@@ -34,6 +35,7 @@ on:
       - 'actions/validate.release.sh'
       - 'actions/validate.runtime.sh'
       - 'actions/validate.vm.restore.sh'
+      - 'actions/validate.vm.gpu.sh'
       - 'actions/www.pages.sh'
       - '.github/workflows/www.pages.yml'
       - '.github/workflows/www.pages.remote.yml'
@@ -108,8 +110,10 @@ jobs:
       - name: Validate release hygiene and host-state branding
         run: ./actions/validate.release.sh
 
-      - name: Validate runtime, Ansible, and VM restore contracts
-        run: ./actions/validate.runtime.sh
+      - name: Validate runtime, Ansible, and VM feature contracts
+        run: |
+          ./actions/validate.runtime.sh
+          ./actions/validate.vm.gpu.sh
 
       - name: Build static Pages tree
         env:

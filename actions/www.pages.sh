@@ -22,6 +22,7 @@ SETUP_LXC_NETWORK_RUNNER="setup/lxc/network.sh"
 SETUP_LXC_CODEX_RUNNER="setup/lxc/codex.sh"
 SETUP_LXC_USERS_RUNNER="setup/lxc/users.sh"
 SETUP_VM_RESTORE_RUNNER="setup/vm/restore.sh"
+SETUP_VM_GPU_RUNNER="setup/vm/gpu.sh"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -382,6 +383,14 @@ publish.setup.features() {
     done
   else
     log.warn "[www.pages] ${SETUP_VM_RESTORE_RUNNER} not found; skipping structured VM restore runner publish"
+  fi
+
+  if [[ -f "${SETUP_VM_GPU_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_VM_GPU_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup/vm"
+    install -m 0755 "${SETUP_VM_GPU_RUNNER}" "${PATH_TO[publish]}/${SETUP_VM_GPU_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_VM_GPU_RUNNER} not found; skipping structured VM GPU runner publish"
   fi
 }
 
