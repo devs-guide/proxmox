@@ -26,6 +26,7 @@ Structured helper output uses `--output json` and requires `jq`.
 Human operator documentation:
 
 - [End-to-end and manual VM restore runbook](docs/setup/vm/restore.md)
+- [Whole-GPU passthrough test runbook](docs/setup/vm/gpu/manual.md)
 - [SSH setup and key rotation](docs/cli/ssh/sync.md)
 - [Archive inspection and rsync transfer](docs/cli/rsync/fetch.md)
 - [Temporary restore storage](docs/cli/storage/temp.md)
