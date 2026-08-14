@@ -3,24 +3,24 @@
 name: Validate published Pages artifacts
 
 on:
-  workflow_run:
-    workflows: [ "Publish static assets to www (GitHub Pages)" ]
-    types: [ completed ]
+  workflow_call:
+    inputs:
+      source_sha:
+        description: 'Exact source commit represented by the live Pages tree'
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact source commit expected on the live Pages site'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   validate-published-pages:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event_name == 'workflow_run' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'main'
-      )
     runs-on: ubuntu-slim
     timeout-minutes: 10
 
@@ -30,7 +30,7 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_sha }}
 
       - name: Validate published Pages artifacts with retry
         env:
