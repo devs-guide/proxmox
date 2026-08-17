@@ -1,0 +1,12 @@
+# source|published destination|dependency policy
+setup/vlan.sh|setup.vlan.sh|feature
+setup/network.sh|setup/network.sh|feature
+setup/cli.codex.sh|setup.cli.codex.sh|feature
+setup/lxc/common.sh|setup/lxc/common.sh|plain
+setup/lxc/debian.sh|setup/lxc/debian.sh|feature
+setup/lxc/samba.sh|setup/lxc/samba.sh|feature
+setup/lxc/network.sh|setup/lxc/network.sh|feature
+setup/lxc/codex.sh|setup/lxc/codex.sh|feature
+setup/lxc/users.sh|setup/lxc/users.sh|feature
+setup/vm/restore.sh|setup/vm/restore.sh|feature
+setup/vm/gpu.sh|setup/vm/gpu.sh|feature

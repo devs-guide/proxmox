@@ -60,17 +60,6 @@ FILES=(
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
-  "setup.vlan.sh:setup/vlan.sh"
-  "setup/network.sh:setup/network.sh"
-  "setup.cli.codex.sh:setup/cli.codex.sh"
-  "setup/lxc/debian.sh:setup/lxc/debian.sh"
-  "setup/lxc/common.sh:setup/lxc/common.sh"
-  "setup/lxc/samba.sh:setup/lxc/samba.sh"
-  "setup/lxc/network.sh:setup/lxc/network.sh"
-  "setup/lxc/codex.sh:setup/lxc/codex.sh"
-  "setup/lxc/users.sh:setup/lxc/users.sh"
-  "setup/vm/restore.sh:setup/vm/restore.sh"
-  "setup/vm/gpu.sh:setup/vm/gpu.sh"
   "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
   "cli/ssh/sync.sh:cli/ssh/sync.sh"
   "cli/storage/temp.sh:cli/storage/temp.sh"
@@ -143,6 +132,18 @@ read.runner.array() {
   RUNNER_ARRAY_REFS=()
   while IFS= read -r feature_ref; do
     [[ -n "${feature_ref}" ]] || continue
+    case "/${feature_ref}/" in
+      *'/../'*|*'//'*)
+        echo "[validate.pages][error] unsafe ${array_name} path in ${runner_path#${WORKDIR}/}: ${feature_ref}"
+        rc=1
+        continue
+        ;;
+    esac
+    if [[ "${feature_ref}" == /* ]]; then
+      echo "[validate.pages][error] ${array_name} path must be relative: ${feature_ref}"
+      rc=1
+      continue
+    fi
     RUNNER_ARRAY_REFS+=("${feature_ref}")
   done < <(
     sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner_path}" \
@@ -310,6 +311,62 @@ check_setup_cli_refs() {
   done
 }
 
+check_feature_manifest() {
+  local manifest="${WORKDIR}/actions/pages.features.txt"
+  local source destination policy tmp_runner compare_hint
+
+  if [[ ! -f "${manifest}" ]]; then
+    echo "[validate.pages][error] missing feature publication manifest: ${manifest}"
+    rc=1
+    return
+  fi
+
+  while IFS='|' read -r source destination policy; do
+    [[ -n "${source}" && "${source}" != \#* ]] || continue
+    case "/${source}/${destination}/" in
+      *'/../'*|*'//'*)
+        echo "[validate.pages][error] unsafe manifest path: ${source}|${destination}"
+        rc=1
+        continue
+        ;;
+    esac
+    if [[ "${source}" == /* || "${destination}" == /* ]]; then
+      echo "[validate.pages][error] manifest paths must be repository-relative"
+      rc=1
+      continue
+    fi
+    if [[ ! -f "${WORKDIR}/${source}" ]]; then
+      echo "[validate.pages][error] manifest references missing runner: ${source}"
+      rc=1
+      continue
+    fi
+    tmp_runner="${TMPDIR}/${destination}"
+    if ! fetch_artifact "${destination}" "${tmp_runner}"; then
+      rc=1
+      continue
+    fi
+    if [[ "${VALIDATE_PAGES_MODE}" == local ]]; then
+      compare_hint="${STATIC_DIR}/${destination}"
+    else
+      compare_hint="${BASE_URL}/${destination}"
+    fi
+    if ! diff -u "${WORKDIR}/${source}" "${tmp_runner}" >/dev/null; then
+      echo "[validate.pages][diff] ${source} differs from ${compare_hint}"
+      diff -u "${WORKDIR}/${source}" "${tmp_runner}" || true
+      rc=1
+    else
+      echo "[validate.pages][ok] ${source} matches ${compare_hint}"
+    fi
+    if [[ "${policy}" == feature ]]; then
+      check_setup_feature_refs "${source}"
+      check_setup_cli_refs "${source}"
+    elif [[ "${policy}" != plain ]]; then
+      echo "[validate.pages][error] invalid dependency policy for ${source}: ${policy}"
+      rc=1
+    fi
+  done < "${manifest}"
+}
+
 check_published_bash_extensions() {
   local artifact first_line relative_path legacy_path
 
@@ -472,22 +529,15 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
   check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
 fi
-check_setup_feature_refs "setup/vlan.sh"
-check_setup_feature_refs "setup/network.sh"
-check_setup_feature_refs "setup/cli.codex.sh"
-check_setup_feature_refs "setup/lxc/debian.sh"
-check_setup_feature_refs "setup/lxc/samba.sh"
-check_setup_feature_refs "setup/lxc/network.sh"
-check_setup_feature_refs "setup/lxc/codex.sh"
-check_setup_feature_refs "setup/lxc/users.sh"
-check_setup_feature_refs "setup/vm/restore.sh"
-check_setup_cli_refs "setup/vm/restore.sh"
+check_feature_manifest
 check_published_bash_extensions
 check_wrapper_dependency_graph "ansible/proxmox/container/node.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/codex.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/users.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/debian.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/debian.base.yml"
+check_wrapper_dependency_graph "ansible/release/6.4/gpu.yml"
+check_wrapper_dependency_graph "ansible/release/9.1/gpu.yml"
 
 check_published_samba_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/samba.sh"

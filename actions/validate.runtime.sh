@@ -27,6 +27,14 @@ files=(
 "setup/lxc/network.sh"
   "setup/lxc/codex.sh"
   "setup/lxc/users.sh"
+  "setup/vm/gpu.sh"
+  "cli/gpu/platform.sh"
+  "cli/gpu/inventory.sh"
+  "cli/gpu/common.sh"
+  "cli/gpu/inspect.sh"
+  "cli/gpu/apply.sh"
+  "actions/pages.features.txt"
+  "actions/validate.vm.gpu.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
@@ -53,6 +61,9 @@ files=(
   "ansible/proxmox/container/network.access.yml"
   "ansible/group_vars/trixie.yml"
   "ansible/release/9.1/group_vars/all.yml"
+  "ansible/release/6.4/gpu.yml"
+  "ansible/release/9.1/gpu.yml"
+  "ansible/proxmox/helper/vm.gpu.yml"
   "ansible/proxmox/container/common.yml"
   "ansible/proxmox/container/users.yml"
 )
@@ -1448,16 +1459,16 @@ if ! grep -q 'FEATURE_SUPPORT_FILES' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish FEATURE_SUPPORT_FILES dependencies"
   exit 1
 fi
-if ! grep -q 'setup_lxc_codex_support' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must collect support refs for setup/lxc/codex.sh"
+if ! grep -q 'FEATURE_CLI_FILES' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish FEATURE_CLI_FILES dependencies"
   exit 1
 fi
-if ! grep -q 'setup_lxc_users_support' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must collect support refs for setup/lxc/users.sh"
+if [[ ! -f "${ROOT}/actions/pages.features.txt" ]]; then
+  echo "[validate.runtime][error] generic setup feature publication manifest is missing"
   exit 1
 fi
-if ! grep -q 'setup_debian_lxc_support' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must collect support refs for setup/lxc/debian.sh"
+if ! grep -q 'publish.setup.features' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish runners through the generic manifest"
   exit 1
 fi
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/vlan.sh"; then
@@ -1468,39 +1479,27 @@ if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS array not found for publish parsing"
   exit 1
 fi
-if ! grep -q 'setup/lxc/samba.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Samba runner path"
-  exit 1
-fi
-if ! grep -q 'setup.cli.codex.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish setup.cli.codex.sh"
-  exit 1
-fi
-if ! grep -q 'setup/network.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured network runner path"
-  exit 1
-fi
-if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Debian LXC runner path"
-  exit 1
-fi
-if ! grep -q 'setup/lxc/network.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC network runner path"
-  exit 1
-fi
-if ! grep -q 'setup/lxc/codex.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC Codex runner path"
-  exit 1
-fi
-if ! grep -q 'setup/lxc/users.sh' "${ROOT}/actions/www.pages.sh"; then
-  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured LXC users runner path"
-  exit 1
-fi
+for feature_entry in \
+  'setup/vlan.sh|setup.vlan.sh|feature' \
+  'setup/network.sh|setup/network.sh|feature' \
+  'setup/cli.codex.sh|setup.cli.codex.sh|feature' \
+  'setup/lxc/debian.sh|setup/lxc/debian.sh|feature' \
+  'setup/lxc/samba.sh|setup/lxc/samba.sh|feature' \
+  'setup/lxc/network.sh|setup/lxc/network.sh|feature' \
+  'setup/lxc/codex.sh|setup/lxc/codex.sh|feature' \
+  'setup/lxc/users.sh|setup/lxc/users.sh|feature' \
+  'setup/vm/restore.sh|setup/vm/restore.sh|feature' \
+  'setup/vm/gpu.sh|setup/vm/gpu.sh|feature'; do
+  if ! grep -Fqx "${feature_entry}" "${ROOT}/actions/pages.features.txt"; then
+    echo "[validate.runtime][error] missing generic feature publication entry: ${feature_entry}"
+    exit 1
+  fi
+done
 if [[ -f "${ROOT}/setup/vlan.playbooks.txt" ]]; then
   echo "[validate.runtime][error] setup/vlan.playbooks.txt should not exist (array model is source-of-truth)"
   exit 1
 fi
-echo "[validate.runtime][ok] publish wiring follows setup/vlan.sh FEATURE_PLAYBOOKS model"
+echo "[validate.runtime][ok] publish wiring follows the generic runner dependency manifest"
 
 echo "[validate.runtime] checking remote VM restore CLI contracts..."
 "${ROOT}/actions/validate.vm.restore.sh"
@@ -1519,11 +1518,18 @@ bash -n "${ROOT}/setup/lxc/network.sh"
 bash -n "${ROOT}/setup/lxc/codex.sh"
 bash -n "${ROOT}/setup/lxc/users.sh"
 bash -n "${ROOT}/setup/vm/restore.sh"
+bash -n "${ROOT}/setup/vm/gpu.sh"
+bash -n "${ROOT}/cli/gpu/platform.sh"
+bash -n "${ROOT}/cli/gpu/inventory.sh"
+bash -n "${ROOT}/cli/gpu/common.sh"
+bash -n "${ROOT}/cli/gpu/inspect.sh"
+bash -n "${ROOT}/cli/gpu/apply.sh"
 bash -n "${ROOT}/cli/lib/restore.common.sh"
 bash -n "${ROOT}/cli/ssh/sync.sh"
 bash -n "${ROOT}/cli/storage/temp.sh"
 bash -n "${ROOT}/cli/rsync/fetch.sh"
 bash -n "${ROOT}/actions/validate.vm.restore.sh"
+bash -n "${ROOT}/actions/validate.vm.gpu.sh"
 bash -n "${ROOT}/actions/validate.release.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 

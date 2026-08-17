@@ -13,16 +13,7 @@ declare -A PKGS
 
 # --- Playlist (Of Playbooks) File Name:
 PLAYBOOKS="debian/install.playbooks.txt"
-SETUP_VLAN_RUNNER="setup/vlan.sh"
-SETUP_NETWORK_RUNNER="setup/network.sh"
-SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
-SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
-SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
-SETUP_LXC_NETWORK_RUNNER="setup/lxc/network.sh"
-SETUP_LXC_CODEX_RUNNER="setup/lxc/codex.sh"
-SETUP_LXC_USERS_RUNNER="setup/lxc/users.sh"
-SETUP_VM_RESTORE_RUNNER="setup/vm/restore.sh"
-SETUP_VM_GPU_RUNNER="setup/vm/gpu.sh"
+FEATURE_MANIFEST="actions/pages.features.txt"
 
 # --- Resolve repo root (script lives in ./actions/) ---
 PATH_TO[scripts]="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -147,6 +138,7 @@ load.runner.array_from_script() {
   local pkg_key="$3"
   local required="$4"
   local -a runner_items=()
+  local runner_item=""
 
   mapfile -t runner_items < <(
     sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner}" \
@@ -162,6 +154,19 @@ load.runner.array_from_script() {
     PKGS[${pkg_key}]=""
     return 0
   fi
+
+  for runner_item in "${runner_items[@]}"; do
+    case "/${runner_item}/" in
+      *'/../'*|*'//'*)
+        log.error "[www.pages] ERROR[features]: unsafe ${array_name} path in ${runner#${PATH_TO[root]}/}: ${runner_item}"
+        exit 1
+        ;;
+    esac
+    [[ "${runner_item}" != /* ]] || {
+      log.error "[www.pages] ERROR[features]: ${array_name} paths must be relative: ${runner_item}"
+      exit 1
+    }
+  done
 
   PKGS[${pkg_key}]="${runner_items[*]}"
 }
@@ -235,6 +240,22 @@ normalize.shared.playbook.ref() {
 # -------------------------
 
 publish.prepare() {
+  local resolved_publish="" resolved_root=""
+  resolved_publish="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${PATH_TO[publish]}")"
+  resolved_root="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${PATH_TO[root]}")"
+  case "${resolved_publish}" in
+    /|/tmp|/private/tmp|"${resolved_root}"|"${resolved_root}/.git"|"${resolved_root}/.github")
+      log.error "[www.pages] ERROR[publish]: refusing unsafe publish target: ${resolved_publish}"
+      exit 1
+      ;;
+    "${resolved_root}"/*)
+      [[ "${resolved_publish}" == "${resolved_root}/static" ]] || {
+        log.error "[www.pages] ERROR[publish]: in-repository publish target must be ${resolved_root}/static"
+        exit 1
+      }
+      ;;
+  esac
+  PATH_TO[publish]="${resolved_publish}"
   rm -rf "${PATH_TO[publish]}"
   mkdir -p "${PATH_TO[publish]}"
 }
@@ -287,111 +308,67 @@ publish.proxmox91() {
 }
 
 publish.setup.features() {
-  if [[ -f "setup/vlan.sh" ]]; then
-    log.info "[www.pages] installing setup.vlan.sh"
-    install -m 0755 "setup/vlan.sh" "${PATH_TO[publish]}/setup.vlan.sh"
-  else
-    log.warn "[www.pages] setup/vlan.sh not found; skipping setup.vlan.sh publish"
-  fi
+  local source destination policy key cli_ref cli_source cli_destination cli_mode
+  local feature_index=0
 
-  if [[ -f "${SETUP_CLI_CODEX_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_CLI_CODEX_RUNNER} as setup.cli.codex.sh"
-    install -m 0755 "${SETUP_CLI_CODEX_RUNNER}" "${PATH_TO[publish]}/setup.cli.codex.sh"
-  else
-    log.warn "[www.pages] ${SETUP_CLI_CODEX_RUNNER} not found; skipping setup.cli.codex.sh publish"
-  fi
+  [[ -f "${FEATURE_MANIFEST}" ]] || {
+    log.error "[www.pages] ERROR[features]: missing ${FEATURE_MANIFEST}"
+    exit 1
+  }
 
-  if [[ -f "${SETUP_NETWORK_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_NETWORK_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup"
-    install -m 0755 "${SETUP_NETWORK_RUNNER}" "${PATH_TO[publish]}/${SETUP_NETWORK_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_NETWORK_RUNNER} not found; skipping structured network runner publish"
-  fi
+  while IFS='|' read -r source destination policy; do
+    [[ -n "${source}" && "${source}" != \#* ]] || continue
+    [[ -n "${destination}" ]] || {
+      log.error "[www.pages] ERROR[features]: ${source} has no publish destination"
+      exit 1
+    }
+    case "${policy}" in
+      feature|plain) ;;
+      *)
+        log.error "[www.pages] ERROR[features]: invalid dependency policy for ${source}: ${policy}"
+        exit 1
+        ;;
+    esac
+    case "/${source}/${destination}/" in
+      *'/../'*|*'//'* )
+        log.error "[www.pages] ERROR[features]: unsafe manifest path: ${source}|${destination}"
+        exit 1
+        ;;
+    esac
+    [[ "${source}" != /* && "${destination}" != /* ]] || {
+      log.error "[www.pages] ERROR[features]: manifest paths must be repository-relative"
+      exit 1
+    }
+    [[ -f "${source}" ]] || {
+      log.error "[www.pages] ERROR[features]: declared runner is missing: ${source}"
+      exit 1
+    }
+    mkdir -p "$(dirname "${PATH_TO[publish]}/${destination}")"
+    install -m 0755 "${source}" "${PATH_TO[publish]}/${destination}"
+    log.info "[www.pages] installing ${source} as ${destination}"
 
-  if [[ -f "${SETUP_SAMBA_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_SAMBA_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/lxc"
-    install -m 0755 "${SETUP_SAMBA_RUNNER}" "${PATH_TO[publish]}/${SETUP_SAMBA_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_SAMBA_RUNNER} not found; skipping structured Samba runner publish"
-  fi
-
-  if [[ -f "${SETUP_DEBIAN_LXC_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_DEBIAN_LXC_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/lxc"
-    install -m 0755 "${SETUP_DEBIAN_LXC_RUNNER}" "${PATH_TO[publish]}/${SETUP_DEBIAN_LXC_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_DEBIAN_LXC_RUNNER} not found; skipping structured Debian LXC runner publish"
-  fi
-
-  if [[ -f "${SETUP_LXC_NETWORK_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_LXC_NETWORK_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/lxc"
-    install -m 0755 "${SETUP_LXC_NETWORK_RUNNER}" "${PATH_TO[publish]}/${SETUP_LXC_NETWORK_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_LXC_NETWORK_RUNNER} not found; skipping structured LXC network runner publish"
-  fi
-
-  if [[ -f "${SETUP_LXC_CODEX_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_LXC_CODEX_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/lxc"
-    install -m 0755 "${SETUP_LXC_CODEX_RUNNER}" "${PATH_TO[publish]}/${SETUP_LXC_CODEX_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_LXC_CODEX_RUNNER} not found; skipping structured LXC Codex runner publish"
-  fi
-
-  if [[ -f "setup/lxc/common.sh" ]]; then
-    log.info "[www.pages] installing setup/lxc/common.sh"
-    mkdir -p "${PATH_TO[publish]}/setup/lxc"
-    install -m 0755 "setup/lxc/common.sh" "${PATH_TO[publish]}/setup/lxc/common.sh"
-  else
-    log.warn "[www.pages] setup/lxc/common.sh not found; skipping common helper publish"
-  fi
-
-  if [[ -f "${SETUP_LXC_USERS_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_LXC_USERS_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/lxc"
-    install -m 0755 "${SETUP_LXC_USERS_RUNNER}" "${PATH_TO[publish]}/${SETUP_LXC_USERS_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_LXC_USERS_RUNNER} not found; skipping structured LXC users runner publish"
-  fi
-
-  if [[ -f "${SETUP_VM_RESTORE_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_VM_RESTORE_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/vm"
-    install -m 0755 "${SETUP_VM_RESTORE_RUNNER}" "${PATH_TO[publish]}/${SETUP_VM_RESTORE_RUNNER}"
-
-    load.runner.array_from_script "${PATH_TO[root]}/${SETUP_VM_RESTORE_RUNNER}" "FEATURE_CLI_FILES" "setup_vm_restore_cli" "1"
-    local cli_ref cli_source cli_destination cli_mode
-    for cli_ref in ${PKGS[setup_vm_restore_cli]}; do
+    [[ "${policy}" == feature ]] || continue
+    key="feature_${feature_index}"
+    load.runner.array_from_script "${PATH_TO[root]}/${source}" "FEATURE_CLI_FILES" "${key}_cli" "0"
+    for cli_ref in ${PKGS[${key}_cli]:-}; do
       [[ "${cli_ref}" == *.sh ]] || {
-        log.error "[www.pages] ERROR[restore]: published Bash helper must end in .sh: cli/${cli_ref}"
+        log.error "[www.pages] ERROR[features]: Bash helper must end in .sh: cli/${cli_ref}"
         exit 1
       }
       cli_source="${PATH_TO[root]}/cli/${cli_ref}"
       cli_destination="${PATH_TO[publish]}/cli/${cli_ref}"
       [[ -f "${cli_source}" ]] || {
-        log.error "[www.pages] ERROR[restore]: declared CLI helper is missing: cli/${cli_ref}"
+        log.error "[www.pages] ERROR[features]: ${source} references missing cli/${cli_ref}"
         exit 1
       }
       cli_mode="0755"
-      [[ "${cli_ref}" == lib/* ]] && cli_mode="0644"
+      [[ "${cli_ref}" == lib/* || "${cli_ref}" == */common.sh ]] && cli_mode="0644"
       mkdir -p "$(dirname "${cli_destination}")"
       install -m "${cli_mode}" "${cli_source}" "${cli_destination}"
       log.info "[www.pages] installing cli/${cli_ref}"
     done
-  else
-    log.warn "[www.pages] ${SETUP_VM_RESTORE_RUNNER} not found; skipping structured VM restore runner publish"
-  fi
-
-  if [[ -f "${SETUP_VM_GPU_RUNNER}" ]]; then
-    log.info "[www.pages] installing ${SETUP_VM_GPU_RUNNER}"
-    mkdir -p "${PATH_TO[publish]}/setup/vm"
-    install -m 0755 "${SETUP_VM_GPU_RUNNER}" "${PATH_TO[publish]}/${SETUP_VM_GPU_RUNNER}"
-  else
-    log.warn "[www.pages] ${SETUP_VM_GPU_RUNNER} not found; skipping structured VM GPU runner publish"
-  fi
+    feature_index=$((feature_index + 1))
+  done < "${FEATURE_MANIFEST}"
 }
 
 validate.published.bash.extensions() {
@@ -443,41 +420,15 @@ publish.ansible() {
   load.release.playbook.refs "6.4" shared_playbooks
   load.release.playbook.refs "9.1" shared_playbooks
 
-  load.setup.runner.refs "${SETUP_VLAN_RUNNER}" "setup_vlan"
-  add.pkg.refs_to_shared_playbooks "setup_vlan" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_vlan_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_NETWORK_RUNNER}" "setup_network"
-  add.pkg.refs_to_shared_playbooks "setup_network" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_network_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_CLI_CODEX_RUNNER}" "setup_cli_codex"
-  add.pkg.refs_to_shared_playbooks "setup_cli_codex" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_cli_codex_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_SAMBA_RUNNER}" "setup_samba"
-  add.pkg.refs_to_shared_playbooks "setup_samba" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_samba_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_LXC_NETWORK_RUNNER}" "setup_lxc_network"
-  add.pkg.refs_to_shared_playbooks "setup_lxc_network" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_lxc_network_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_LXC_CODEX_RUNNER}" "setup_lxc_codex"
-  add.pkg.refs_to_shared_playbooks "setup_lxc_codex" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_lxc_codex_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_LXC_USERS_RUNNER}" "setup_lxc_users"
-  add.pkg.refs_to_shared_playbooks "setup_lxc_users" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_lxc_users_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_DEBIAN_LXC_RUNNER}" "setup_debian_lxc"
-  add.pkg.refs_to_shared_playbooks "setup_debian_lxc" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_debian_lxc_support" shared_playbooks
-
-  load.setup.runner.refs "${SETUP_VM_RESTORE_RUNNER}" "setup_vm_restore"
-  add.pkg.refs_to_shared_playbooks "setup_vm_restore" shared_playbooks
-  add.pkg.refs_to_shared_playbooks "setup_vm_restore_support" shared_playbooks
+  local source destination policy key feature_index=0
+  while IFS='|' read -r source destination policy; do
+    [[ -n "${source}" && "${source}" != \#* && "${policy}" == feature ]] || continue
+    key="feature_${feature_index}"
+    load.setup.runner.refs "${source}" "${key}"
+    add.pkg.refs_to_shared_playbooks "${key}" shared_playbooks
+    add.pkg.refs_to_shared_playbooks "${key}_support" shared_playbooks
+    feature_index=$((feature_index + 1))
+  done < "${FEATURE_MANIFEST}"
 
   for playbook_to_run in "${!shared_playbooks[@]}"; do
     rsync_includes+=( "--include=${playbook_to_run}" )
@@ -486,24 +437,6 @@ publish.ansible() {
   rsync_includes+=( "--include=dell/**" )
 
   log.info "[www.pages] whitelist entries: ${PKGS[ansible]}"
-  log.pkg.entries "setup_vlan" "setup vlan entries"
-  log.pkg.entries "setup_vlan_support" "setup vlan support entries"
-  log.pkg.entries "setup_network" "setup network entries"
-  log.pkg.entries "setup_network_support" "setup network support entries"
-  log.pkg.entries "setup_cli_codex" "setup cli codex entries"
-  log.pkg.entries "setup_cli_codex_support" "setup cli codex support entries"
-  log.pkg.entries "setup_samba" "setup samba entries"
-  log.pkg.entries "setup_samba_support" "setup samba support entries"
-  log.pkg.entries "setup_lxc_network" "setup lxc network entries"
-  log.pkg.entries "setup_lxc_network_support" "setup lxc network support entries"
-  log.pkg.entries "setup_lxc_codex" "setup lxc codex entries"
-  log.pkg.entries "setup_lxc_codex_support" "setup lxc codex support entries"
-  log.pkg.entries "setup_lxc_users" "setup lxc users entries"
-  log.pkg.entries "setup_lxc_users_support" "setup lxc users support entries"
-  log.pkg.entries "setup_debian_lxc" "setup debian lxc entries"
-  log.pkg.entries "setup_debian_lxc_support" "setup debian lxc support entries"
-  log.pkg.entries "setup_vm_restore" "setup vm restore entries"
-  log.pkg.entries "setup_vm_restore_support" "setup vm restore support entries"
 
   rsync -av \
     --include='*/' \
