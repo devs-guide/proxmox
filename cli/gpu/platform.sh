@@ -14,7 +14,7 @@ gpu.platform_os_value() {
 }
 
 gpu.platform_detect_bootloader() {
-  local detected=""
+  local detected="" required_command=""
 
   if [[ -n "${BOOTLOADER_OVERRIDE}" ]]; then
     [[ "${TEST_MODE}" == 1 ]] || gpu.die "${GPU_EXIT_ENVIRONMENT}" \
@@ -33,11 +33,12 @@ gpu.platform_detect_bootloader() {
   fi
 
   case "${detected}" in
-    grub|proxmox-boot-tool|pve-efiboot-tool) ;;
+    grub) required_command="update-grub" ;;
+    proxmox-boot-tool|pve-efiboot-tool) required_command="${detected}" ;;
     *) gpu.die "${GPU_EXIT_ENVIRONMENT}" "unsupported bootloader contract: ${detected}" ;;
   esac
-  gpu.command_exists "${detected}" || gpu.die "${GPU_EXIT_DEPENDENCY}" \
-    "detected bootloader command is missing: ${detected}"
+  gpu.command_exists "${required_command}" || gpu.die "${GPU_EXIT_DEPENDENCY}" \
+    "detected bootloader contract ${detected} requires missing command: ${required_command}"
   DETECTED_BOOTLOADER="${detected}"
 }
 

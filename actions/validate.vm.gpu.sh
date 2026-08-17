@@ -205,6 +205,22 @@ jq -e '
 ' <<< "${inventory_json}" >/dev/null || fail "inventory JSON did not report the complete GPU identity graph"
 ok "inventory is machine-readable and captures every GPU slot and function identity"
 
+mv "${ETC_ROOT}/kernel/cmdline" "${ETC_ROOT}/kernel/cmdline.proxmox-boot-tool"
+mkdir -p "${ETC_ROOT}/default/grub.d"
+grub_inventory_json="$(env "${GPU_ENV[@]}" \
+  "PATH=${STUB_BIN}:/usr/bin:/bin" \
+  "PROXMOX_GPU_BOOTLOADER=" \
+  "GPU_TEST_PVEVERSION=pve-manager/9.2.10/test" \
+  bash "${RUNNER}" --action inventory --output json)"
+jq -e '
+  .platform.pve.version == "9.2.10"
+  and .platform.debian.codename == "trixie"
+  and .platform.bootloader == "grub"
+  and .adapter.id == "pve9-trixie"
+' <<< "${grub_inventory_json}" >/dev/null || fail "PVE 9/Trixie GRUB inventory did not validate update-grub capabilities"
+mv "${ETC_ROOT}/kernel/cmdline.proxmox-boot-tool" "${ETC_ROOT}/kernel/cmdline"
+ok "PVE 9/Trixie GRUB inventory requires update-grub, not a grub executable"
+
 EMPTY_SYSFS_ROOT="${FIXTURE}/empty-sys"
 mkdir -p "${EMPTY_SYSFS_ROOT}/bus/pci/devices"
 empty_inventory_json="$(env "${GPU_ENV[@]}" "PROXMOX_GPU_SYSFS_ROOT=${EMPTY_SYSFS_ROOT}" bash "${RUNNER}" --action inventory --output json)"
