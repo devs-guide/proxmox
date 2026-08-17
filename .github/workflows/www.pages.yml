@@ -237,7 +237,23 @@ jobs:
         env:
           VALIDATE_PAGES_MODE: local
           STATIC_DIR: ./static
-        run: ./actions/validate.pages.sh
+        run: |
+          set +e
+          output="$(./actions/validate.pages.sh 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "${output}"
+
+          if [[ "${status}" -ne 0 ]]; then
+            summary="$(printf '%s\n' "${output}" | awk '/\[validate.pages\]\[(error|diff)\]/ { line=$0 } END { print line }')"
+            [[ -n "${summary}" ]] || summary="$(printf '%s\n' "${output}" | awk 'NF { line=$0 } END { print line }')"
+            [[ -n "${summary}" ]] || summary="exited with status ${status}"
+            summary="${summary//'%'/'%25'}"
+            summary="${summary//$'\r'/'%0D'}"
+            summary="${summary//$'\n'/'%0A'}"
+            printf '::error file=actions/validate.pages.sh,title=Pages validation failed::%s\n' "${summary}"
+            exit "${status}"
+          fi
 
       - name: Upload immutable Pages artifact
         uses: actions/upload-artifact@v4
