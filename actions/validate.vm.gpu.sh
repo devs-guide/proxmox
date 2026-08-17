@@ -396,7 +396,7 @@ ok "shared playbook contains host/VM transaction and rollback boundaries"
 for marker in \
   'Manual PVE 9 primary-GPU replacement acceptance scenario' \
   'qm set "${VM_ID}" --delete hostpci0' \
-  'both read-only primary confirmation forms' \
+  'current primary-GPU confirmation gate accepts either' \
   'Exercise the vendor-blacklist refusal' \
   'do not stream a mutating action'; do
   grep -Fq "${marker}" "${EXAMPLES_DOC}" || fail "manual acceptance documentation is missing: ${marker}"
