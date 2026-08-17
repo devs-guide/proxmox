@@ -4,7 +4,7 @@ name: Publish static assets to www (GitHub Pages)
 
 on:
   push:
-    branches: [ main, feature/vm/gpu ]
+    branches: [ main, 'feature/**' ]
     paths:
       - 'bootstrap/**'
       - 'ansible/**'
@@ -13,11 +13,7 @@ on:
       - 'cli/**'
       - 'docs/**'
       - 'www/**'
-      - 'actions/validate.pages.sh'
-      - 'actions/validate.release.sh'
-      - 'actions/validate.runtime.sh'
-      - 'actions/validate.vm.restore.sh'
-      - 'actions/validate.vm.gpu.sh'
+      - 'actions/validate*.sh'
       - 'actions/www.pages.sh'
       - '.github/workflows/www.pages.yml'
       - '.github/workflows/www.pages.remote.yml'
@@ -31,15 +27,24 @@ on:
       - 'cli/**'
       - 'docs/**'
       - 'www/**'
-      - 'actions/validate.pages.sh'
-      - 'actions/validate.release.sh'
-      - 'actions/validate.runtime.sh'
-      - 'actions/validate.vm.restore.sh'
-      - 'actions/validate.vm.gpu.sh'
+      - 'actions/validate*.sh'
       - 'actions/www.pages.sh'
       - '.github/workflows/www.pages.yml'
       - '.github/workflows/www.pages.remote.yml'
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Branch to publish: main or feature/**'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact 40-character commit SHA at the tip of source_ref'
+        required: true
+        type: string
+      confirm_live_publish:
+        description: 'Type: publish-www <source_ref>@<source_sha>'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -54,6 +59,9 @@ jobs:
     timeout-minutes: 15
     env:
       ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/.ansible-collections
+    outputs:
+      candidate_ref: ${{ steps.candidate.outputs.ref }}
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
 
     steps:
       - name: Checkout exact candidate
@@ -61,7 +69,79 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve and authorize exact candidate
+        id: candidate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_REF: ${{ github.ref_name }}
+          PUSH_SHA: ${{ github.sha }}
+          PR_REF: ${{ github.head_ref }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          LIVE_CONFIRMATION: ${{ inputs.confirm_live_publish }}
+        run: |
+          set -euo pipefail
+
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              git check-ref-format --branch "${SOURCE_REF}" >/dev/null
+              case "${SOURCE_REF}" in
+                main|feature/*) ;;
+                *)
+                  echo "[www.pages][error] source_ref must be main or feature/**" >&2
+                  exit 1
+                  ;;
+              esac
+              [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "[www.pages][error] source_sha must be a lowercase full commit SHA" >&2
+                exit 1
+              }
+              expected_confirmation="publish-www ${SOURCE_REF}@${SOURCE_SHA}"
+              [[ "${LIVE_CONFIRMATION}" == "${expected_confirmation}" ]] || {
+                echo "[www.pages][error] live publication confirmation did not match" >&2
+                echo "[www.pages][error] expected: ${expected_confirmation}" >&2
+                exit 1
+              }
+              remote_sha="$(
+                git ls-remote --exit-code --heads origin "refs/heads/${SOURCE_REF}" \
+                  | awk 'NR == 1 { print $1 }'
+              )"
+              [[ "${remote_sha}" == "${SOURCE_SHA}" ]] || {
+                echo "[www.pages][error] ${SOURCE_REF} resolves to ${remote_sha:-<missing>}, not ${SOURCE_SHA}" >&2
+                exit 1
+              }
+              candidate_ref="${SOURCE_REF}"
+              expected_sha="${SOURCE_SHA}"
+              ;;
+            pull_request)
+              candidate_ref="${PR_REF}"
+              expected_sha="${PR_SHA}"
+              ;;
+            push)
+              candidate_ref="${PUSH_REF}"
+              expected_sha="${PUSH_SHA}"
+              ;;
+            *)
+              echo "[www.pages][error] unsupported event: ${EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          candidate_sha="$(git rev-parse HEAD)"
+          [[ "${candidate_sha}" == "${expected_sha}" ]] || {
+            echo "[www.pages][error] checked out ${candidate_sha}, expected ${expected_sha}" >&2
+            exit 1
+          }
+
+          echo "[www.pages] candidate: ${candidate_ref}@${candidate_sha}"
+          {
+            echo "ref=${candidate_ref}"
+            echo "sha=${candidate_sha}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Configure Python 3.13
         uses: actions/setup-python@v6
@@ -107,13 +187,20 @@ jobs:
           )"
           test "${observed_collection}" = '13.2.0'
 
-      - name: Validate release hygiene and host-state branding
-        run: ./actions/validate.release.sh
-
-      - name: Validate runtime, Ansible, and VM feature contracts
+      - name: Validate release, runtime, and feature contracts
         run: |
+          ./actions/validate.release.sh
           ./actions/validate.runtime.sh
-          ./actions/validate.vm.gpu.sh
+
+          for validator in ./actions/validate.*.sh; do
+            case "$(basename "${validator}")" in
+              validate.pages.sh|validate.release.sh|validate.runtime.sh|validate.vm.restore.sh)
+                continue
+                ;;
+            esac
+            echo "[www.pages] running dedicated validator: ${validator}"
+            "${validator}"
+          done
 
       - name: Build static Pages tree
         env:
@@ -129,17 +216,25 @@ jobs:
       - name: Upload immutable Pages artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pages-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          name: pages-${{ steps.candidate.outputs.sha }}
           path: ./static
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
 
   deploy-www:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: validate
     runs-on: ubuntu-slim
     timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: https://devs-guide.github.io/proxmox/
+    concurrency:
+      group: www-pages-live
+      cancel-in-progress: false
     permissions:
       contents: write
 
@@ -153,7 +248,7 @@ jobs:
       - name: Download exact validated Pages artifact
         uses: actions/download-artifact@v5
         with:
-          name: pages-${{ github.sha }}
+          name: pages-${{ needs.validate.outputs.candidate_sha }}
           path: ./static
 
       - name: Deploy validated artifact to www branch
@@ -163,3 +258,13 @@ jobs:
           publish_dir: ./static
           publish_branch: www
           force_orphan: true
+          full_commit_message: "deploy: ${{ needs.validate.outputs.candidate_ref }}@${{ needs.validate.outputs.candidate_sha }} via actions/${{ github.run_id }}"
+
+  validate-published-pages:
+    if: needs.deploy-www.result == 'success'
+    needs: [ validate, deploy-www ]
+    uses: ./.github/workflows/www.pages.remote.yml
+    with:
+      source_sha: ${{ needs.validate.outputs.candidate_sha }}
+    permissions:
+      contents: read
