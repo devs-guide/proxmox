@@ -26,6 +26,31 @@
 : "${SYSTEM_PYTHON_MIN_MAJOR:=3}"
 : "${SYSTEM_PYTHON_MIN_MINOR:=12}"
 
+source.ansible.runtime() {
+  local common_source="${BASH_SOURCE[0]:-}" common_dir="" runtime_path="" runtime_url=""
+
+  if [[ -n "${common_source}" && -f "${common_source}" ]]; then
+    common_dir="$(cd "$(dirname "${common_source}")" && pwd)"
+    if [[ "$(basename "${common_dir}")" == bootstrap && -r "${common_dir}/ansible.runtime.sh" ]]; then
+      # shellcheck source=bootstrap/ansible.runtime.sh
+      source "${common_dir}/ansible.runtime.sh"
+      return
+    fi
+  fi
+
+  runtime_path="${common_dir:-${TMP_DIR:-/tmp/proxmox-ansible-runtime}}/ansible.runtime.sh"
+  runtime_url="${PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}/ansible.runtime.sh"
+  mkdir -p "$(dirname "${runtime_path}")"
+  if ! wget -qO "${runtime_path}" "${runtime_url}"; then
+    log.error "Failed to fetch shared Ansible runtime helper: ${runtime_url}"
+    exit 10
+  fi
+  # shellcheck source=/tmp/proxmox-ansible-runtime/ansible.runtime.sh
+  source "${runtime_path}"
+}
+
+source.ansible.runtime
+
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     log.error "Run as root."
@@ -155,8 +180,7 @@ select.ansible.bootstrap.python() {
 
 ansible.version.line.matches.policy() {
   local version_line="${1:-}"
-
-  [[ "${version_line}" == "ansible-playbook [core ${ANSIBLE_CORE_VERSION}]" ]]
+  ansible.runtime.version.line.matches.policy "${version_line}"
 }
 
 ansible.venv.matches.policy() {
@@ -281,6 +305,7 @@ ensure.managed.ansible() {
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
     if ansible.venv.matches.policy; then
       select.ansible.bootstrap.python
+      ansible.runtime.require
       log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return
     fi
@@ -295,6 +320,7 @@ ensure.managed.ansible() {
   "${ANSIBLE_VENV}/bin/pip" install --upgrade pip setuptools wheel
   "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
   "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
+  ansible.runtime.require
   log "Managed Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
 }
 
@@ -303,6 +329,7 @@ ensure.container.ansible() {
   if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
     if ansible.venv.matches.policy; then
       ensure.container.python
+      ansible.runtime.require
       log "Using existing container Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
       return
     fi
@@ -329,6 +356,7 @@ ensure.container.ansible() {
   "${ANSIBLE_VENV}/bin/pip" install --upgrade pip setuptools wheel
   "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
   "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
+  ansible.runtime.require
   log "Container Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
 }
 
@@ -450,7 +478,6 @@ fetch.playbook() {
 
 run.playlist() {
   log "Running ${RELEASE_LABEL} playlist via ansible..."
-  local ansible_bin="${ANSIBLE_VENV_BIN}"
   local extra_vars_args=("-e" "@${MERGED_GROUP_VARS_PATH}")
   while IFS= read -r line; do
     line="${line%%$'\r'}"
@@ -459,7 +486,7 @@ run.playlist() {
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
 
-    if ! "${ansible_bin}" -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
+    if ! ansible.runtime.run -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
       log.error "Ansible failed on playbook: ${line}"
       exit 1
     fi

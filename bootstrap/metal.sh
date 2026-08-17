@@ -61,6 +61,31 @@ MSG[fatal]="Fatal error encountered"
 log.info()   { printf '[metal] %s\n' "$*" >&2; }
 log.error()  { printf '[metal][error] %s\n' "$*" >&2; }
 log.error.fatal() { printf '%s\n' "${MSG[fatal]}" >&2; }
+log() { log.info "$@"; }
+
+TMP_DIR="/tmp/proxmox-metal"
+PAGES_BASE_URL="${GITHUB[url]}"
+COMMON_HELPER_PATH="${TMP_DIR}/release.common.sh"
+PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"
+SYSTEM_PYTHON_MIN_MAJOR="3"
+SYSTEM_PYTHON_MIN_MINOR="12"
+
+source.release.common() {
+  local script_dir=""
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+  if [[ -n "${script_dir}" && -r "${script_dir}/release.common.sh" ]]; then
+    # shellcheck source=bootstrap/release.common.sh
+    source "${script_dir}/release.common.sh"
+    return
+  fi
+  mkdir -p "${TMP_DIR}"
+  wget -qO "${COMMON_HELPER_PATH}" "${PAGES_BASE_URL}/release.common.sh" \
+    || error.exit "Unable to fetch the shared release bootstrap helper."
+  # shellcheck source=/tmp/proxmox-metal/release.common.sh
+  source "${COMMON_HELPER_PATH}"
+}
 
 # --- Error handler ---
 error.exit() {
@@ -69,6 +94,8 @@ error.exit() {
   printf "%s\n" "$msg" >&2
   exit 1
 }
+
+source.release.common
 
 # --- System checks ---
 system.ensure.root() {
@@ -86,20 +113,8 @@ system.ensure.apt() {
 
 # --- Install ansible-core ---
 install.ansible() {
-  if command -v ansible-playbook >/dev/null 2>&1; then
-    log.info "Ansible already installed: $(ansible-playbook --version | head -n1)"
-    return
-  fi
-
-  log.info "Installing ansible-core via apt..."
-  export DEBIAN_FRONTEND=noninteractive
-
-  apt-get update
-  apt-get install -y --no-install-recommends \
-    ansible-core \
-    python3-apt
-
-  log.info "Ansible installed: $(ansible-playbook --version | head -n1)"
+  ensure.managed.ansible
+  log.info "Managed Ansible ready: $("${ANSIBLE_PLAYBOOK_BIN}" --version | head -n1)"
 }
 
 # --- Fetchers ---
@@ -134,7 +149,7 @@ fetch.playlist() {
 # --- Runners ---
 run.playbook() {
    log.info "Running Ansible playbook against localhost..."
-   ansible-playbook -i localhost, -c local "${PLAYBOOK[path]}"
+   ansible.runtime.run -i localhost, -c local "${PLAYBOOK[path]}"
    log.info "Ansible playbook run completed."
 }
 
