@@ -112,6 +112,11 @@ sed -n '1,220p' /root/proxmox-gpu-review/gpu.sh
 Record the feature SHA, workflow run, Pages deployment commit, runner checksum,
 node, PVE version, kernel, GPU slot, VM ID, and rollback result in the review.
 
+For a complete observed acceptance case covering an unmanaged primary-GPU
+replacement, both read-only primary confirmation forms, expected blacklist
+refusal, automatic attach preview, and feature-owned final attachment, see
+[`examples.md`](examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario).
+
 ## 1. Inventory and inspect
 
 ```bash

@@ -27,6 +27,7 @@ Human operator documentation:
 
 - [End-to-end and manual VM restore runbook](docs/setup/vm/restore.md)
 - [Whole-GPU passthrough test runbook](docs/setup/vm/gpu/manual.md)
+- [Manual GPU passthrough acceptance examples](docs/setup/vm/gpu/examples.md)
 - [Whole-GPU passthrough implementation plan](docs/setup/vm/gpu/master.plan)
 - [SSH setup and key rotation](docs/cli/ssh/sync.md)
 - [Archive inspection and rsync transfer](docs/cli/rsync/fetch.md)

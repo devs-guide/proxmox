@@ -10,6 +10,8 @@ INSPECT="${ROOT}/cli/gpu/inspect.sh"
 APPLY="${ROOT}/cli/gpu/apply.sh"
 SHARED_PLAYBOOK="${ROOT}/ansible/proxmox/helper/vm.gpu.yml"
 MANIFEST="${ROOT}/actions/pages.features.txt"
+EXAMPLES_DOC="${ROOT}/docs/setup/vm/gpu/examples.md"
+MANUAL_DOC="${ROOT}/docs/setup/vm/gpu/manual.md"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
@@ -390,6 +392,20 @@ for marker in \
   grep -Fq "${marker}" "${SHARED_PLAYBOOK}" || fail "transaction marker missing: ${marker}"
 done
 ok "shared playbook contains host/VM transaction and rollback boundaries"
+
+for marker in \
+  'Manual PVE 9 primary-GPU replacement acceptance scenario' \
+  'qm set "${VM_ID}" --delete hostpci0' \
+  'both read-only primary confirmation forms' \
+  'Exercise the vendor-blacklist refusal' \
+  'do not stream a mutating action'; do
+  grep -Fq "${marker}" "${EXAMPLES_DOC}" || fail "manual acceptance documentation is missing: ${marker}"
+done
+grep -Fq 'examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario' "${MANUAL_DOC}" \
+  || fail "GPU manual does not link the primary-GPU replacement acceptance scenario"
+grep -Fq 'docs/setup/vm/gpu/examples.md' "${ROOT}/readme.md" \
+  || fail "repository documentation index does not link GPU acceptance examples"
+ok "manual primary-GPU replacement acceptance documentation is indexed and complete"
 
 if command -v ansible-playbook >/dev/null 2>&1; then
   ansible-playbook -i localhost, -c local --syntax-check "${ROOT}/ansible/release/6.4/gpu.yml" >/dev/null || fail "PVE 6.4 GPU playbook syntax failed"
