@@ -63,7 +63,7 @@ for ref in \
 done
 grep -Fq '"ansible.runtime.sh"' "${RUNNER}" || fail "runner dependency declaration is missing ansible.runtime.sh"
 grep -qx 'setup/vm/gpu.sh|setup/vm/gpu.sh|feature' "${MANIFEST}" || fail "GPU runner is absent from generic Pages manifest"
-if rg -n 'SETUP_VM_GPU_RUNNER|feature/vm/gpu.*branches' "${ROOT}/actions/www.pages.sh" "${ROOT}/.github/workflows/www.pages.yml" >/dev/null; then
+if grep -En 'SETUP_VM_GPU_RUNNER|feature/vm/gpu.*branches' "${ROOT}/actions/www.pages.sh" "${ROOT}/.github/workflows/www.pages.yml" >/dev/null; then
   fail "GPU publication still uses a feature-specific builder/workflow case"
 fi
 ok "GPU runner, helpers, and playbooks use the generic publication graph"

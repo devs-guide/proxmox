@@ -120,7 +120,8 @@ gpu.inventory_vendor_gpus() {
   local vendor="$1" vendor_id=""
   case "${vendor}" in amd) vendor_id=0x1002 ;; nvidia) vendor_id=0x10de ;; *) return 1 ;; esac
   jq -c --arg vendor_id "${vendor_id}" '[.gpus[] |
-    select(any(.display_bdfs[] as $display; any(.functions[]; .bdf == $display and .vendor_id == $vendor_id))) |
+    .display_bdfs as $display_bdfs |
+    select(any(.functions[]; .vendor_id == $vendor_id and (.bdf as $bdf | $display_bdfs | index($bdf) != null))) |
     . + {selected_bdf:.display_bdfs[0]}]' <<< "${INVENTORY_JSON}"
 }
 
