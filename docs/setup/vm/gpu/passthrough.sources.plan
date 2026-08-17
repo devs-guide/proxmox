@@ -1,0 +1,216 @@
+# PLAN — Proxmox GPU Passthrough Using Repository Sources Only
+
+> Historical source review retained for provenance. The implemented contract
+> is `master.plan`; live platform and complete GPU inventory always determine
+> adapter and explicit BDF selection.
+
+> Historical source synthesis. It is retained for review provenance and does
+> not override `master.plan` or the implemented runner contract.
+
+## Summary
+
+Prepare the Proxmox host for VFIO, bind one dedicated GPU and its audio function, reboot and verify
+ownership, then attach both PCI functions to an existing Windows or macOS VM.
+
+Source coverage:
+
+ Guest      AMD GPU                                       NVIDIA GPU
+━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Windows    Host passthrough documented; guest-driver     Host passthrough documented; guest-driver
+            setup absent                                  setup absent
+─────────  ────────────────────────────────────────────  ─────────────────────────────────────────────
+ macOS      RX 560/RX 6600 on Monterey evidenced          No repository-supported path
+
+## Step-by-step plan
+
+1. Record hardware-specific values
+
+   Define these from the actual host rather than copying example AMD IDs:
+    - <GPU_BDF>: GPU PCI address, such as d7:00.0
+    - <AUDIO_BDF>: corresponding HDMI/DP audio address, such as d7:00.1
+    - <GPU_ID>: vendor/device ID, such as 1002:73ff
+    - <AUDIO_ID>: audio vendor/device ID, such as 1002:ab28
+
+2. Enable firmware virtualization
+
+   In the host BIOS/UEFI:
+    - Enable CPU virtualization.
+    - For Intel, enable VT-d/IOMMU.
+    - For AMD, enable AMD-Vi/IOMMU.
+
+   Install the source-documented prerequisites:
+
+   apt-get -y install cpu-checker
+   apt install pve-headers-$(uname -r)
+
+   Verify virtualization:
+
+   kvm-ok
+   dmesg | grep -e DMAR -e IOMMU
+
+   Additionally use the matching CPU check:
+
+   dmesg | grep x2apic
+
+   or:
+
+   dmesg | grep AMD-Vi
+
+3. Identify the GPU, audio function, and IOMMU groups
+
+   lspci -vnn | grep -E "Ethernet|VGA|Audio"
+   lspci -nn | grep -E "0300|0403"
+   lspci -n -s <GPU_BDF>
+   lspci -n -s <AUDIO_BDF>
+   find /sys/kernel/iommu_groups/ -type l
+
+   Confirm the selected GPU and its audio function are isolated appropriately. If not:
+    - First move the GPU to another PCIe slot.
+    - Only if necessary, plan to add pcie_acs_override=downstream,multifunction.
+
+4. Enable IOMMU in /etc/default/grub
+
+   Keep exactly one GRUB_CMDLINE_LINUX_DEFAULT assignment.
+
+   Intel host:
+
+   GRUB_CMDLINE_LINUX_DEFAULT="quiet intel_iommu=on iommu=pt"
+
+   AMD host:
+
+   GRUB_CMDLINE_LINUX_DEFAULT="quiet amd_iommu=on iommu=pt"
+
+   Append this only when required by inadequate IOMMU grouping:
+
+   pcie_acs_override=downstream,multifunction
+
+   If the documented AMD error Unable to read/write to IOMMU perf counter occurs, use the source’s
+   iommu=soft fallback. Do not use the malformed pcie_a> or duplicate GRUB assignments found in
+   passthrough.md.
+
+5. Load VFIO modules
+
+   Add these lines to /etc/modules:
+
+   vfio
+   vfio_iommu_type1
+   vfio_pci
+   vfio_virqfd
+
+6. Prevent the Proxmox host from claiming the GPU
+
+   In /etc/modprobe.d/pve-blacklist.conf, use only the branch matching the passthrough GPU.
+
+   NVIDIA:
+
+   blacklist nvidiafb
+   blacklist nouveau
+   blacklist nvidia
+
+   AMD:
+
+   blacklist radeon
+   blacklist amdgpu
+
+   This assumes the passthrough card is dedicated and the host does not require the blacklisted driver
+   for its console or another GPU.
+
+7. Bind the selected PCI functions to VFIO
+
+   Create /etc/modprobe.d/vfio.conf using the IDs discovered in step 3:
+
+   options vfio-pci ids=<GPU_ID>,<AUDIO_ID> disable_vga=1
+
+   Never copy the repository’s sample AMD IDs unless they exactly match lspci output. The sources
+   contain no reusable NVIDIA IDs.
+
+   Apply the additional source-documented settings:
+
+   /etc/modprobe.d/iommu_unsafe_interrupts.conf:
+
+   options vfio_iommu_type1 allow_unsafe_interrupts=1
+
+   /etc/modprobe.d/kvm.conf:
+
+   options kvm ignore_msrs=1
+
+8. Regenerate boot state and reboot
+
+   update-initramfs -u
+   update-grub
+   reboot
+
+9. Verify host-side passthrough after reboot
+
+   cat /etc/default/grub | grep iommu
+   dmesg | grep -e DMAR -e IOMMU
+   lsmod | grep vfio
+   find /sys/kernel/iommu_groups/ -type l
+   lspci -vvv -s <GPU_BDF>
+   lspci -vvv -s <AUDIO_BDF>
+
+   Acceptance conditions:
+    - IOMMU/DMAR output is present.
+    - VFIO modules are loaded.
+    - Both selected functions remain in acceptable IOMMU groups.
+    - Kernel driver in use is vfio-pci, not amdgpu, radeon, nouveau, or nvidia.
+
+10. Attach the GPU to the VM
+
+- Fully stop the existing VM.
+- In Proxmox, open the VM’s hardware configuration and add the identified GPU PCI device.
+- Add its corresponding audio PCI function as well.
+- Leave automatic host-start disabled, following the source warning about host/VM contention for the
+  GPU.
+
+- Start the VM manually.
+
+11. Complete the guest-specific path
+
+- Windows + AMD/NVIDIA: confirm the guest recognizes and uses the physical GPU. The repository does
+  not provide Windows GPU-driver installation or guest verification commands. Use this documented
+  command for a complete shutdown before host-side changes or retesting:
+
+  shutdown -s -t 0
+
+- macOS + AMD: use an existing OpenCore-based macOS VM. Repository notes provide evidence for RX 560
+  and RX 6600 operation under Monterey through Metal/OpenCL results, but contain no complete macOS VM
+  construction or GPU-driver procedure.
+
+- macOS + NVIDIA: stop at planning; the repository contains no source-supported NVIDIA/macOS
+  passthrough path.
+
+12. Handle documented edge cases
+
+- If the GPU lacks a suitable IOMMU group, move PCIe slots before enabling the ACS override.
+- If an AMD host reports the documented IOMMU performance-counter error, test the iommu=soft fallback.
+- If passthrough VM startup is slow because of large memory allocation, the repository suggests
+  hugepages: 1024; its default_hugepagesz=1G hugepagesz=1G hugepages=8 host example must be resized to
+  the VM rather than copied blindly.
+
+- Avoid force-stop or kill -9 commands unless recovering a VM that cannot otherwise stop.
+
+## Validation scenarios
+
+- Intel host + NVIDIA GPU + Windows VM.
+- Intel host + AMD GPU + Windows VM.
+- AMD host + AMD GPU + Windows VM.
+- Intel or AMD host + documented AMD RX 560/RX 6600 + existing OpenCore macOS Monterey VM.
+- Negative test: wrong PCI ID or host driver still bound must fail verification before VM attachment.
+- Recovery test: VM fully stops and the host reclaims a stable state without forced process
+  termination.
+
+## Assumptions and source limitations
+
+- The Windows/macOS VMs already exist; VM creation is not documented.
+- The GPU is dedicated to one VM, and its display/audio functions are passed together.
+- The two proxmox.project/gpu and proxmox.notebook.project/gpu trees are content-identical mirrors.
+- The repository is version-mixed. Commands here are syntactically complete and internally supported
+  by the files, but no outside documentation was used to certify them against a specific current
+  Proxmox release.
+
+- Guest-driver installation, Q35/OVMF configuration, ROM files, Proxmox hostpci CLI syntax, and
+  complete Windows/macOS validation are absent and therefore intentionally not invented.
+
+Primary source files: proxmox.project/gpu/guide.sh:720, proxmox.project/gpu/file.vfio.md:1, and
+proxmox.project/gpu/amd.gpu.notes.md:13.

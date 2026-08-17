@@ -1,0 +1,416 @@
+# PLAN: Version-Aware Proxmox GPU Passthrough — Release 0.0.6
+
+> Historical design input retained for provenance. The implemented contract is
+> `master.plan` and the operator contract is `manual.md`. Any PCI address,
+> VMID, PVE minor, or release shown here is illustrative and is never a runner
+> default.
+
+> Historical design artifact. The implemented and review-authoritative plan is
+> `docs/setup/vm/gpu/master.plan`; operational commands are in `manual.md`.
+
+## Summary
+
+Build setup/vm/gpu.sh as an interactive, safety-gated GPU passthrough workflow for local
+QEMU VMs. It will discover AMD and NVIDIA GPUs, let the operator select a compatible VM and
+GPU, optionally prepare the host for exclusive VFIO ownership, and attach the complete GPU
+device as the VM’s primary display.
+
+This is a medium-to-large feature because it combines hardware discovery, boot
+configuration, host-driver isolation, reboot state, four Proxmox generations, and
+transactional VM configuration. Release-specific differences will therefore live in thin
+adapters rather than accumulating conditional branches in the main runner.
+
+This review draft is not yet saved to disk.
+
+## 1. Release and Branch Sequence
+
+- Complete release 0.0.5 from feature/vm/restore before beginning GPU implementation:
+    - Finish documentation and GitHub Actions validation.
+    - Merge the restore branch into main.
+    - Confirm Pages publication.
+    - Create the annotated 0.0.5 tag and GitHub release.
+    - Delete the merged local and remote feature/vm/restore branches.
+
+- Create feature/vm/gpu from the exact accepted 0.0.5 release commit.
+- Save this approved plan as prompt/vm/attach.gpu.plan as the first GPU-feature planning
+  artifact.
+
+- Create the new setup/vm/gpu.sh on that branch; do not carry the current empty placeholder
+  into 0.0.5.
+
+- Develop and validate GPU support on feature/vm/gpu.
+- Do not replace the stable Pages content with feature-branch artifacts. Pre-release target
+  testing must use commit-pinned feature artifacts.
+
+- After all 0.0.6 gates pass, merge into main, publish Pages, create the annotated 0.0.6
+  tag and GitHub release, and then delete feature/vm/gpu.
+
+## 2. Architecture and Version Dispatch
+
+### Public entrypoint
+
+Create:
+
+setup/vm/gpu.sh
+
+Public interface:
+
+gpu.sh --attach
+  [--vm VMID]
+  [--gpu PCI_BDF]
+  [--blacklist]
+  [--version=CODENAME]
+  [--yes]
+  [--dry-run]
+  [--output human|json]
+
+- --attach selects the attachment workflow and is required.
+- Omit --vm to select a VM interactively.
+- Omit --gpu to select a GPU interactively after the VM.
+- Accept both --version=trixie and --version trixie; document the equals form.
+- Supported values are only buster, bullseye, bookworm, and trixie. Numeric aliases such as
+  --version=9 are not accepted.
+
+- Omitted --version performs automatic detection. PVE 9/Trixie remains the current/default
+  documentation and test lane, but there is no unsafe Trixie fallback if detection fails.
+
+- --dry-run performs complete discovery and validation without changing host or VM state.
+- A fully preselected, noninteractive mutation requires --yes.
+- Interactive mutation requires an exact confirmation containing the selected VM ID and GPU
+  address.
+
+### Shared and version-specific helpers
+
+Create a shared library for parsing, JSON, detection, locks, confirmations, tables, and
+normalized records:
+
+cli/lib/gpu.common.sh
+
+Create four thin version adapters:
+
+ Proxmox    Debian      Adapter
+━━━━━━━━━  ━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━
+ PVE 6      Buster      cli/lib/buster/gpu.sh
+─────────  ──────────  ─────────────────────────
+ PVE 7      Bullseye    cli/lib/bullseye/gpu.sh
+─────────  ──────────  ─────────────────────────
+ PVE 8      Bookworm    cli/lib/bookworm/gpu.sh
+─────────  ──────────  ─────────────────────────
+ PVE 9      Trixie      cli/lib/trixie/gpu.sh
+
+Each adapter will implement the same versioned function contract for:
+
+- Release and capability validation.
+- Supported boot-command-line mechanisms.
+- IOMMU parameter inspection and rendering.
+- Required and available VFIO modules.
+- Initramfs and bootloader refresh behavior.
+- Version-specific qm/hostpci syntax and pending-configuration checks.
+- Release-specific incompatibility messages.
+
+The adapters must remain thin. Hardware discovery, menu rendering, collision detection,
+confirmation, JSON encoding, locks, state management, and general VM eligibility stay
+shared.
+
+The common loader must:
+
+1. Read pveversion and /etc/os-release.
+2. Require the detected PVE major and Debian codename to agree with the supported matrix.
+3. Select the matching adapter when --version is omitted.
+4. Require an explicit version to match the installed host.
+5. Refuse unsupported, missing, mismatched, or path-like values.
+6. Load adapters through a fixed case mapping—never eval or user-derived source paths.
+7. Verify the adapter API version and every required function before continuing.
+
+Kernel and bootloader capabilities must still be probed at runtime. A version adapter must
+not assume that every node in a PVE major uses the same bootloader or kernel module set.
+
+### Callable helpers
+
+Create independently published tools:
+
+cli/sys/pci/gpu.sh
+cli/vm/gpu.sh
+cli/sys/blacklist/gpu.sh
+cli/sys/reboot/status.sh
+
+- cli/sys/pci/gpu.sh: inventory and inspect actions.
+- cli/vm/gpu.sh: local VM inventory, compatibility inspection, and attachment-plan
+  generation.
+
+- cli/sys/blacklist/gpu.sh: host VFIO/IOMMU audit and guarded prepare actions.
+- cli/sys/reboot/status.sh: read-only pending-reboot and post-reboot verification.
+- Every callable GPU helper accepts the same --version contract and reports the effective
+  adapter.
+
+- The files under cli/lib/<codename>/gpu.sh are published source libraries, not standalone
+  mutation entrypoints.
+
+- All published Bash files must end in .sh; do not create extensionless or legacy-
+  compatible aliases.
+
+Create one Ansible mutation playbook:
+
+ansible/proxmox/helper/vm.gpu.yml
+
+The top-level runner owns interaction and orchestration. The playbook owns the final VM
+mutation and revalidates all supplied facts before calling qm.
+
+Adapter behavior must be checked against the official PVE 6
+(https://pve.proxmox.com/pve-docs-6/pve-admin-guide.pdf), PVE 7
+(https://pve.proxmox.com/pve-docs-7/pve-admin-guide.pdf), PVE 8
+(https://pve.proxmox.com/pve-docs-8/pve-admin-guide.pdf), and current PVE
+(https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf) administration guides.
+
+## 3. GPU Attachment Workflow
+
+### Discovery and selection
+
+Use lspci, sysfs, Proxmox CLI output, and optional already-installed vendor tools. Do not
+install NVIDIA, AMD, or other vendor packages.
+
+The GPU table will show:
+
+- Selection number and eligibility state.
+- PCI slot/BDF.
+- AMD or NVIDIA vendor and model.
+- Vendor and device IDs.
+- VRAM when discoverable, otherwise unknown.
+- Physical PCIe slot and NUMA node when available.
+- Current host driver.
+- IOMMU group.
+- Companion audio, USB, and UCSI functions.
+- boot_vga state.
+- Existing VM or PCI-resource-map ownership.
+- Refusal or warning reason.
+
+Refuse selection when the GPU:
+
+- Is the host boot GPU (boot_vga=1).
+- Lacks a usable IOMMU group.
+- Shares its group with unrelated devices that cannot safely be handed off.
+- Is already assigned to another VM or mapping.
+- Is not AMD or NVIDIA.
+- Would require capturing another unselected device through the same VFIO PCI IDs or global
+  driver blacklist.
+
+After GPU discovery, list all local QEMU VMs. Do not list LXCs as selectable VMs.
+
+The VM table will show:
+
+- VM ID and name.
+- Running/stopped state.
+- Machine type.
+- BIOS/OVMF state.
+- Current vga setting.
+- Existing hostpci entries.
+- Template, lock, and HA state.
+- Compatibility result.
+
+Non-Q35 VMs remain visible with:
+
+* not-compatible (requires q35)
+
+They are not selectable. Automatic machine-type or BIOS conversion is out of scope.
+
+Templates, locked VMs, HA-managed VMs, VMs with conflicting passthrough devices, or VMs
+already configured with another primary GPU are also visible but nonselectable.
+
+### Host readiness and --blacklist
+
+Without --blacklist, the workflow is read-only toward the host and proceeds only when:
+
+- IOMMU is enabled in firmware and the active kernel.
+- Required VFIO modules are available.
+- Every selected GPU function is already safely owned by vfio-pci.
+- No conflicting host or VM ownership exists.
+
+With --blacklist, the version-selected helper will transactionally prepare exclusive GPU
+ownership:
+
+- Detect GRUB versus proxmox-boot-tool/kernel-command-line management.
+- Add only the required Intel or AMD IOMMU parameters without duplicating tokens.
+- Create managed VFIO module and modprobe files with neutral filenames.
+- Include legacy modules such as vfio_virqfd only when the selected adapter and installed
+  kernel require and provide them.
+
+- Bind the selected GPU and same-slot companion functions to vfio-pci.
+- Add a vendor-driver blacklist only when required and only after proving it cannot capture
+  another unselected device.
+
+- Refresh initramfs and the detected boot configuration using the selected adapter.
+- Back up every changed file and replace files atomically.
+- Roll back all changes made during the current transaction if preparation fails before
+  reboot.
+
+- Write a root-only pending transaction record under /var/lib/proxmox-vm-gpu/, including
+  version, GPU functions, boot ID, file hashes, and backups.
+
+After successful preparation, stop before modifying the VM and report reboot-required.
+
+The script and reboot helper must never reboot the host. The operator manually reboots and
+reruns the same command. The next run verifies:
+
+- The boot ID changed.
+- The expected IOMMU parameters are active.
+- The selected functions belong to vfio-pci.
+- The pending transaction still matches the selected GPU and effective version.
+
+### VM configuration
+
+After host readiness succeeds:
+
+- Normalize the selected address to one physical PCI slot.
+- Include the GPU plus same-slot audio/USB/UCSI functions required for full handoff.
+- Acquire a per-VM lock.
+- Select the first unused hostpci0 through hostpci15.
+- Back up the current VM configuration.
+- Invoke the Ansible playbook, which revalidates the node, version, VM, GPU ownership, slot
+  availability, and attachment plan.
+
+- Use qm set; never edit /etc/pve/qemu-server/*.conf directly.
+- Configure PCIe passthrough and primary-GPU behavior using the selected adapter’s
+  supported hostpci representation.
+
+- Set vga=none.
+- Validate the active or pending VM configuration.
+- Restore the prior VM configuration if a partial mutation fails.
+
+A stopped VM remains stopped. A running compatible VM is not stopped or restarted; its
+changes remain pending until the operator performs a cold shutdown and start. The result
+must explicitly report cold-start-required.
+
+An identical existing attachment is an idempotent success. A conflicting attachment is a
+refusal.
+
+### Human and JSON output
+
+Human mode writes progress and status messages throughout discovery, preparation, reboot
+verification, and VM configuration.
+
+JSON mode writes diagnostics to stderr and exactly one document to stdout. The final schema
+includes:
+
+{
+  "schema_version": 1,
+  "action": "attach",
+  "release": {
+    "requested": "auto",
+    "effective": "trixie",
+    "pve_major": 9,
+    "debian_codename": "trixie",
+    "adapter": "cli/lib/trixie/gpu.sh"
+  },
+  "vmid": 100,
+  "gpu": "0000:01:00",
+  "functions": ["0000:01:00.0", "0000:01:00.1"],
+  "hostpci": "hostpci0",
+  "vga": "none",
+  "state": "attached",
+  "reboot_required": false,
+  "cold_start_required": false
+}
+
+Allowed terminal states include dry-run, reboot-required, pending-cold-start, attached, and
+refused.
+
+## 4. Documentation, Publication, and Boundaries
+
+- Document the complete workflow in docs/setup/vm/gpu.md, including version selection,
+  interactive menus, manual helper use, blacklist preparation, manual reboot, rerun,
+  running-VM behavior, and recovery.
+
+- Add mirrored helper documentation under docs/cli/ and link the GPU runbook from the root
+  README.
+
+- Declare the playbook and every helper, including all four adapters, in the runner’s
+  dependency arrays.
+
+- Generalize the Pages publisher’s structured VM-runner handling so restore and GPU runners
+  are published from declared dependency arrays without duplicating a second restore-
+  specific publisher.
+
+- Publish stable paths only after merge:
+    - /proxmox/setup/vm/gpu.sh
+    - /proxmox/cli/sys/pci/gpu.sh
+    - /proxmox/cli/vm/gpu.sh
+    - /proxmox/cli/sys/blacklist/gpu.sh
+    - /proxmox/cli/sys/reboot/status.sh
+    - /proxmox/cli/lib/{buster,bullseye,bookworm,trixie}/gpu.sh
+
+- Verify deployed artifacts against the merged commit by checksum.
+
+Release 0.0.6 does not include:
+
+- GPU detach or host-unprepare automation.
+- Intel iGPU passthrough.
+- vGPU, mediated devices, SR-IOV VFs, or GPU sharing.
+- ACS override.
+- Live driver unbind/rebind.
+- VM machine-type or BIOS conversion.
+- Automatic guest configuration.
+- Automatic VM stop, start, restart, or host reboot.
+- A danger override for the host boot GPU or collateral driver capture.
+
+## 5. Validation and Release Acceptance
+
+All automated builds, syntax checks, Ansible checks, fixture tests, and Pages builds run in
+GitHub Actions. Install nothing or run project compile/test stages on the development
+workstation.
+
+Add a GPU validation workflow covering:
+
+- Bash syntax, ShellCheck, Ansible syntax, and dependency-graph validation.
+- Version auto-detection for all four PVE/Debian mappings.
+- Explicit version success, mismatch refusal, unsupported values, and failed detection.
+- Adapter API completeness and path-traversal rejection.
+- GRUB and proxmox-boot-tool plans for each supported lane.
+- Installed-kernel capability probing, including legacy VFIO-module handling.
+- AMD and NVIDIA inventory fixtures.
+- VRAM known/unknown behavior.
+- Multi-function GPUs, unrelated IOMMU-group members, duplicate PCI IDs, host boot GPU, and
+  existing VM ownership.
+
+- VM table compatibility markers and nonselectable states.
+- Stopped and running VM attachment plans.
+- First-free hostpci selection and exhausted-slot refusal.
+- Host-preparation idempotence, atomic rollback, pending reboot, and post-reboot
+  verification.
+
+- VM-configuration rollback after simulated partial failure.
+- TTY selection and exact confirmation.
+- JSON schema, stdout/stderr separation, and every terminal state.
+- Pages publication of every declared .sh path with no extensionless Bash artifacts.
+
+Before releasing 0.0.6, collect approved remote evidence:
+
+- Inventory, audit, and dry-run on representative PVE 6, 7, 8, and 9 nodes.
+- Host preparation, manual reboot, verification, and attachment on each supported major.
+- Collective coverage of both AMD and NVIDIA hardware.
+- Collective coverage of GRUB and proxmox-boot-tool installations.
+- Confirmation that the selected GPU disappears from host-driver use and becomes visible in
+  the selected guest after a cold start.
+
+- Confirmation that running VMs receive pending configuration without automatic
+  interruption.
+
+- Confirmation that unrelated GPUs and PCI devices remain host-owned.
+- Confirmation that repeated runs are idempotent.
+
+Only after those gates pass may the feature merge to main, publish through Pages, and be
+released as 0.0.6.
+
+### Assumptions
+
+- PVE 6–9 are compatibility targets; this does not claim continued upstream support for
+  older releases.
+
+- Automatic detection selected by the operator supersedes an unconditional Trixie runtime
+  default.
+
+- PVE 9/Trixie remains the primary documentation example and current validation lane.
+- Version-specific behavior is isolated only where materially different; capability probing
+  handles kernel and bootloader variation within a release.
+
+- Human approval of this plan authorizes saving it later, but does not itself authorize
+  implementation, branch changes, host mutation, merge, publication, or release.

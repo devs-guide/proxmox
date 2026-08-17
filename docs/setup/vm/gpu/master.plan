@@ -1,0 +1,297 @@
+# PLAN — Version-aware VM GPU feature restructure
+
+Status: implementation approved for three candidate commits on
+`feature/vm/gpu`. Remote node mutation remains a separate post-publication
+human gate.
+
+## 1. Current-state assessment
+
+The previous feature concentrated argument parsing, platform detection, sysfs
+inspection, boot-file rendering, `qm` mutation, rollback, and output formatting
+in `setup/vm/gpu.sh`. That made each new action or Proxmox difference another
+branch in a root-running script. Pages publication also knew specific runner
+names, so a new dependency required changes in several case-oriented blocks.
+
+The retained research plans correctly identified whole-slot discovery,
+node-local BDFs, IOMMU isolation, exact rollback, stopped VMs, and PVE 6/PVE 9
+differences. They also conflict in important places: some prescribe global
+AMD+NVIDIA blacklisting, `amd_iommu=on`, always-early VFIO binding, automatic
+desktop console removal, or support for PVE 7/8. Those instructions are not the
+implemented contract.
+
+The authoritative implementation now has these boundaries:
+
+| Concern | Owner |
+| --- | --- |
+| download and dependency resolution | `setup/vm/gpu.sh` |
+| parser, aliases, normalized state | `cli/gpu/common.sh` |
+| authoritative platform and adapter detection | `cli/gpu/platform.sh` |
+| complete PCI identity inventory and explicit selection | `cli/gpu/inventory.sh` |
+| preflight, verify, status, inventory output | `cli/gpu/inspect.sh` |
+| mutation request and release dispatch | `cli/gpu/apply.sh` |
+| PVE 6.4/Buster capability contract | `ansible/release/6.4/gpu.yml` |
+| PVE 9.x/Trixie capability contract | `ansible/release/9.1/gpu.yml` |
+| host and VM transactions | `ansible/proxmox/helper/vm.gpu.yml` |
+| publication inventory | `actions/pages.features.txt` |
+| GPU fixture contract | `actions/validate.vm.gpu.sh` |
+
+## 2. Goals
+
+1. Keep the public bootstrap small and declarative.
+2. Make read-only actions independently runnable without Ansible.
+3. Detect the live platform and complete GPU inventory before passing a typed
+   schema-v3 request to Ansible.
+4. Keep release files thin: data describes capabilities; shared tasks implement
+   behavior.
+5. Revalidate release, PCI, IOMMU, VM, conflict, approval, and ownership facts
+   at the mutation boundary.
+6. Make host and VM changes reversible from root-only owned state.
+7. Publish every runner dependency from declarations rather than workflow
+   cases.
+8. Preserve compatibility aliases while making canonical actions explicit.
+
+## 3. Supported release lanes
+
+### PVE 6.4 / Buster
+
+- Detected from the complete live `pveversion`, Debian codename Buster, and
+  boot/VFIO capabilities. The `6.4` lane name identifies the compatible
+  adapter; it is not an assumed installed minor.
+- Default and only supported binding strategy is `early`.
+- `prepare` installs exact-BDF initramfs binding for every function in the
+  physical slot.
+- `vfio_virqfd` is included only when present on the installed kernel.
+- GRUB, `pve-efiboot-tool`, and `proxmox-boot-tool` are runtime capabilities,
+  not assumptions.
+- The normal manual sequence is inventory, prepare dry-run, prepare, reboot,
+  verify, attach, guest test, detach, unprepare, reboot.
+
+### PVE 9.x / Trixie through the 9.1 lane
+
+- Detected from the complete live `pveversion`, Debian codename Trixie, and
+  boot/VFIO capabilities. Compatible future PVE 9 minors use the same adapter
+  without a minor-version default.
+- Default binding strategy is `automatic`.
+- The normal manual sequence is inventory, preflight, attach dry-run, attach,
+  guest test, and detach. No host files need to change when automatic handoff
+  works.
+- `--binding early` enables the same exact-address recovery strategy only after
+  automatic handoff fails.
+- `vfio_virqfd` is not requested.
+
+### Deliberate refusals
+
+PVE 7/Bullseye and PVE 8/Bookworm are documented by historic research but are
+not automated in this patch. Unknown, missing, cross-matched, or explicitly
+wrong release data fails closed.
+
+`--release` is an assertion only. It can reject a detected lane mismatch but
+can never choose a release wrapper. Unknown boot tooling also fails closed;
+there is no implicit GRUB fallback.
+
+No lane synthesizes `amd_iommu=on`. An Intel fallback is added only when live
+IOMMU groups are absent. `iommu=pt` is independently opt-in.
+
+## 4. Canonical action state machine
+
+```text
+inventory -> preflight -> [prepare -> reboot -> verify] -> attach
+                                                        |
+                                                        v
+unprepare <- reboot <- host rollback <- detach <- guest validation
+```
+
+The bracketed host-preparation path is mandatory for PVE 6 early binding and
+conditional for PVE 9.
+
+### `inventory`
+
+Read sysfs and return one record per display-controller slot plus every sibling
+function. Record BDF, class, vendor/device IDs, subsystem IDs, current driver,
+IOMMU group, NUMA node, boot-VGA state, reset support, and VM assignments.
+Identical vendor/device IDs remain distinct because address is the identity.
+An empty inventory succeeds; no GPU is selected automatically.
+
+### `preflight`
+
+Require a function-qualified supplied BDF, match it against complete live
+inventory, discover every same-slot function, validate AMD or
+NVIDIA identity, require real IOMMU groups, allow only selected functions and
+PCI bridges in those groups, scan raw VM configs for conflicts, and validate an
+optional target VM. A selected boot display requires explicit host-display-loss
+acknowledgement. Blacklist mode additionally proves no unselected display GPU
+uses the selected vendor family.
+
+### `prepare`
+
+Allow absent IOMMU groups only so firmware/kernel preparation can be previewed.
+Refuse the AMD missing-IOMMU case because no valid AMD kernel token can replace
+disabled firmware. Back up every managed path, apply only the selected binding,
+blacklist, and kernel-token features, refresh the detected boot path and
+initramfs, then persist schema-v3 ownership state with exact function identity
+records. On failure, restore files,
+refresh boot artifacts again, and return an explicit rollback outcome.
+
+### `verify` / `--test`
+
+Repeat preflight and apply state-aware driver expectations. Early binding
+requires `vfio-pci` for every selected function. Automatic handoff permits the
+native driver while the VM is stopped and expects VFIO ownership while it is
+running.
+
+### `attach` / `--attach`
+
+Require a stopped eligible VM. Choose or validate `hostpci0..15`. Immediately
+before mutation, the playbook independently revalidates the live release,
+function existence, complete IOMMU isolation, early VFIO ownership, stopped VM,
+free hostpci entry, and cross-VM references. Capture exact `vga` and `onboot`
+values, add one whole-slot `hostpciN`, apply explicit primary/onboot features,
+write ownership state, and optionally start the VM. Rescue removes partial
+configuration and restores captured values.
+
+An existing matching state/config pair returns `already-attached`; conflicting
+owned state refuses mutation.
+
+### `detach` / `--remove`
+
+Require feature-owned state and a stopped VM. Revalidate that the recorded
+`hostpciN` still contains the recorded slot, remove only that entry, restore
+captured VM fields, then remove state. Rescue restores the owned hostpci value.
+Physical PCI presence is not required for recovery.
+
+### `status`
+
+Report detected platform/adapter, complete inventory, owned host state, and an
+optional explicit selection without mutation.
+
+### `unprepare`
+
+Require host state, no owned VM states, and no raw VM references. Validate GPU
+ownership, bootloader stability, transaction path containment, and every
+required backup before changing files. Restore original files or remove paths
+that did not exist, support legacy schema-v1 cleanup, refresh boot/initramfs,
+remove completed transaction data, and finally remove ownership state. The GPU
+may be physically absent because state is the recovery source.
+
+## 5. Dynamic feature flags
+
+The runner serializes requested behavior as data under
+`gpu_request.requested_features`; release wrappers decide which values are
+allowed; shared tasks consume them. Adding a bounded flag therefore requires:
+
+1. parse and validate it in `cli/gpu/common.sh`;
+2. include a typed boolean/string in `cli/gpu/apply.sh`;
+3. declare capability constraints in the release wrapper when version-specific;
+4. implement one guarded task path in the shared playbook;
+5. add request, negative, idempotence, and rollback fixture assertions;
+6. document its safety acknowledgement and recovery effect.
+
+Current data flags are binding strategy, vendor blacklist, primary GPU,
+disable-onboot, IOMMU passthrough-domain mode, start VM, and reboot host.
+Approvals are separate data fields so the playbook can independently reject an
+unsafe request rather than trusting a shell-only check.
+
+## 6. State and transaction contract
+
+The default state root is
+`/etc/ansible/proxmox/gpu-passthrough`, mode `0700`. State files and generated
+results use mode `0600`.
+
+Host state owns the release lane, selected display BDF, slot, complete function
+identity records, binding,
+blacklist vendor, IOMMU mode, bootloader, transaction directory, and an
+original-file manifest. Each original record stores path, prior existence,
+checksum, and backup. Idempotent prepare requires the same material feature
+contract; a changed contract requires unprepare and a reviewed new prepare.
+
+VM state owns the VM ID, selected display BDF, complete function identity
+records, GPU slot, hostpci index/value, original `vga`, original `onboot`, and
+which fields were managed. State is removed only after the corresponding
+transaction completes. Absent-hardware recovery refuses incomplete legacy
+state rather than inventing a `.0` function.
+
+A nonblocking feature lock serializes all mutations. Dry-run uses a temporary
+lock and does not create the persistent state root.
+
+## 7. Publication restructure
+
+`actions/pages.features.txt` is the single source-to-destination manifest for
+setup runners. Policy `feature` means the builder reads
+`FEATURE_PLAYBOOKS`, optional `FEATURE_SUPPORT_FILES`, and optional
+`FEATURE_CLI_FILES` from the runner. Policy `plain` publishes only the runner.
+
+The Pages builder copies declared dependencies and assigns executable mode only
+to standalone CLI scripts. The validator compares every published declaration
+and follows `import_playbook` edges, including both GPU release wrappers to the
+shared playbook. Workflow YAML no longer contains a GPU-branch publication
+case.
+
+## 8. Validation plan
+
+The focused fixture must cover:
+
+- Bash syntax and declared dependency existence;
+- generic publication graph markers;
+- canonical actions and compatibility aliases;
+- authoritative platform helper output and assertion-only release flags;
+- compatible future PVE 9 minor dispatch and unknown-platform refusal;
+- empty inventory and function-qualified BDF enforcement;
+- complete all-GPU inventory serialization into Ansible extra-vars;
+- identical AMD GPUs kept distinct by BDF;
+- complete selected slot across independent safe IOMMU groups;
+- PVE 9 automatic and PVE 6 early binding dispatch;
+- explicit release mismatch refusal;
+- same-vendor blacklist collateral refusal;
+- typed feature request serialization and IOMMU facts;
+- macOS plus NVIDIA refusal;
+- mixed-group, running/HA/locked VM, occupied hostpci, boot-VGA, absent hardware
+  recovery, stale state, and invalid bootloader negatives;
+- host/attach/detach/unprepare transaction markers;
+- Ansible syntax on Linux CI.
+
+Repository acceptance also requires `git diff --check`, all shell syntax,
+release validators, a Linux Pages build, local Pages artifact validation, and
+the repository runtime validator. This macOS workstation has Bash 3.2, while
+the pre-existing Pages scripts require Bash 4 associative arrays; the Pages
+execution gate therefore remains a Linux/CI requirement.
+
+## 9. Human-review and remote-test boundary
+
+This patch stops before commit, push, Pages dispatch, reboot, or remote VM
+mutation. A reviewer should inspect:
+
+- every managed host path and restore rule;
+- both release contracts and release refusal behavior;
+- exact-BDF initramfs rendering;
+- vendor-specific blacklist scope and collateral refusal;
+- VM field capture, idempotence, and rescue order;
+- manifest-driven Pages output and dependency graph;
+- JSON schemas and exit codes;
+- the updated operator runbook.
+
+After approval, create three logical commits for runtime, CI/publication, and
+documentation, then push only the exact final feature tip. Follow
+`prompt/core/publish.feature.script.plan`: validate the
+candidate read-only, dispatch the trusted workflow from `main` with exact
+`source_ref`, full `source_sha`, and typed confirmation, then verify the Pages
+checksum. Download and inspect the runner before testing mutations.
+
+Remote acceptance is two separate rollback-capable lanes:
+
+1. PVE 9/Trixie: inventory, preflight, automatic attach dry-run/apply, guest
+   detection, stop/start reset test, detach, and host-driver recovery.
+2. PVE 6.4/Buster: inventory, prepare dry-run/apply, reboot, verify, attach,
+   guest detection, stop/start reset test, detach, unprepare, reboot, and exact
+   host-file/driver restoration.
+
+Restore `main` through the same trusted Pages workflow immediately after the
+test window or at any stop condition. Never force-push `www`, mix source SHAs,
+or test a bootstrap against dependencies from another snapshot.
+
+## 10. Out of scope for this patch
+
+No support is claimed for PVE 7/8, LXC GPU exposure, iGPU splitting, vGPU,
+resource mappings, live migration, ACS override, unsafe interrupts, ROM files,
+guest driver installation, interactive menus, automated firmware changes, or
+automatic GPU-reset remediation. Each requires a separate capability contract,
+fixtures, operator recovery path, and review.

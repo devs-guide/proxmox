@@ -27,9 +27,19 @@ Human operator documentation:
 
 - [End-to-end and manual VM restore runbook](docs/setup/vm/restore.md)
 - [Whole-GPU passthrough test runbook](docs/setup/vm/gpu/manual.md)
+- [Whole-GPU passthrough implementation plan](docs/setup/vm/gpu/master.plan)
 - [SSH setup and key rotation](docs/cli/ssh/sync.md)
 - [Archive inspection and rsync transfer](docs/cli/rsync/fetch.md)
 - [Temporary restore storage](docs/cli/storage/temp.md)
+
+GPU platform and PCI identities are always discovered live. Stream only the
+read-only inventory action; download and inspect the runner before a dry-run or
+mutation:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/vm/gpu.sh | \
+  bash -s -- --action inventory --output json
+```
 
 ```bash
 wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh | \

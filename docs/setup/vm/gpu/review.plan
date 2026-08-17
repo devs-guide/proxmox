@@ -1,0 +1,211 @@
+# Historical GPU implementation review
+
+> Findings below describe the previous monolithic runner. Resolved/current
+> behavior is assessed in `master.plan` and documented in `manual.md`.
+
+The feature/vm/gpu branch automates the core host-
+preparation, verification, attachment, rollback, and
+detach workflow. It does not automate every item in the
+supplied 12-step procedure, and several steps are
+intentionally implemented differently.
+
+The feature contract test passes, and the worktree
+remains unchanged.
+
+## Important review findings
+
+1. macOS + NVIDIA is not rejected.
+   The runner accepts --profile macos without detecting
+   the GPU vendor. It could therefore attach an NVIDIA
+   GPU to macOS even though the supplied procedure says
+   to stop at planning. See setup/vm/gpu.sh:151 and
+   setup/vm/gpu.sh:815.
+
+2. Optional blacklisting does not select the matching
+   vendor.
+   --blacklist-host-drivers blacklists both AMD and
+   NVIDIA drivers globally, including additional NVIDIA
+   modules. That differs from the supplied “use only the
+   matching branch” instruction and can affect unrelated
+   host GPUs. It is protected by explicit display-loss
+   confirmation. See setup/vm/gpu.sh:529 and docs/setup/
+   vm/gpu/manual.md:12.
+
+3. VM host autostart is not disabled or checked.
+   The runner defaults to not starting the VM immediately
+   and offers opt-in --start, but it never inspects or
+   changes the VM’s onboot setting. An existing onboot: 1
+   therefore remains enabled. See setup/vm/gpu.sh:862.
+
+4. GPU/audio identity is inferred, not verified.
+   The user provides one PCI BDF. The runner
+   automatically includes every function sharing that
+   slot, but does not confirm class 0300 for GPU or 0403
+   for audio, does not require an audio function, and
+   does not use vendor/device IDs. See setup/vm/
+   gpu.sh:201 and setup/vm/gpu.sh:223.
+
+5. A successful --test is procedural, not an enforced
+   attach prerequisite.
+   attach repeats important checks—VM stopped, IOMMU
+   isolation, managed host state, and vfio-pci binding—
+   but it does not require evidence of an earlier
+   successful --test or repeat every test check. See
+   setup/vm/gpu.sh:671 versus setup/vm/gpu.sh:806.
+
+## Step-by-step coverage
+
+ Supplied step                  Feature coverage
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 1. Record hardware values      Partial. Requires
+                                <GPU_BDF>; discovers all
+                                sibling functions
+                                automatically.
+                                <AUDIO_BDF>, <GPU_ID>,
+                                and <AUDIO_ID> are not
+                                inputs.
+─────────────────────────────  ──────────────────────────
+ 2. Firmware/prerequisites      Mostly manual. BIOS/UEFI
+                                remains manual. It does
+                                not install cpu-checker
+                                or PVE headers and does
+                                not run kvm-ok, dmesg,
+                                x2apic, or AMD-Vi
+                                checks. It detects
+                                Intel/AMD from /proc/
+                                cpuinfo.
+─────────────────────────────  ──────────────────────────
+ 3. Identify GPU/groups         Mostly automated through
+                                sysfs. Discovers
+                                functions, requires
+                                IOMMU groups, rejects
+                                unrelated endpoints,
+                                detects boot_vga, and
+                                checks VM assignment
+                                conflicts. It does not
+                                run the listed lspci
+                                inspection or verify
+                                GPU/audio classes. It
+                                does not configure ACS
+                                override.
+─────────────────────────────  ──────────────────────────
+ 4. Enable IOMMU                Automated with a
+                                different file strategy.
+                                Adds the CPU-specific
+                                IOMMU flag and iommu=pt.
+                                GRUB uses a managed
+                                drop-in; systemd-boot
+                                uses /etc/kernel/
+                                cmdline. It does not
+                                edit the single
+                                assignment in /etc/
+                                default/grub, add ACS
+                                override, or support
+                                iommu=soft.
+─────────────────────────────  ──────────────────────────
+ 5. VFIO modules                Automated. Writes a
+                                managed modules-load.d
+                                file with the three
+                                current VFIO modules and
+                                conditionally includes
+                                vfio_virqfd when
+                                applicable.
+─────────────────────────────  ──────────────────────────
+ 6. Blacklist host drivers      Optional and materially
+                                different. When
+                                requested, globally
+                                blacklists both AMD and
+                                NVIDIA stacks rather
+                                than selecting the
+                                passthrough GPU’s
+                                vendor.
+─────────────────────────────  ──────────────────────────
+ 7. Bind functions              Automated using a safer
+                                alternative. Uses exact-
+                                BDF driver_override
+                                binding in initramfs
+                                instead of reusable
+                                vendor/device IDs. It
+                                intentionally does not
+                                add unsafe interrupts or
+                                kvm ignore_msrs=1.
+─────────────────────────────  ──────────────────────────
+ 8. Rebuild/reboot              Automated. Runs update-
+                                grub or proxmox-boot-
+                                tool refresh, then
+                                update-initramfs -u -k
+                                all. Reboot is opt-in
+                                and requires --yes.
+─────────────────────────────  ──────────────────────────
+ 9. Post-reboot verification    Mostly automated. Checks
+                                active kernel flags,
+                                managed files, IOMMU
+                                grouping, VFIO modules,
+                                exact-BDF configuration,
+                                vfio-pci ownership, and
+                                VM compatibility. It
+                                does not inspect dmesg
+                                or verbose lspci output.
+─────────────────────────────  ──────────────────────────
+ 10. Attach to VM               Automated. Requires the
+                                VM to already be
+                                stopped, validates Q35
+                                and desktop OVMF/EFI
+                                requirements, rejects
+                                HA-managed VMs, selects
+                                a free hostpciN, and
+                                attaches the complete
+                                slot including audio.
+                                Desktop profiles add
+                                pcie=1,x-vga=1 and set
+                                vga: none. It does not
+                                disable onboot.
+─────────────────────────────  ──────────────────────────
+ 11. Guest-specific work        Not automated. Profiles
+                                influence VM
+                                configuration, but guest
+                                drivers and guest
+                                verification remain
+                                manual. No OpenCore/
+                                Monterey validation and
+                                no NVIDIA/macOS
+                                prohibition exist.
+─────────────────────────────  ──────────────────────────
+ 12. Edge cases                 Mostly intentionally
+                                excluded. No ACS
+                                override, iommu=soft,
+                                hugepages, unsafe
+                                interrupts, ROM
+                                handling, or reset
+                                patches. The runner
+                                refuses running VMs
+                                instead of force-
+                                stopping them and
+                                supplies managed detach/
+                                unprepare rollback.
+
+The exclusions are explicitly documented in docs/setup/
+vm/gpu/manual.md:7, including ACS override, guest
+drivers, ROMs, and reset patches.
+
+## Validation coverage
+
+The automated repository test confirms:
+
+- AMD CPU flag selection
+- multifunction GPU/audio discovery
+- one isolated IOMMU group
+- exact-BDF binding without capturing an identical second
+  GPU
+
+- guarded global blacklisting
+- VFIO readiness
+- Q35/OVMF macOS attachment
+- safe hostpci allocation
+- detach and unprepare rollback
+
+It does not test Intel, NVIDIA-specific behavior,
+Windows/Linux/compute profiles, systemd-boot, separate
+valid IOMMU groups, boot-VGA handling, PVE 6 behavior, or
+real hardware. The synthetic contract is in actions/
+validate.vm.gpu.sh:50.

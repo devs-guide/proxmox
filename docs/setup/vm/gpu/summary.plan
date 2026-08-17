@@ -1,0 +1,138 @@
+# PLAN — Whole-GPU passthrough for selected Proxmox VMs
+
+> Earlier approved scope retained for traceability. `master.plan` records the
+> implemented runner/playbook architecture and any deliberate scope changes.
+
+## Summary
+
+- Keep 0.0.5 unchanged on current main at bd5bbc3; GPU work is post-0.0.5 and must not merge before
+  that tag.
+
+- After human approval, save this plan as /Users/x/Desktop/devs.guide/prompts/proxmox/vm/
+  gpu.passthrough.plan.md, preserving all existing prompt-workspace changes.
+
+- Create and switch to feature/vm/gpu from exact current main. Stop if origin/main changes before
+  branch creation.
+
+- Support whole, node-local GPU passthrough to QEMU VMs on PVE 6.4 and 9.x. Docker/LLM workloads use a
+  Linux VM; direct host/LXC GPU exposure is excluded.
+
+- Treat the five WX 4100 pairs as test fixtures only. Discovery remains vendor-neutral and address-
+  based.
+
+## Operator workflow
+
+Provide one published runner with:
+
+setup/vm/gpu.sh --action inventory|preflight|prepare|verify|attach|detach|status|unprepare
+
+Stable flags:
+
+--vm VMID
+--gpu FULL_PCI_BDF
+--profile macos-desktop|windows-desktop|linux-desktop|linux-compute
+--hostpci-index auto|N
+--output human|json
+--dry-run
+--yes
+--start
+--allow-host-display-loss
+
+- Live platform facts always select the release adapter. `--release` is an
+  optional assertion and never an override.
+
+- `--gpu` has no default and must identify a display function, not only a
+  physical slot. Every targeted action first inventories all GPU slots and
+  functions, matches the supplied BDF, and passes complete inventory plus the
+  explicit selection to Ansible.
+
+- Missing VM/GPU/profile values open readable interactive selectors only when a TTY exists;
+  noninteractive runs require explicit flags.
+
+- inventory discovers every GPU from machine-readable PCI/sysfs data, groups
+  every function belonging to one physical slot, and reports BDF, class,
+  vendor/device/subsystem IDs, driver, IOMMU group, boot-VGA status, NUMA node,
+  VM assignment, and reset capability.
+
+- preflight requires a local, stopped, non-HA QEMU VM; validates Q35/guest-profile requirements, IOMMU
+  isolation, complete multifunction selection, and absence of conflicting assignments.
+
+- prepare enables CPU-appropriate IOMMU configuration, loads VFIO modules, and persistently reserves
+  only the selected full PCI addresses. It never binds by shared vendor/device IDs or globally
+  blacklists AMD/NVIDIA drivers.
+
+- Host preparation writes exact-BDF driver_override handling into initramfs, refreshes GRUB or Proxmox
+  boot tooling appropriately, records rollback state, and reports that a reboot is required. It never
+  reboots automatically.
+
+- verify runs after reboot and proves that only the selected GPU functions use vfio-pci; identical
+  unselected GPUs must retain their previous drivers.
+
+- attach allocates the lowest free hostpciN unless explicitly selected, preserves existing PCI
+  devices, records the original VM display configuration, and leaves the VM stopped unless --start is
+  supplied.
+
+- Desktop profiles use the passed-through GPU as primary (x-vga) and disable virtual VGA after
+  explicit console-loss confirmation. linux-compute passes the complete GPU while retaining the
+  virtual console.
+
+- detach removes only the feature-owned PCI entry and restores the exact previous display
+  configuration.
+
+- unprepare requires the GPU to be detached and unused, restores managed host configuration, rebuilds
+  boot artifacts, and requires another explicit reboot.
+
+- Serialize mutations with a lock and persist non-secret ownership/rollback state under /etc/ansible/
+  proxmox/.
+
+## Safety and compatibility
+
+- Normalize function-qualified addresses such as `18:00.0` to
+  `0000:18:00.0`; reject slot-only input and select all inventory-backed
+  functions from the matched slot, including audio or USB functions.
+
+- Refuse mixed IOMMU groups, running VMs, existing assignments, HA-managed VMs, migration while
+  attached, occupied hostpciN entries, stale ownership state, or non-Q35 guests.
+
+- Refuse a boot/host-console GPU unless --allow-host-display-loss --yes is supplied and out-of-band
+  access is acknowledged.
+
+- Do not add ACS overrides, ROM patches, SR-IOV, mediated/vGPU support, iGPU support, vendor driver
+  installation, guest driver installation, or automatic reset workarounds.
+
+- Record reset limitations clearly; a GPU that wedges after guest shutdown may require a host power
+  cycle.
+
+- Use raw node-local BDFs on both supported PVE versions; modern resource mappings are deferred.
+- Follow the PVE 6.4 and current PCI passthrough/bootloader contracts documented in the PVE 6.4 guide
+  (https://pve.proxmox.com/pve-docs-6/pve-admin-guide.pdf) and current PVE guide
+  (https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf).
+
+## Publication and validation
+
+- Publish the runner and declared dependencies through the existing Pages artifact workflow; PR
+  validation must not deploy.
+
+- Add a dedicated GPU contract validator covering shell syntax, interface stability, publication
+  wiring, dry-run behavior, state ownership, and rollback.
+
+- CI fixtures include identical GPU IDs and prove an explicitly selected BDF
+  never captures another physical slot.
+
+- Cover missing audio functions, extra multifunction devices, mixed IOMMU groups, boot GPUs, absent
+  IOMMU, duplicate IDs, running/HA VMs, occupied PCI slots, stale manifests, and PVE 6.4/9.x command
+  differences.
+
+- Remote acceptance requires rollback-capable PVE 6.4 and 9.x nodes: inventory, dry-run, preparation,
+  reboot verification, attach, guest detection, restart/reset test, detach, unprepare, reboot, and
+  proof that host drivers/configuration were restored.
+
+- Test at least one desktop profile and linux-compute; untested guest/vendor combinations remain
+  explicitly labeled untested.
+
+## Release and persistence assumptions
+
+- The official 0.0.5 tag remains based on main, not the checked-out GPU branch.
+- GPU commits do not modify the 0.0.5 release plan or enter its tag.
+- Saving the approved plan adds only the new plan file; existing dirty prompt-repository files are
+  neither staged nor changed.
