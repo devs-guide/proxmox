@@ -135,7 +135,7 @@ gpu.blacklist_spec_json() {
         return
       fi
       for input in "${BLACKLIST_GPU_INPUTS[@]}"; do
-        bdf="$(gpu.normalize_bdf_value "${input}")"
+        bdf="$(gpu.normalize_bdf_value "${input}")" || exit "$?"
         values="$(jq -c --arg bdf "${bdf}" '. + [$bdf]' <<< "${values}")"
       done
       jq -cn --arg vendor "${BLACKLIST_VENDOR_INPUT}" --argjson values "${values}" '{($vendor):$values}'
@@ -168,7 +168,7 @@ gpu.blacklist_spec_json() {
           values='[]'
           while IFS= read -r input; do
             [[ -n "${input}" ]] || gpu.die "${GPU_EXIT_USAGE}" "${vendor} blacklist array cannot contain empty values"
-            bdf="$(gpu.normalize_bdf_value "${input}")"
+            bdf="$(gpu.normalize_bdf_value "${input}")" || exit "$?"
             jq -e --arg bdf "${bdf}" 'index($bdf) == null' <<< "${values}" >/dev/null \
               || gpu.die "${GPU_EXIT_USAGE}" "duplicate blacklist GPU after normalization: ${bdf}"
             values="$(jq -c --arg bdf "${bdf}" '. + [$bdf]' <<< "${values}")"
