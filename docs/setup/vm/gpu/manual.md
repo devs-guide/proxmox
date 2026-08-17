@@ -10,9 +10,10 @@ console access before changing GPU ownership or boot configuration.
 
 ## Scope and safety
 
-The feature supports an AMD or NVIDIA GPU in one node-local PCI slot and all
-same-slot functions, such as graphics, audio, USB, and UCSI. It supports stopped,
-non-HA QEMU VMs using Q35. Desktop profiles also require OVMF and an EFI disk.
+The feature attaches one AMD or NVIDIA GPU slot per VM command. Host preparation
+can select several GPU slots and always includes every same-slot function, such
+as graphics, audio, USB, and UCSI. It supports stopped, non-HA QEMU VMs using
+Q35. Desktop profiles also require OVMF and an EFI disk.
 
 It does not configure ACS override, unsafe interrupts, ROM files, SR-IOV,
 mediated devices, guest drivers, resource mappings, live migration, or GPU reset
@@ -20,8 +21,9 @@ workarounds. It refuses PVE 7 and PVE 8 rather than guessing across an untested
 release lane.
 
 The feature never binds by shared vendor/device ID. Early binding uses exact PCI
-addresses. Optional blacklisting is vendor-specific and is refused if another
-unselected display GPU uses the same driver family.
+addresses. A vendor blacklist is enabled only when the selected set covers every
+inventoried GPU of that vendor; partial sets use exact-BDF binding without a
+global blacklist.
 
 ## Release behavior
 
@@ -54,7 +56,7 @@ fail closed.
 | --- | --- | --- | --- |
 | `inventory` | no | none | list GPU slots, vendor, driver, and boot-VGA state |
 | `preflight` | no | `--gpu`; optional `--vm` | validate identity, full slot, IOMMU isolation, conflicts, and VM eligibility |
-| `prepare` | yes | `--gpu`, `--yes` | apply only requested release-specific host preparation |
+| `prepare` | yes | `--gpu` or a blacklist selector; `--yes` | apply only requested release-specific host preparation |
 | `verify` / `--test` | no | `--gpu`; optional `--vm` | state-aware readiness check after preparation or reboot |
 | `attach` / `--attach` | yes | `--vm`, `--gpu`, `--yes` | add the whole slot to one stopped VM |
 | `detach` / `--remove` | yes | `--vm`, `--yes` | remove only the feature-owned `hostpciN` entry and restore managed VM fields |
@@ -63,15 +65,28 @@ fail closed.
 
 Every mutating action accepts `--dry-run` instead of `--yes`. Inputs are
 noninteractive and therefore safe for remote automation. Use `--output json`
-for stable schema-v3 result documents containing `platform`, `adapter`, the
-complete `inventory`, and an explicit `selection` for targeted actions.
+for stable schema-v4 result documents containing `platform`, `adapter`, the
+complete `inventory`, and an explicit `selection_set` for targeted actions.
+
+Mutation dispatch resolves the canonical managed runtime directly at
+`/opt/ansible-venv/bin/ansible-playbook` and requires the repository-pinned
+Ansible Core version. Operators do not need to prepend `/opt/ansible-venv/bin`
+to `PATH`; a missing or stale managed runtime fails with bootstrap-repair
+guidance.
 
 ## Feature flags
 
 - `--binding release|automatic|early` uses the detected adapter capability or
   an explicit supported strategy. PVE 6 refuses `automatic`.
-- `--blacklist` and `--blacklist-host-drivers` are aliases valid only for
-  `prepare`. They require `--allow-host-display-loss --yes`.
+- `--blacklist-all`, `--blacklist-amd`, and `--blacklist-nvidia` select complete
+  live vendor sets. `--blacklist-vendor` accepts optional repeatable
+  `--blacklist-gpu` selectors. `--blacklist` accepts a JSON object whose AMD or
+  NVIDIA values are `"all"` or display-BDF arrays. These options are valid only
+  for `prepare --binding early` and require `--allow-host-display-loss --yes`.
+  Mixed policy such as `{"amd":["0000:3b:00.0"],"nvidia":"all"}` is supported;
+  keys and `all` are case-insensitive.
+- Bare `--blacklist` and `--blacklist-host-drivers` retain the deprecated
+  single-GPU collateral-refusal behavior.
 - `--primary-gpu` adds `x-vga=1` and changes `vga` to `none`. It requires
   `--allow-guest-console-loss --yes` for a real attachment.
 - `--disable-onboot` changes `onboot` to `0` during commissioning and records
@@ -225,15 +240,17 @@ Use vendor blacklisting only after a reviewed failure proves it necessary:
 ```bash
 "${GPU_RUNNER}" \
   --action prepare \
-  --gpu "${GPU_BDF}" \
   --binding early \
-  --blacklist \
+  --blacklist-amd \
   --allow-host-display-loss \
   --yes \
   --dry-run
 ```
 
-The request is refused if another unselected display GPU has the same vendor.
+`--blacklist-all` selects every inventoried AMD and NVIDIA GPU but excludes
+unsupported vendors such as a Matrox management display. An explicit partial
+set such as `--blacklist '{"amd":["0000:3b:00.0"]}'` is reported as
+`exact-bind-only` because a kernel module blacklist cannot target one PCI BDF.
 
 ## 4. Verify and attach
 
@@ -313,10 +330,11 @@ state even when the physical device is temporarily absent.
 ## State and recovery
 
 State lives under `/etc/ansible/proxmox/gpu-passthrough/` with mode `0700`;
-state documents use mode `0600`. Schema-v3 state records the exact selected
-display BDF, every function identity record, release adapter, bootloader,
-binding strategy, original file existence, checksums, and backups. When
-hardware is absent, detach/unprepare requires those exact identity records.
+state documents use mode `0600`. Host state format 4 records every selected GPU
+and function, effective blacklist and exact-bind-only vendors, release adapter,
+bootloader, binding strategy, original file existence, checksums, and backups.
+Single-GPU VM attachment state remains format 3. When hardware is absent,
+detach/unprepare requires those exact identity records.
 Incomplete legacy state is accepted only when live inventory plus an explicit
 function-qualified `--gpu` can prove the selection; the runner never invents a
 `.0` function.

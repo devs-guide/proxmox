@@ -289,6 +289,16 @@ publish.release.common() {
   fi
 }
 
+publish.ansible.runtime() {
+  if [[ -f "bootstrap/ansible.runtime.sh" ]]; then
+    log.info "[www.pages] installing ansible.runtime.sh"
+    install -m 0755 "bootstrap/ansible.runtime.sh" "${PATH_TO[publish]}/ansible.runtime.sh"
+  else
+    log.error "[www.pages] bootstrap/ansible.runtime.sh not found"
+    exit 1
+  fi
+}
+
 publish.proxmox64() {
   if [[ -f "bootstrap/release.6.4.sh" ]]; then
     log.info "[www.pages] installing 6.4.sh"
@@ -522,6 +532,7 @@ run.pages() {
   publish.prepare
   publish.www
   publish.bootstrap
+  publish.ansible.runtime
   publish.release.common
   publish.proxmox64
   publish.proxmox91

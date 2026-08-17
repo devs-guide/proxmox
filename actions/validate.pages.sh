@@ -60,6 +60,7 @@ FILES=(
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
+  "ansible.runtime.sh:bootstrap/ansible.runtime.sh"
   "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
   "cli/ssh/sync.sh:cli/ssh/sync.sh"
   "cli/storage/temp.sh:cli/storage/temp.sh"
@@ -610,7 +611,6 @@ check_published_release91_bootstrap_policy() {
   for needle in \
     'select.ansible.bootstrap.python()' \
     'ansible.version.line.matches.policy()' \
-    'ansible-playbook [core ${ANSIBLE_CORE_VERSION}]' \
     'Using native system Python for Ansible bootstrap' \
     'Installing venv support for system Python' \
     'python${python_mm}-venv'; do
@@ -663,6 +663,36 @@ check_published_release91_bootstrap_policy() {
       rc=1
     fi
   done
+}
+
+check_published_ansible_runtime_policy() {
+  local published_runtime="${TMPDIR}/ansible.runtime.sh"
+  local published_gpu_runner="${TMPDIR}/setup/vm/gpu.sh"
+  local needle
+
+  if [[ ! -f "${published_runtime}" ]]; then
+    echo "[validate.pages][error] published ansible.runtime.sh was not fetched"
+    rc=1
+    return
+  fi
+  for needle in \
+    '/opt/ansible-venv' \
+    'ansible-playbook [core ${ANSIBLE_CORE_VERSION}]' \
+    'ansible.runtime.require()' \
+    'ansible.runtime.run()' \
+    'ansible_python_interpreter=${ANSIBLE_RUNTIME_PYTHON}'; do
+    if ! grep -Fq -- "${needle}" "${published_runtime}"; then
+      echo "[validate.pages][error] published Ansible runtime helper is missing marker: ${needle}"
+      rc=1
+    fi
+  done
+  if [[ ! -f "${published_gpu_runner}" ]] \
+    || ! grep -Fq 'PROXMOX_ANSIBLE_RUNTIME_HELPER' "${published_gpu_runner}" \
+    || ! grep -Fq 'FEATURE_RUNTIME_FILES=(' "${published_gpu_runner}" \
+    || ! grep -Fq 'PAGES_BASE_URL}/${FEATURE_RUNTIME_FILES[0]}' "${published_gpu_runner}"; then
+    echo "[validate.pages][error] published GPU runner does not fetch and export the canonical Ansible runtime helper"
+    rc=1
+  fi
 }
 
 check_published_users_policy() {
@@ -900,6 +930,7 @@ check_published_network_playbook_policy() {
 if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_samba_runner_policy
   check_published_release91_bootstrap_policy
+  check_published_ansible_runtime_policy
   check_published_users_policy
   check_published_debian_lxc_policy
   check_published_debian_lxc_playbook_policy

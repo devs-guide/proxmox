@@ -17,6 +17,7 @@ files=(
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
+  "bootstrap/ansible.runtime.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network.sh"
@@ -1303,6 +1304,44 @@ if ! grep -q 'python${python_mm}-venv' "${ROOT}/bootstrap/release.common.sh"; th
   echo "[validate.runtime][error] release.common.sh must install version-matched pythonX.Y-venv when system ensurepip is unavailable"
   exit 1
 fi
+echo "[validate.runtime] checking canonical managed Ansible dispatch..."
+for marker in \
+  '/opt/ansible-venv' \
+  'ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"' \
+  'PROXMOX_ANSIBLE_CORE_VERSION' \
+  'ansible.runtime.require()' \
+  'ansible.runtime.run()' \
+  'ansible_python_interpreter=${ANSIBLE_RUNTIME_PYTHON}'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/bootstrap/ansible.runtime.sh"; then
+    echo "[validate.runtime][error] canonical Ansible helper is missing marker: ${marker}"
+    exit 1
+  fi
+done
+for runner in \
+  setup/vlan.sh \
+  setup/network.sh \
+  setup/cli.codex.sh \
+  setup/lxc/debian.sh \
+  setup/lxc/samba.sh \
+  setup/lxc/network.sh \
+  setup/lxc/codex.sh \
+  setup/lxc/users.sh \
+  cli/gpu/apply.sh \
+  bootstrap/metal.sh; do
+  if ! grep -Fq 'ansible.runtime.run' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} bypasses canonical managed Ansible dispatch"
+    exit 1
+  fi
+done
+if grep -Fq 'meta: end_play' "${ROOT}/ansible/debian/ansible.venv.yml"; then
+  echo "[validate.runtime][error] ansible.venv.yml still terminates the caller play"
+  exit 1
+fi
+if ! grep -Fq 'Validate canonical managed ansible-playbook after maintenance' "${ROOT}/ansible/debian/ansible.venv.yml"; then
+  echo "[validate.runtime][error] ansible.venv.yml does not validate the final canonical runtime"
+  exit 1
+fi
+echo "[validate.runtime][ok] production runners use the canonical managed Ansible runtime"
 if ! bash -u -c '
   log() { :; }
   log.error() { :; }
@@ -1508,6 +1547,7 @@ echo "[validate.runtime] checking shell syntax..."
 bash -n "${ROOT}/bootstrap/release.6.4.sh"
 bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
+bash -n "${ROOT}/bootstrap/ansible.runtime.sh"
 bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VERSION:?}" "${ANSIBLE_CORE_SPEC:?}" "${MANAGED_TARGET_PYTHON_HOME:?}" "${MANAGED_TARGET_PYTHON_PATH:?}"' _ "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
 bash -n "${ROOT}/setup/network.sh"

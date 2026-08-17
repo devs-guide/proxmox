@@ -78,9 +78,8 @@ Last-resort, vendor-specific blacklist preview:
 
 ```bash
 "${GPU_RUNNER}" --action prepare \
-  --gpu "${GPU_BDF}" \
   --binding early \
-  --blacklist \
+  --blacklist-amd \
   --allow-host-display-loss \
   --yes \
   --dry-run
@@ -222,9 +221,44 @@ wget -qO- "${GPU_URL}" |
   jq .
 ```
 
-The expected outcome for the example topology is refusal listing the other AMD
-display GPUs. Never remove `--dry-run` merely to bypass that refusal. The safe
-fallback is exact-BDF early binding without `--blacklist`.
+The deprecated bare form still refuses collateral capture and should list the
+other AMD display GPUs. Never remove `--dry-run` merely to bypass that refusal.
+
+Preview a complete AMD host set with the supported multi-GPU interface:
+
+```bash
+wget -qO- "${GPU_URL}" |
+  bash -s -- \
+    --action prepare \
+    --binding early \
+    --blacklist-amd \
+    --allow-host-display-loss \
+    --yes \
+    --dry-run \
+    --output json |
+  jq .
+```
+
+The streamed command resolves `/opt/ansible-venv/bin/ansible-playbook`
+directly. Do not prepend the managed venv to `PATH`; if the canonical runtime is
+missing or outside version policy, repair it through the matching release
+bootstrap before continuing.
+
+For an explicit partial set, use JSON. The result must report AMD under
+`exact_bind_only_vendors`, not `effective_vendors`:
+
+```bash
+wget -qO- "${GPU_URL}" |
+  bash -s -- \
+    --action prepare \
+    --binding early \
+    --blacklist '{"amd":["0000:3b:00.0"]}' \
+    --allow-host-display-loss \
+    --yes \
+    --dry-run \
+    --output json |
+  jq .
+```
 
 ### Preview and apply automatic primary-GPU attachment
 

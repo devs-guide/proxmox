@@ -32,6 +32,7 @@ The authoritative implementation now has these boundaries:
 | PVE 6.4/Buster capability contract | `ansible/release/6.4/gpu.yml` |
 | PVE 9.x/Trixie capability contract | `ansible/release/9.1/gpu.yml` |
 | host and VM transactions | `ansible/proxmox/helper/vm.gpu.yml` |
+| canonical managed Ansible dispatch | `bootstrap/ansible.runtime.sh` |
 | publication inventory | `actions/pages.features.txt` |
 | GPU fixture contract | `actions/validate.vm.gpu.sh` |
 
@@ -40,7 +41,7 @@ The authoritative implementation now has these boundaries:
 1. Keep the public bootstrap small and declarative.
 2. Make read-only actions independently runnable without Ansible.
 3. Detect the live platform and complete GPU inventory before passing a typed
-   schema-v3 request to Ansible.
+   schema-v4 request to Ansible.
 4. Keep release files thin: data describes capabilities; shared tasks implement
    behavior.
 5. Revalidate release, PCI, IOMMU, VM, conflict, approval, and ownership facts
@@ -119,17 +120,19 @@ inventory, discover every same-slot function, validate AMD or
 NVIDIA identity, require real IOMMU groups, allow only selected functions and
 PCI bridges in those groups, scan raw VM configs for conflicts, and validate an
 optional target VM. A selected boot display requires explicit host-display-loss
-acknowledgement. Blacklist mode additionally proves no unselected display GPU
-uses the selected vendor family.
+acknowledgement. The deprecated single-GPU blacklist mode additionally proves
+no unselected display GPU uses the selected vendor family.
 
 ### `prepare`
 
 Allow absent IOMMU groups only so firmware/kernel preparation can be previewed.
 Refuse the AMD missing-IOMMU case because no valid AMD kernel token can replace
-disabled firmware. Back up every managed path, apply only the selected binding,
-blacklist, and kernel-token features, refresh the detected boot path and
-initramfs, then persist schema-v3 ownership state with exact function identity
-records. On failure, restore files,
+disabled firmware. A request may select one GPU or an explicit host set. Global
+AMD/NVIDIA blacklisting requires complete live coverage for that vendor; a
+partial list uses exact-BDF early binding only. Back up every managed path,
+apply only the selected binding, blacklist, and kernel-token features, refresh
+the detected boot path and initramfs, then persist format-4 host ownership state
+with every selected GPU and exact function identity record. On failure, restore files,
 refresh boot artifacts again, and return an explicit rollback outcome.
 
 ### `verify` / `--test`
@@ -186,7 +189,7 @@ allowed; shared tasks consume them. Adding a bounded flag therefore requires:
 5. add request, negative, idempotence, and rollback fixture assertions;
 6. document its safety acknowledgement and recovery effect.
 
-Current data flags are binding strategy, vendor blacklist, primary GPU,
+Current data flags are binding strategy, structured multi-vendor blacklist policy, primary GPU,
 disable-onboot, IOMMU passthrough-domain mode, start VM, and reboot host.
 Approvals are separate data fields so the playbook can independently reject an
 unsafe request rather than trusting a shell-only check.
@@ -197,9 +200,9 @@ The default state root is
 `/etc/ansible/proxmox/gpu-passthrough`, mode `0700`. State files and generated
 results use mode `0600`.
 
-Host state owns the release lane, selected display BDF, slot, complete function
-identity records, binding,
-blacklist vendor, IOMMU mode, bootloader, transaction directory, and an
+Format-4 host state owns the release lane, all selected display BDFs and slots,
+complete function identity records, binding, effective blacklist vendors,
+exact-bind-only vendors, IOMMU mode, bootloader, transaction directory, and an
 original-file manifest. Each original record stores path, prior existence,
 checksum, and backup. Idempotent prepare requires the same material feature
 contract; a changed contract requires unprepare and a reviewed new prepare.
@@ -238,16 +241,19 @@ The focused fixture must cover:
 - empty inventory and function-qualified BDF enforcement;
 - complete all-GPU inventory serialization into Ansible extra-vars;
 - identical AMD GPUs kept distinct by BDF;
+- AMD/NVIDIA all-vendor, vendor-only, repeatable-BDF, partial exact-bind-only,
+  malformed-input, and unsupported Matrox exclusion behavior;
 - complete selected slot across independent safe IOMMU groups;
 - PVE 9 automatic and PVE 6 early binding dispatch;
 - explicit release mismatch refusal;
-- same-vendor blacklist collateral refusal;
+- deprecated single-GPU blacklist collateral refusal;
 - typed feature request serialization and IOMMU facts;
 - macOS plus NVIDIA refusal;
 - mixed-group, running/HA/locked VM, occupied hostpci, boot-VGA, absent hardware
   recovery, stale state, and invalid bootloader negatives;
 - host/attach/detach/unprepare transaction markers;
-- Ansible syntax on Linux CI.
+- real Ansible 2.20 execution through the stopped-VM assertion on Linux CI;
+- format-4 multi-GPU verify/unprepare and format-3 single-GPU recovery.
 
 Repository acceptance also requires `git diff --check`, all shell syntax,
 release validators, a Linux Pages build, local Pages artifact validation, and
