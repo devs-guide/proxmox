@@ -31,6 +31,9 @@ YES=0
 START_VM=0
 REBOOT_HOST=0
 BLACKLIST_HOST_DRIVERS=0
+BLACKLIST_INPUT_MODE="none"
+BLACKLIST_JSON_INPUT=""
+BLACKLIST_VENDOR_INPUT=""
 ALLOW_HOST_DISPLAY_LOSS=0
 ALLOW_GUEST_CONSOLE_LOSS=0
 PRIMARY_GPU=0
@@ -49,6 +52,10 @@ BOOTLOADER_OVERRIDE="${PROXMOX_GPU_BOOTLOADER:-}"
 PLAYBOOK_ROOT="${PROXMOX_GPU_PLAYBOOK_ROOT:-}"
 
 declare -a GPU_FUNCTIONS=()
+declare -a SELECTED_GPU_SLOTS=()
+declare -a BLACKLIST_GPU_INPUTS=()
+SELECTION_SET_JSON='null'
+BLACKLIST_POLICY_JSON='{"requested":false,"input_mode":"none","requested_vendors":[],"effective_vendors":[],"exact_bind_only_vendors":[],"requested_bdfs":[],"affected_bdfs":[],"affected_slots":[],"affected_function_bdfs":[]}'
 
 gpu.log() {
   [[ "${OUTPUT}" == "human" ]] || return 0
@@ -125,7 +132,12 @@ Feature options:
   --allow-guest-console-loss
   --disable-onboot
   --iommu-pt
-  --blacklist, --blacklist-host-drivers
+  --blacklist [JSON]    JSON values: {"amd":"all"} or {"amd":["BDF",...]}
+  --blacklist-all       Prepare and blacklist all inventoried AMD/NVIDIA GPUs
+  --blacklist-amd       Prepare and blacklist every inventoried AMD GPU
+  --blacklist-nvidia    Prepare and blacklist every inventoried NVIDIA GPU
+  --blacklist-vendor amd|nvidia [--blacklist-gpu PCI_BDF ...]
+  --blacklist-host-drivers
   --allow-host-display-loss
 
 Safe first use:
@@ -157,7 +169,50 @@ gpu.parse_args() {
       --start) START_VM=1; shift ;;
       --reboot) REBOOT_HOST=1; shift ;;
       --reset) REBOOT_HOST=1; RESET_ALIAS_USED=1; shift ;;
-      --blacklist|--blacklist-host-drivers) BLACKLIST_HOST_DRIVERS=1; shift ;;
+      --blacklist)
+        [[ "${BLACKLIST_INPUT_MODE}" == none ]] || gpu.die "${GPU_EXIT_USAGE}" "conflicting blacklist selectors"
+        BLACKLIST_HOST_DRIVERS=1
+        if (($# > 1)) && [[ "${2-}" != --* ]]; then
+          BLACKLIST_INPUT_MODE="json"
+          BLACKLIST_JSON_INPUT="$2"
+          shift 2
+        else
+          BLACKLIST_INPUT_MODE="legacy"
+          shift
+        fi
+        ;;
+      --blacklist-host-drivers)
+        [[ "${BLACKLIST_INPUT_MODE}" == none ]] || gpu.die "${GPU_EXIT_USAGE}" "conflicting blacklist selectors"
+        BLACKLIST_HOST_DRIVERS=1
+        BLACKLIST_INPUT_MODE="legacy"
+        shift
+        ;;
+      --blacklist-all)
+        BLACKLIST_HOST_DRIVERS=1
+        [[ "${BLACKLIST_INPUT_MODE}" == none ]] || gpu.die "${GPU_EXIT_USAGE}" "conflicting blacklist selectors"
+        BLACKLIST_INPUT_MODE="all"
+        shift
+        ;;
+      --blacklist-amd|--blacklist-nvidia)
+        BLACKLIST_HOST_DRIVERS=1
+        [[ "${BLACKLIST_INPUT_MODE}" == none ]] || gpu.die "${GPU_EXIT_USAGE}" "conflicting blacklist selectors"
+        BLACKLIST_INPUT_MODE="vendor"
+        BLACKLIST_VENDOR_INPUT="${1#--blacklist-}"
+        shift
+        ;;
+      --blacklist-vendor)
+        gpu.require_value "$1" "${2-}"
+        BLACKLIST_HOST_DRIVERS=1
+        [[ "${BLACKLIST_INPUT_MODE}" == none ]] || gpu.die "${GPU_EXIT_USAGE}" "conflicting blacklist selectors"
+        BLACKLIST_INPUT_MODE="vendor"
+        BLACKLIST_VENDOR_INPUT="${2,,}"
+        shift 2
+        ;;
+      --blacklist-gpu)
+        gpu.require_value "$1" "${2-}"
+        BLACKLIST_GPU_INPUTS+=("$2")
+        shift 2
+        ;;
       --allow-host-display-loss) ALLOW_HOST_DISPLAY_LOSS=1; shift ;;
       --allow-guest-console-loss) ALLOW_GUEST_CONSOLE_LOSS=1; shift ;;
       --primary-gpu) PRIMARY_GPU=1; shift ;;
@@ -190,6 +245,15 @@ gpu.parse_args() {
   [[ "${HOSTPCI_INDEX}" == auto || "${HOSTPCI_INDEX}" =~ ^([0-9]|1[0-5])$ ]] || gpu.die "${GPU_EXIT_USAGE}" "--hostpci-index must be auto or 0..15"
 
   ((BLACKLIST_HOST_DRIVERS == 0)) || [[ "${ACTION}" == prepare ]] || gpu.die "${GPU_EXIT_USAGE}" "--blacklist is valid only with prepare"
+  if ((BLACKLIST_HOST_DRIVERS == 1)); then
+    [[ "${BINDING_REQUESTED}" == early ]] || gpu.die "${GPU_EXIT_USAGE}" "blacklist selection requires --binding early"
+    case "${BLACKLIST_VENDOR_INPUT}" in ""|amd|nvidia) ;; *) gpu.die "${GPU_EXIT_USAGE}" "--blacklist-vendor must be amd or nvidia" ;; esac
+    if [[ "${BLACKLIST_INPUT_MODE}" != legacy && -n "${GPU_INPUT}" ]]; then
+      gpu.die "${GPU_EXIT_USAGE}" "--gpu cannot be combined with a multi-GPU blacklist selector"
+    fi
+  fi
+  ((${#BLACKLIST_GPU_INPUTS[@]} == 0)) || [[ "${BLACKLIST_INPUT_MODE}" == vendor ]] \
+    || gpu.die "${GPU_EXIT_USAGE}" "--blacklist-gpu requires --blacklist-vendor"
   ((PRIMARY_GPU == 0)) || [[ "${ACTION}" == attach || "${ACTION}" == preflight || "${ACTION}" == verify ]] || gpu.die "${GPU_EXIT_USAGE}" "--primary-gpu is valid only for preflight, verify, or attach"
   ((START_VM == 0)) || [[ "${ACTION}" == attach ]] || gpu.die "${GPU_EXIT_USAGE}" "--start is valid only with attach"
   ((REBOOT_HOST == 0)) || [[ "${ACTION}" == prepare || "${ACTION}" == unprepare ]] || gpu.die "${GPU_EXIT_USAGE}" "--reboot is valid only with prepare or unprepare"

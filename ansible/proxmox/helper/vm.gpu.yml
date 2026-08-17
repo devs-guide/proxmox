@@ -11,6 +11,8 @@
     gpu_adapter: "{{ gpu_request.adapter }}"
     gpu_inventory: "{{ gpu_request.inventory }}"
     gpu_selection: "{{ gpu_request.selection }}"
+    gpu_selection_set: "{{ gpu_request.selection_set }}"
+    gpu_blacklist: "{{ gpu_request.requested_features.blacklist }}"
     gpu_action: "{{ gpu_request.action }}"
     gpu_dry_run: "{{ gpu_request.dry_run | bool }}"
     gpu_etc_root: "{{ gpu_request.roots.etc }}"
@@ -39,7 +41,7 @@
       ansible.builtin.assert:
         that:
           - gpu_request is mapping
-          - gpu_request.schema_version | int == 3
+          - gpu_request.schema_version | int == 4
           - gpu_action in ['prepare', 'attach', 'detach', 'unprepare']
           - gpu_platform.schema_version | int == 1
           - gpu_adapter.schema_version | int == 1
@@ -55,18 +57,35 @@
           - gpu_platform.debian.codename == gpu_release_contract.debian_codename
           - gpu_platform.bootloader == gpu_request.detected.bootloader
           - gpu_inventory.gpus is sequence
-          - gpu_selection is mapping
-          - gpu_selection.selected_bdf is match('^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]$')
-          - gpu_selection.slot is match('^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}$')
-          - gpu_selection.selected_bdf in gpu_selection.display_bdfs
-          - gpu_selection.selected_bdf in (gpu_selection.functions | map(attribute='bdf') | list)
-          - gpu_selection.functions | length > 0
-          - gpu_request.gpu_slot == gpu_selection.slot
-          - gpu_request.gpu_bdf == gpu_selection.selected_bdf
-          - (gpu_request.functions | to_json) == (gpu_selection.functions | to_json)
-          - gpu_action in ['detach', 'unprepare'] or (((gpu_inventory.gpus | selectattr('slot', 'equalto', gpu_selection.slot) | first).functions | to_json) == (gpu_selection.functions | to_json))
-          - gpu_action in ['detach', 'unprepare'] or (((gpu_inventory.gpus | selectattr('slot', 'equalto', gpu_selection.slot) | first).display_bdfs | sort) == (gpu_selection.display_bdfs | sort))
-          - gpu_action in ['detach', 'unprepare'] or (gpu_inventory.gpus | selectattr('slot', 'equalto', gpu_selection.slot) | list | length == 1)
+          - gpu_selection_set is mapping
+          - gpu_selection_set.mode in ['single', 'host-set']
+          - gpu_selection_set.gpus is sequence
+          - gpu_selection_set.gpus | length > 0
+          - gpu_selection_set.slots | length == (gpu_selection_set.gpus | length)
+          - gpu_selection_set.functions | length > 0
+          - (gpu_request.functions | to_json) == (gpu_selection_set.functions | to_json)
+          - (gpu_selection_set.slots | sort) == (gpu_selection_set.gpus | map(attribute='slot') | list | sort)
+          - gpu_action not in ['attach', 'detach'] or (gpu_selection_set.gpus | length == 1)
+          - gpu_action not in ['attach', 'detach'] or gpu_selection is mapping
+          - gpu_action not in ['attach', 'detach'] or gpu_request.gpu_slot == gpu_selection.slot
+          - gpu_action not in ['attach', 'detach'] or gpu_request.gpu_bdf == gpu_selection.selected_bdf
+          - gpu_action in ['detach', 'unprepare'] or (gpu_selection_set.slots | difference(gpu_inventory.gpus | map(attribute='slot') | list) | length == 0)
+          - gpu_blacklist is mapping
+          - gpu_blacklist.requested_vendors is sequence
+          - gpu_blacklist.effective_vendors is sequence
+          - gpu_blacklist.exact_bind_only_vendors is sequence
+          - gpu_blacklist.requested_bdfs is sequence
+          - gpu_blacklist.affected_bdfs is sequence
+          - gpu_blacklist.affected_slots is sequence
+          - gpu_blacklist.affected_function_bdfs is sequence
+          - (gpu_blacklist.affected_slots | sort) == (gpu_selection_set.slots | sort) or not (gpu_blacklist.requested | bool)
+          - (gpu_blacklist.affected_function_bdfs | sort) == (gpu_request.functions | map(attribute='bdf') | list | sort) or not (gpu_blacklist.requested | bool)
+          - gpu_blacklist.effective_vendors | difference(['amd', 'nvidia']) | length == 0
+          - gpu_blacklist.exact_bind_only_vendors | difference(['amd', 'nvidia']) | length == 0
+          - gpu_blacklist.effective_vendors | intersect(gpu_blacklist.exact_bind_only_vendors) | length == 0
+          - (gpu_request.requested_features.blacklist_host_drivers | bool) == (gpu_blacklist.effective_vendors | length > 0)
+          - not (gpu_blacklist.requested | bool) or gpu_action == 'prepare'
+          - not (gpu_blacklist.requested | bool) or gpu_request.requested_features.binding == 'early'
           - gpu_request.requested_features.binding in gpu_release_contract.supported_bindings
           - gpu_request.detected.bootloader in ['grub', 'proxmox-boot-tool', 'pve-efiboot-tool']
           - not (gpu_request.requested_features.blacklist_host_drivers | bool) or (gpu_request.approvals.allow_host_display_loss | bool)
@@ -106,8 +125,7 @@
       ansible.builtin.assert:
         that:
           - item.stat.exists
-          - item.item.bdf is match('^' + (gpu_request.gpu_slot | regex_escape) + '\\.[0-7]$')
-          - item.item.bdf != gpu_request.gpu_bdf or item.item.class is match('^0x03')
+          - item.item.bdf in (gpu_selection_set.functions | map(attribute='bdf') | list)
         fail_msg: "Requested PCI function disappeared: {{ item.item.bdf }}"
       loop: "{{ gpu_live_function_stats.results | default([]) }}"
       when: gpu_action in ['prepare', 'attach']
@@ -159,7 +177,8 @@
 
     - name: Require independently verified IOMMU isolation
       ansible.builtin.assert:
-        that: [gpu_live_iommu_isolation.rc == 0]
+        that:
+          - "gpu_live_iommu_isolation.rc == 0"
         fail_msg: "Live IOMMU membership changed after runner preflight: {{ gpu_live_iommu_isolation.stderr | default('unknown error') }}"
       when:
         - gpu_action == 'attach' or (gpu_request.detected.iommu_ready | bool)
@@ -187,7 +206,8 @@
 
     - name: Refuse live VM mutation
       ansible.builtin.assert:
-        that: [gpu_live_vm_status.stdout is search('status: stopped')]
+        that:
+          - "gpu_live_vm_status.stdout is search('status: stopped')"
         fail_msg: "VM {{ gpu_request.vmid }} is not stopped."
       when: gpu_action in ['attach', 'detach']
 
@@ -206,9 +226,33 @@
 
     - name: Refuse a newly conflicting VM assignment
       ansible.builtin.assert:
-        that: [gpu_live_vm_conflicts.stdout | trim == '']
+        that:
+          - "gpu_live_vm_conflicts.stdout | trim == ''"
         fail_msg: "Another VM began referencing the selected GPU after runner preflight."
       when: gpu_action == 'attach'
+
+    - name: Revalidate host-preparation VM assignment conflicts
+      ansible.builtin.shell: |
+        set -o pipefail
+        for slot in {% for slot in gpu_selection_set.slots %}{{ slot | quote }} {% endfor %}; do
+          qm_slot="${slot#0000:}"
+          rc=0
+          grep -R -E "^hostpci[0-9]+:.*(${slot}|${qm_slot})([,.]|$)" {{ gpu_pve_root | quote }}/qemu-server 2>/dev/null || rc=$?
+          test "${rc}" -le 1 || exit "${rc}"
+        done
+      args:
+        executable: /bin/bash
+      register: gpu_live_prepare_vm_conflicts
+      changed_when: false
+      failed_when: gpu_live_prepare_vm_conflicts.rc not in [0, 1]
+      when: gpu_action == 'prepare'
+
+    - name: Refuse host preparation after a new VM assignment
+      ansible.builtin.assert:
+        that:
+          - "gpu_live_prepare_vm_conflicts.stdout | trim == ''"
+        fail_msg: "A VM began referencing a selected GPU after runner preflight."
+      when: gpu_action == 'prepare'
 
     - name: Ensure the root-only feature state directory exists
       ansible.builtin.file:
@@ -224,7 +268,10 @@
         gpu_result_state: "pending"
         gpu_result_message: "GPU action has not completed"
         gpu_result_changes: []
-        gpu_result_warnings: []
+        gpu_result_warnings: >-
+          {{ ([('Partial ' + (gpu_blacklist.exact_bind_only_vendors | join('/')) +
+                ' selection uses exact-BDF early binding without a vendor blacklist')]
+              if (gpu_blacklist.exact_bind_only_vendors | length) > 0 else []) }}
         gpu_rollback_complete: true
 
   tasks:
@@ -259,16 +306,26 @@
                 (
                   (
                     ((gpu_existing_host_state_raw.content | b64decode | trim).startswith('{')) and
-                    (((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_slot | default('')) == gpu_request.gpu_slot) and
-                    ((((gpu_existing_host_state_raw.content | b64decode | from_json).format | default(2) | int) < 3) or
-                      (((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_bdf | default('')) == gpu_request.gpu_bdf)) and
+                    (
+                      (
+                        ((gpu_existing_host_state_raw.content | b64decode | from_json).format | default(2) | int) >= 4 and
+                        ((((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_slots | default([]) | sort) == (gpu_selection_set.slots | sort))) and
+                        ((((gpu_existing_host_state_raw.content | b64decode | from_json).blacklist_vendors | default([]) | sort) == (gpu_blacklist.effective_vendors | sort))) and
+                        ((((gpu_existing_host_state_raw.content | b64decode | from_json).exact_bind_only_vendors | default([]) | sort) == (gpu_blacklist.exact_bind_only_vendors | sort)))
+                      ) or
+                      (
+                        ((gpu_existing_host_state_raw.content | b64decode | from_json).format | default(2) | int) < 4 and
+                        (gpu_selection_set.gpus | length == 1) and
+                        (((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_slot | default('')) == gpu_request.gpu_slot) and
+                        (((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_bdf | default(gpu_request.gpu_bdf)) == gpu_request.gpu_bdf) and
+                        (((gpu_existing_host_state_raw.content | b64decode | from_json).blacklist_vendor | default('')) ==
+                          ((gpu_blacklist.effective_vendors | first) if (gpu_blacklist.effective_vendors | length) == 1 else ''))
+                      )
+                    ) and
                     ((((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_functions | default([]) | sort) ==
                       (gpu_request.functions | map(attribute='bdf') | list | sort))) and
                     (((gpu_existing_host_state_raw.content | b64decode | from_json).release | default('')) == gpu_release_contract.lane) and
                     (((gpu_existing_host_state_raw.content | b64decode | from_json).binding_strategy | default('')) == gpu_request.requested_features.binding) and
-                    (((gpu_existing_host_state_raw.content | b64decode | from_json).blacklist_vendor | default('')) ==
-                      (('amd' if (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) == '0x1002'
-                        else 'nvidia') if gpu_request.requested_features.blacklist_host_drivers | bool else '')) and
                     ((((gpu_existing_host_state_raw.content | b64decode | from_json).iommu_pt | default(false)) | bool) == (gpu_request.requested_features.iommu_pt | bool)) and
                     (((gpu_existing_host_state_raw.content | b64decode | from_json).bootloader | default('')) == gpu_request.detected.bootloader)
                   ) or
@@ -281,6 +338,20 @@
                 )
               }}
           when: gpu_existing_host_state_stat.stat.exists
+
+        - name: Revalidate existing host-state PCI identities
+          ansible.builtin.assert:
+            that:
+              - (gpu_request.functions | selectattr('bdf', 'equalto', item.bdf) | map(attribute='class') | first | default('')) == item.class
+              - (gpu_request.functions | selectattr('bdf', 'equalto', item.bdf) | map(attribute='vendor_id') | first | default('')) == item.vendor_id
+              - (gpu_request.functions | selectattr('bdf', 'equalto', item.bdf) | map(attribute='device_id') | first | default('')) == item.device_id
+              - (gpu_request.functions | selectattr('bdf', 'equalto', item.bdf) | map(attribute='subsystem_vendor_id') | first | default(None)) == (item.subsystem_vendor_id | default(None))
+              - (gpu_request.functions | selectattr('bdf', 'equalto', item.bdf) | map(attribute='subsystem_device_id') | first | default(None)) == (item.subsystem_device_id | default(None))
+            fail_msg: "Live PCI identity no longer matches managed host state for {{ item.bdf }}."
+          loop: "{{ gpu_existing_host_state.gpu_function_records | default([]) }}"
+          when:
+            - gpu_existing_host_state_stat.stat.exists
+            - gpu_existing_host_is_v2 | default(false) | bool
 
         - name: Reject conflicting host ownership state
           ansible.builtin.assert:
@@ -313,7 +384,7 @@
         - name: Report idempotent host preparation
           ansible.builtin.set_fact:
             gpu_result_state: "already-prepared"
-            gpu_result_message: "Host preparation already matches {{ gpu_request.gpu_slot }}"
+            gpu_result_message: "Host preparation already matches {{ gpu_selection_set.slots | join(', ') }}"
           when: gpu_existing_host_state_stat.stat.exists
 
         - name: Collect host preparation facts
@@ -334,10 +405,7 @@
               ansible.builtin.set_fact:
                 gpu_cpu_vendor: "{{ gpu_cpu_vendor_command.stdout | trim }}"
                 gpu_active_cmdline: "{{ gpu_active_cmdline_raw.content | b64decode | trim }}"
-                gpu_selected_vendor: >-
-                  {{ 'amd' if (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) == '0x1002'
-                     else ('nvidia' if (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) == '0x10de'
-                     else 'unsupported') }}
+                gpu_blacklist_vendors: "{{ gpu_blacklist.effective_vendors | sort }}"
                 gpu_kernel_tokens: []
 
             - name: Add the Intel IOMMU fallback only when required
@@ -360,21 +428,22 @@
                 that:
                   - gpu_cpu_vendor in ['GenuineIntel', 'AuthenticAMD']
                   - "'amd_iommu=on' not in gpu_kernel_tokens"
-                  - gpu_selected_vendor in ['amd', 'nvidia']
+                  - gpu_blacklist_vendors | difference(['amd', 'nvidia']) | length == 0
 
             - name: Detect collateral display GPUs before vendor blacklisting
               ansible.builtin.shell: |
                 set -eu
                 selected=' {% for function in gpu_request.functions %}{{ function.bdf }} {% endfor %}'
-                selected_vendor={{ (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) | quote }}
+                selected_vendors=' {% for vendor in gpu_blacklist.effective_vendors %}{{ vendor }} {% endfor %}'
                 for device_path in {{ gpu_sysfs_root | quote }}/bus/pci/devices/*; do
                   test -e "${device_path}/class" || continue
                   bdf="${device_path##*/}"
                   case "${selected}" in *" ${bdf} "*) continue ;; esac
                   class="$(cat "${device_path}/class")"
                   case "${class}" in 0x03*) ;; *) continue ;; esac
-                  vendor="$(cat "${device_path}/vendor")"
-                  test "${vendor}" != "${selected_vendor}" || printf '%s\n' "${bdf}"
+                  vendor_id="$(cat "${device_path}/vendor")"
+                  case "${vendor_id}" in 0x1002) vendor=amd ;; 0x10de) vendor=nvidia ;; *) continue ;; esac
+                  case "${selected_vendors}" in *" ${vendor} "*) printf '%s\n' "${bdf}" ;; esac
                 done
               args:
                 executable: /bin/bash
@@ -384,9 +453,10 @@
 
             - name: Refuse a vendor blacklist with collateral display loss
               ansible.builtin.assert:
-                that: [gpu_blacklist_collateral.stdout | trim == '']
+                that:
+                  - "gpu_blacklist_collateral.stdout | trim == ''"
                 fail_msg: >-
-                  Refusing {{ gpu_selected_vendor }} driver blacklist because another display GPU
+                  Refusing {{ gpu_blacklist.effective_vendors | join('/') }} driver blacklist because another display GPU
                   uses the same vendor family: {{ gpu_blacklist_collateral.stdout_lines | join(', ') }}
               when: gpu_request.requested_features.blacklist_host_drivers | bool
 
@@ -561,9 +631,10 @@
                     mode: "0644"
                     content: |
                       # Managed by setup/vm/gpu.sh (schema 2)
-                      {% if gpu_selected_vendor == 'amd' %}blacklist amdgpu
+                      {% if 'amd' in gpu_blacklist.effective_vendors %}blacklist amdgpu
                       blacklist radeon
-                      {% else %}blacklist nouveau
+                      {% endif %}
+                      {% if 'nvidia' in gpu_blacklist.effective_vendors %}blacklist nouveau
                       blacklist nvidia
                       blacklist nvidia_drm
                       blacklist nvidia_modeset
@@ -656,7 +727,7 @@
                       }] }}
                   loop: "{{ gpu_applied_file_stats.results }}"
 
-                - name: Persist schema-v3 host ownership and rollback state
+                - name: Persist schema-v4 host ownership and rollback state
                   ansible.builtin.copy:
                     dest: "{{ gpu_host_state_path }}"
                     owner: root
@@ -664,14 +735,19 @@
                     mode: "0600"
                     content: >-
                       {{ {
-                        'format': 3,
+                        'format': 4,
                         'gpu_bdf': gpu_request.gpu_bdf,
                         'gpu_slot': gpu_request.gpu_slot,
+                        'gpu_bdfs': gpu_selection_set.gpus | map(attribute='selected_bdf') | list,
+                        'gpu_slots': gpu_selection_set.slots,
+                        'gpu_selections': gpu_selection_set.gpus,
                         'gpu_functions': gpu_request.functions | map(attribute='bdf') | list,
                         'gpu_function_records': gpu_request.functions,
                         'release': gpu_release_contract.lane,
                         'binding_strategy': gpu_request.requested_features.binding,
-                        'blacklist_vendor': (gpu_selected_vendor if gpu_request.requested_features.blacklist_host_drivers | bool else ''),
+                        'blacklist_vendor': ((gpu_blacklist.effective_vendors | first) if (gpu_blacklist.effective_vendors | length) == 1 else ''),
+                        'blacklist_vendors': gpu_blacklist.effective_vendors,
+                        'exact_bind_only_vendors': gpu_blacklist.exact_bind_only_vendors,
                         'iommu_pt': gpu_request.requested_features.iommu_pt | bool,
                         'bootloader': gpu_request.detected.bootloader,
                         'transaction_dir': gpu_transaction_dir,
@@ -739,7 +815,7 @@
                     dest: "{{ gpu_result_path }}"
                     mode: "0600"
                     content: >-
-                      {{ {'schema_version': 3, 'action': gpu_action,
+                      {{ {'schema_version': 4, 'action': gpu_action,
                           'release': {'lane': gpu_release_contract.lane},
                           'result': {'state': ('failed-rolled-back' if gpu_host_rollback_complete | bool else 'failed-rollback-incomplete'),
                                      'rollback_complete': gpu_host_rollback_complete | bool,
@@ -756,14 +832,18 @@
             - name: Report host preparation dry run
               ansible.builtin.set_fact:
                 gpu_result_state: "dry-run"
-                gpu_result_message: "Host preparation plan validated; no files were changed"
+                gpu_result_message: >-
+                  Host preparation plan validated for {{ gpu_selection_set.slots | join(', ') }};
+                  blacklist={{ gpu_blacklist.effective_vendors | join(',') | default('none', true) }};
+                  exact_bind_only={{ gpu_blacklist.exact_bind_only_vendors | join(',') | default('none', true) }};
+                  no files were changed
               when: gpu_dry_run
 
             - name: Report completed host preparation
               ansible.builtin.set_fact:
                 gpu_result_state: "prepared"
                 gpu_result_message: >-
-                  Host preparation completed for {{ gpu_request.gpu_slot }};
+                  Host preparation completed for {{ gpu_selection_set.slots | join(', ') }};
                   reboot_required={{ (gpu_kernel_tokens | length > 0) or
                   gpu_request.requested_features.binding == 'early' or
                   (gpu_request.requested_features.blacklist_host_drivers | bool) }}
@@ -982,7 +1062,7 @@
                 dest: "{{ gpu_result_path }}"
                 mode: "0600"
                 content: >-
-                  {{ {'schema_version': 3, 'action': gpu_action,
+                  {{ {'schema_version': 4, 'action': gpu_action,
                       'release': {'lane': gpu_release_contract.lane},
                       'result': {'state': 'failed-rolled-back', 'rollback_complete': true,
                                  'message': 'VM attachment failed and the original configuration was restored'}} | to_nice_json }}
@@ -1011,7 +1091,8 @@
 
         - name: Require feature-owned VM state
           ansible.builtin.assert:
-            that: [gpu_vm_state_stat.stat.exists]
+            that:
+              - "gpu_vm_state_stat.stat.exists"
             fail_msg: "No feature-owned VM attachment state exists."
 
         - name: Read VM ownership state
@@ -1099,7 +1180,7 @@
                 dest: "{{ gpu_result_path }}"
                 mode: "0600"
                 content: >-
-                  {{ {'schema_version': 3, 'action': gpu_action,
+                  {{ {'schema_version': 4, 'action': gpu_action,
                       'release': {'lane': gpu_release_contract.lane},
                       'result': {'state': 'failed-rolled-back', 'rollback_complete': true,
                                  'message': 'VM detachment failed and the owned attachment was restored'}} | to_nice_json }}
@@ -1126,14 +1207,19 @@
 
         - name: Refuse host rollback while managed attachments exist
           ansible.builtin.assert:
-            that: [gpu_owned_vm_states.matched | int == 0]
+            that:
+              - "gpu_owned_vm_states.matched | int == 0"
             fail_msg: "Detach all feature-owned VM attachments before unprepare."
 
         - name: Search raw QEMU configs for selected GPU
-          ansible.builtin.shell: >-
-            set -o pipefail;
-            grep -R -E '^hostpci[0-9]+:.*({{ gpu_request.gpu_slot | regex_escape }}|{{ gpu_request.gpu_qm_slot | regex_escape }})([,.]|$)'
-            {{ gpu_pve_root | quote }}/qemu-server 2>/dev/null
+          ansible.builtin.shell: |
+            set -o pipefail
+            for slot in {% for slot in gpu_selection_set.slots %}{{ slot | quote }} {% endfor %}; do
+              qm_slot="${slot#0000:}"
+              rc=0
+              grep -R -E "^hostpci[0-9]+:.*(${slot}|${qm_slot})([,.]|$)" {{ gpu_pve_root | quote }}/qemu-server 2>/dev/null || rc=$?
+              test "${rc}" -le 1 || exit "${rc}"
+            done
           args:
             executable: /bin/bash
           register: gpu_raw_vm_references
@@ -1142,7 +1228,8 @@
 
         - name: Refuse host rollback while raw VM references exist
           ansible.builtin.assert:
-            that: [gpu_raw_vm_references.stdout | trim == '']
+            that:
+              - "gpu_raw_vm_references.stdout | trim == ''"
             fail_msg: "A QEMU configuration still references the selected GPU."
 
         - name: Read managed host state for rollback
@@ -1161,7 +1248,7 @@
         - name: Validate host state ownership
           ansible.builtin.assert:
             that:
-              - gpu_host_state.gpu_slot == gpu_request.gpu_slot
+              - (gpu_host_state.gpu_slots | default([gpu_host_state.gpu_slot]) | sort) == (gpu_selection_set.slots | sort)
               - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) == gpu_request.detected.bootloader
               - not (gpu_host_state_is_v2 | bool) or (gpu_host_state.transaction_dir | default('')).startswith(gpu_state_root + '/transactions/')
               - not (gpu_host_state_is_v2 | bool) or gpu_host_state.applied_files is defined
@@ -1178,7 +1265,8 @@
 
         - name: Require every structured rollback backup before changing files
           ansible.builtin.assert:
-            that: [item.stat.exists]
+            that:
+              - "item.stat.exists"
             fail_msg: "Required host rollback backup is missing: {{ item.item.backup }}"
           loop: "{{ gpu_unprepare_backup_stats.results | default([]) }}"
           when:
@@ -1205,7 +1293,7 @@
         - name: Report host unprepare dry run
           ansible.builtin.set_fact:
             gpu_result_state: "dry-run"
-            gpu_result_message: "Would restore feature-managed host files for {{ gpu_request.gpu_slot }}"
+            gpu_result_message: "Would restore feature-managed host files for {{ gpu_selection_set.slots | join(', ') }}"
           when: gpu_dry_run
 
         - name: Validate legacy managed-file markers
@@ -1232,7 +1320,8 @@
 
         - name: Require legacy systemd-boot command-line backup
           ansible.builtin.assert:
-            that: [gpu_legacy_kernel_cmdline_backup.stat.exists]
+            that:
+              - "gpu_legacy_kernel_cmdline_backup.stat.exists"
             fail_msg: "Legacy kernel command-line backup is missing; refusing partial rollback."
           when:
             - not (gpu_host_state_is_v2 | bool)
@@ -1395,7 +1484,7 @@
                 dest: "{{ gpu_result_path }}"
                 mode: "0600"
                 content: >-
-                  {{ {'schema_version': 3, 'action': gpu_action,
+                  {{ {'schema_version': 4, 'action': gpu_action,
                       'release': {'lane': gpu_release_contract.lane},
                       'result': {'state': ('failed-rolled-back' if gpu_unprepare_rollback_complete | bool else 'failed-rollback-incomplete'),
                                  'rollback_complete': gpu_unprepare_rollback_complete | bool,
@@ -1426,7 +1515,7 @@
         - name: Report completed host rollback
           ansible.builtin.set_fact:
             gpu_result_state: "unprepared"
-            gpu_result_message: "Restored feature-managed host configuration for {{ gpu_request.gpu_slot }}; reboot required"
+            gpu_result_message: "Restored feature-managed host configuration for {{ gpu_selection_set.slots | join(', ') }}; reboot required"
           when: not gpu_dry_run
 
   post_tasks:
@@ -1436,7 +1525,7 @@
         mode: "0600"
         content: >-
           {{ {
-            'schema_version': 3,
+            'schema_version': 4,
             'action': gpu_action,
             'release': {
               'lane': gpu_release_contract.lane,
@@ -1446,6 +1535,7 @@
             'request': {
               'vmid': gpu_request.vmid | default(None),
               'gpu_slot': gpu_request.gpu_slot,
+              'gpu_slots': gpu_selection_set.slots,
               'profile': gpu_request.profile,
               'dry_run': gpu_dry_run
             },

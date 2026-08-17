@@ -9,6 +9,9 @@ FEATURE_PLAYBOOKS=(
 FEATURE_SUPPORT_FILES=(
   "proxmox/helper/vm.gpu.yml"
 )
+FEATURE_RUNTIME_FILES=(
+  "ansible.runtime.sh"
+)
 FEATURE_CLI_FILES=(
   "gpu/platform.sh"
   "gpu/inventory.sh"
@@ -24,6 +27,7 @@ SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
 SCRIPT_DIR=""
 CLI_ROOT=""
 PLAYBOOK_ROOT=""
+ANSIBLE_RUNTIME_HELPER=""
 
 if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
@@ -111,6 +115,14 @@ bootstrap.dependencies() {
     done
   fi
 
+  if [[ -n "${local_root}" && -r "${local_root}/bootstrap/${FEATURE_RUNTIME_FILES[0]}" ]]; then
+    ANSIBLE_RUNTIME_HELPER="${local_root}/bootstrap/${FEATURE_RUNTIME_FILES[0]}"
+  else
+    ANSIBLE_RUNTIME_HELPER="${FEATURE_TMP_DIR}/bootstrap/${FEATURE_RUNTIME_FILES[0]}"
+    bootstrap.fetch "${PAGES_BASE_URL}/${FEATURE_RUNTIME_FILES[0]}" "${ANSIBLE_RUNTIME_HELPER}"
+    chmod 0644 "${ANSIBLE_RUNTIME_HELPER}"
+  fi
+
   ((missing == 0)) || exit 10
 }
 
@@ -118,4 +130,5 @@ bootstrap.dependencies
 
 export PROXMOX_GPU_CLI_ROOT="${CLI_ROOT}"
 export PROXMOX_GPU_PLAYBOOK_ROOT="${PLAYBOOK_ROOT}"
+export PROXMOX_ANSIBLE_RUNTIME_HELPER="${ANSIBLE_RUNTIME_HELPER}"
 exec bash "${CLI_ROOT}/gpu/apply.sh" "$@"

@@ -4,6 +4,13 @@ set -euo pipefail
 
 GPU_COMPONENT="cli.gpu.apply"
 CLI_ROOT="${PROXMOX_GPU_CLI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ANSIBLE_RUNTIME_HELPER="${PROXMOX_ANSIBLE_RUNTIME_HELPER:-$(cd "${CLI_ROOT}/.." && pwd)/bootstrap/ansible.runtime.sh}"
+[[ -r "${ANSIBLE_RUNTIME_HELPER}" ]] || {
+  printf '[%s][error] missing shared Ansible runtime helper: %s\n' "${GPU_COMPONENT}" "${ANSIBLE_RUNTIME_HELPER}" >&2
+  exit 10
+}
+# shellcheck source=bootstrap/ansible.runtime.sh
+source "${ANSIBLE_RUNTIME_HELPER}"
 # shellcheck source=cli/gpu/common.sh
 source "${CLI_ROOT}/gpu/common.sh"
 export PROXMOX_GPU_INSPECT_LIBRARY=1
@@ -11,8 +18,17 @@ export PROXMOX_GPU_INSPECT_LIBRARY=1
 source "${CLI_ROOT}/gpu/inspect.sh"
 
 gpu.request_json() {
-  local functions='[]' bootloader="" legacy_host='{}' legacy_vm='{}'
-  functions="$(gpu.render_selected_json)"
+  local functions='[]' bootloader="" legacy_host='{}' legacy_vm='{}' effective_blacklist=false
+  if [[ "${SELECTION_SET_JSON}" == null ]]; then
+    functions="$(gpu.render_selected_json)"
+    SELECTION_SET_JSON="$(jq -cn --argjson gpu "${SELECTED_GPU_JSON}" '{mode:"single",gpus:[$gpu],slots:[$gpu.slot],display_bdfs:$gpu.display_bdfs,functions:$gpu.functions}')"
+  else
+    functions="$(jq -c '.functions' <<< "${SELECTION_SET_JSON}")"
+  fi
+  if [[ "${BLACKLIST_INPUT_MODE}" == legacy ]]; then
+    BLACKLIST_POLICY_JSON="$(jq -cn --arg vendor "${GPU_VENDOR}" --arg bdf "${GPU_BDF}" --arg slot "${GPU_SLOT}" --argjson functions "${functions}" '{requested:true,input_mode:"legacy",requested_vendors:[$vendor],effective_vendors:[$vendor],exact_bind_only_vendors:[],requested_bdfs:[$bdf],affected_bdfs:[$bdf],affected_slots:[$slot],affected_function_bdfs:[$functions[].bdf]}')"
+  fi
+  [[ "$(jq -r '.effective_vendors | length' <<< "${BLACKLIST_POLICY_JSON}")" -gt 0 ]] && effective_blacklist=true
   bootloader="$(gpu.detect_bootloader)"
 
   if [[ -r "${STATE_ROOT}/host.state" ]] && ! gpu.state_is_json "${STATE_ROOT}/host.state"; then
@@ -44,11 +60,13 @@ gpu.request_json() {
     --argjson adapter "${ADAPTER_JSON}" \
     --argjson inventory "${INVENTORY_JSON}" \
     --argjson selection "${SELECTED_GPU_JSON}" \
+    --argjson selection_set "${SELECTION_SET_JSON}" \
+    --argjson blacklist_policy "${BLACKLIST_POLICY_JSON}" \
     --argjson functions "${functions}" \
     --argjson dry_run "$([[ ${DRY_RUN} -eq 1 ]] && printf true || printf false)" \
     --argjson start_vm "$([[ ${START_VM} -eq 1 ]] && printf true || printf false)" \
     --argjson reboot_host "$([[ ${REBOOT_HOST} -eq 1 ]] && printf true || printf false)" \
-    --argjson blacklist "$([[ ${BLACKLIST_HOST_DRIVERS} -eq 1 ]] && printf true || printf false)" \
+    --argjson blacklist "${effective_blacklist}" \
     --argjson primary "$([[ ${PRIMARY_GPU} -eq 1 ]] && printf true || printf false)" \
     --argjson disable_onboot "$([[ ${DISABLE_ONBOOT} -eq 1 ]] && printf true || printf false)" \
     --argjson iommu_pt "$([[ ${IOMMU_PT} -eq 1 ]] && printf true || printf false)" \
@@ -57,14 +75,16 @@ gpu.request_json() {
     --argjson iommu_ready "$([[ ${IOMMU_READY:-0} -eq 1 ]] && printf true || printf false)" \
     --argjson legacy_host "${legacy_host}" \
     --argjson legacy_vm "${legacy_vm}" \
-    '{gpu_request:{schema_version:3,action:$action,
-      platform:$platform,adapter:$adapter,inventory:$inventory,selection:$selection,
+    '{gpu_request:{schema_version:4,action:$action,
+      platform:$platform,adapter:$adapter,inventory:$inventory,selection:$selection,selection_set:$selection_set,
       release:$release,pve_version:$pve_version,debian_codename:$codename,
       vmid:(if $vmid=="" then null else ($vmid|tonumber) end),
-      gpu_slot:$gpu_slot,gpu_bdf:$gpu_bdf,gpu_qm_slot:$gpu_qm_slot,functions:$functions,
+      gpu_slot:(if $gpu_slot=="" then null else $gpu_slot end),
+      gpu_bdf:(if $gpu_bdf=="" then null else $gpu_bdf end),
+      gpu_qm_slot:(if $gpu_qm_slot=="" then null else $gpu_qm_slot end),functions:$functions,
       profile:$profile,
       hostpci_index:(if $hostpci=="auto" or $hostpci=="" then null else ($hostpci|tonumber) end),
-      requested_features:{binding:$binding,blacklist_host_drivers:$blacklist,
+      requested_features:{binding:$binding,blacklist_host_drivers:$blacklist,blacklist:$blacklist_policy,
         primary_gpu:$primary,disable_onboot:$disable_onboot,iommu_pt:$iommu_pt,
         start_vm:$start_vm,reboot_host:$reboot_host},
       approvals:{allow_host_display_loss:$display_loss,allow_guest_console_loss:$console_loss},
@@ -99,13 +119,14 @@ gpu.apply_main() {
   fi
 
   gpu.require_root
-  gpu.require_commands jq sed grep sort readlink basename qm pveversion flock ansible-playbook
+  gpu.require_commands jq sed grep sort readlink basename qm pveversion flock
+  ansible.runtime.require || exit "${GPU_EXIT_DEPENDENCY}"
   gpu.detect_release
   gpu.prepare_state_inputs
 
   case "${ACTION}" in
     prepare)
-      gpu.preflight_selected 1
+      gpu.preflight_prepare_selection 1
       if ((IOMMU_READY == 0)) && [[ "$(awk -F: '/vendor_id/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' "${PROC_ROOT}/cpuinfo" 2>/dev/null)" == AuthenticAMD ]]; then
         gpu.die "${GPU_EXIT_PREFLIGHT}" "AMD host has no IOMMU groups; enable AMD-Vi/IOMMU in firmware before prepare"
       fi
@@ -118,7 +139,7 @@ gpu.apply_main() {
       gpu.validate_vm_stopped_only
       ;;
     unprepare)
-      gpu.discover_or_restore_functions "${STATE_ROOT}/host.state"
+      gpu.discover_or_restore_host_functions "${STATE_ROOT}/host.state"
       ;;
   esac
 
@@ -139,7 +160,7 @@ gpu.apply_main() {
   exec 9>"${LOCK_FILE}"
   flock -n 9 || gpu.die "${GPU_EXIT_MUTATION}" "another GPU passthrough mutation is active"
   set +e
-  ansible-playbook -i localhost, -c local -e "@${request_file}" -e "gpu_result_path=${result_file}" "${playbook}" >&2
+  ansible.runtime.run -i localhost, -c local -e "@${request_file}" -e "gpu_result_path=${result_file}" "${playbook}" >&2
   ansible_rc=$?
   set -e
   if ((ansible_rc != 0)); then
