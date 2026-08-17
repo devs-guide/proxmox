@@ -33,6 +33,15 @@ expect_exit() {
   [[ "${observed}" -eq "${expected}" ]] || fail "expected exit ${expected}, observed ${observed}: $*"
 }
 
+run_real_ansible() {
+  local output="" observed=0
+  output="$("$@" 2>&1)" || observed=$?
+  if ((observed != 0)); then
+    printf '%s\n' "${output}" >&2
+    fail "real Ansible invocation exited ${observed}: $*"
+  fi
+}
+
 for file in "${RUNNER}" "${PLATFORM}" "${INVENTORY}" "${COMMON}" "${INSPECT}" "${APPLY}"; do
   [[ -f "${file}" ]] || fail "missing GPU shell component: ${file#${ROOT}/}"
   bash -n "${file}" || fail "Bash syntax failed: ${file#${ROOT}/}"
@@ -390,24 +399,24 @@ if command -v ansible-playbook >/dev/null 2>&1; then
   REAL_MULTI_GPU_RESULT="${FIXTURE}/real-multi-ansible-result.json"
   REAL_PARTIAL_GPU_RESULT="${FIXTURE}/real-partial-ansible-result.json"
   REAL_GPU_RESULT="${FIXTURE}/real-ansible-result.json"
-  env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
+  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e "ansible_python_interpreter=$(command -v python3)" \
     -e "@${MULTI_REQUEST_CAPTURE}" \
     -e "gpu_result_path=${REAL_MULTI_GPU_RESULT}" \
-    "${ROOT}/ansible/release/9.1/gpu.yml" >/dev/null
+    "${ROOT}/ansible/release/9.1/gpu.yml"
   jq -e '
     .schema_version == 4
     and .action == "prepare"
     and (.request.gpu_slots | length) == 3
     and .result.state == "dry-run"
   ' "${REAL_MULTI_GPU_RESULT}" >/dev/null || fail "real Ansible multi-GPU preparation dry-run did not complete"
-  env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
+  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e "ansible_python_interpreter=$(command -v python3)" \
     -e "@${PARTIAL_REQUEST_CAPTURE}" \
     -e "gpu_result_path=${REAL_PARTIAL_GPU_RESULT}" \
-    "${ROOT}/ansible/release/9.1/gpu.yml" >/dev/null
+    "${ROOT}/ansible/release/9.1/gpu.yml"
   jq -e '
     .schema_version == 4
     and .action == "prepare"
@@ -416,12 +425,12 @@ if command -v ansible-playbook >/dev/null 2>&1; then
     and (.warnings | length) == 1
     and .result.state == "dry-run"
   ' "${REAL_PARTIAL_GPU_RESULT}" >/dev/null || fail "real Ansible partial exact-binding dry-run did not report its warning"
-  env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
+  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e "ansible_python_interpreter=$(command -v python3)" \
     -e "@${REQUEST_CAPTURE}" \
     -e "gpu_result_path=${REAL_GPU_RESULT}" \
-    "${ROOT}/ansible/release/9.1/gpu.yml" >/dev/null
+    "${ROOT}/ansible/release/9.1/gpu.yml"
   jq -e '.schema_version == 4 and .action == "attach" and .result.state == "dry-run"' \
     "${REAL_GPU_RESULT}" >/dev/null || fail "real Ansible attachment dry-run did not complete"
   ok "Ansible 2.20 executes multi-GPU preparation and stopped-VM attachment without broken-condition compatibility"
