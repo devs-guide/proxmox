@@ -1,0 +1,1460 @@
+---
+- name: "[proxmox]: apply version-aware VM GPU passthrough action"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    gpu_req: "{{ gpu_request }}"
+    gpu_platform: "{{ gpu_request.platform }}"
+    gpu_adapter: "{{ gpu_request.adapter }}"
+    gpu_inventory: "{{ gpu_request.inventory }}"
+    gpu_selection: "{{ gpu_request.selection }}"
+    gpu_action: "{{ gpu_request.action }}"
+    gpu_dry_run: "{{ gpu_request.dry_run | bool }}"
+    gpu_etc_root: "{{ gpu_request.roots.etc }}"
+    gpu_proc_root: "{{ gpu_request.roots.proc }}"
+    gpu_sysfs_root: "{{ gpu_request.roots.sysfs }}"
+    gpu_pve_root: "{{ gpu_request.roots.pve }}"
+    gpu_state_root: "{{ gpu_request.roots.state }}"
+    gpu_host_state_path: "{{ gpu_request.roots.state }}/host.state"
+    gpu_vm_state_path: "{{ gpu_request.roots.state }}/vm-{{ gpu_request.vmid | default('missing') }}.state"
+    gpu_modules_path: "{{ gpu_request.roots.etc }}/modules-load.d/proxmox-gpu-passthrough.conf"
+    gpu_blacklist_path: "{{ gpu_request.roots.etc }}/modprobe.d/proxmox-gpu-passthrough-blacklist.conf"
+    gpu_grub_dropin_path: "{{ gpu_request.roots.etc }}/default/grub.d/proxmox-gpu-passthrough.cfg"
+    gpu_kernel_cmdline_path: "{{ gpu_request.roots.etc }}/kernel/cmdline"
+    gpu_initramfs_hook_path: "{{ gpu_request.roots.etc }}/initramfs-tools/hooks/proxmox-gpu-passthrough"
+    gpu_initramfs_script_path: "{{ gpu_request.roots.etc }}/initramfs-tools/scripts/init-top/proxmox-gpu-passthrough"
+    gpu_managed_files:
+      - { key: modules, path: "{{ gpu_modules_path }}" }
+      - { key: blacklist, path: "{{ gpu_blacklist_path }}" }
+      - { key: grub_dropin, path: "{{ gpu_grub_dropin_path }}" }
+      - { key: kernel_cmdline, path: "{{ gpu_kernel_cmdline_path }}" }
+      - { key: initramfs_hook, path: "{{ gpu_initramfs_hook_path }}" }
+      - { key: initramfs_script, path: "{{ gpu_initramfs_script_path }}" }
+
+  pre_tasks:
+    - name: Assert the runner-to-playbook request schema
+      ansible.builtin.assert:
+        that:
+          - gpu_request is mapping
+          - gpu_request.schema_version | int == 3
+          - gpu_action in ['prepare', 'attach', 'detach', 'unprepare']
+          - gpu_platform.schema_version | int == 1
+          - gpu_adapter.schema_version | int == 1
+          - gpu_adapter.id == gpu_release_contract.adapter_id
+          - gpu_adapter.lane == gpu_release_contract.lane
+          - gpu_adapter.playbook == gpu_release_contract.playbook
+          - gpu_adapter.default_binding == gpu_release_contract.default_binding
+          - (gpu_adapter.supported_bindings | sort) == (gpu_release_contract.supported_bindings | sort)
+          - gpu_adapter.automatic_handoff | bool == gpu_release_contract.automatic_handoff | bool
+          - gpu_adapter.probe_vfio_virqfd | bool == gpu_release_contract.probe_vfio_virqfd | bool
+          - gpu_request.release == gpu_release_contract.lane
+          - gpu_platform.pve.major == gpu_release_contract.pve_major
+          - gpu_platform.debian.codename == gpu_release_contract.debian_codename
+          - gpu_platform.bootloader == gpu_request.detected.bootloader
+          - gpu_inventory.gpus is sequence
+          - gpu_selection is mapping
+          - gpu_selection.selected_bdf is match('^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]$')
+          - gpu_selection.slot is match('^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}$')
+          - gpu_selection.selected_bdf in gpu_selection.display_bdfs
+          - gpu_selection.selected_bdf in (gpu_selection.functions | map(attribute='bdf') | list)
+          - gpu_selection.functions | length > 0
+          - gpu_request.gpu_slot == gpu_selection.slot
+          - gpu_request.gpu_bdf == gpu_selection.selected_bdf
+          - (gpu_request.functions | to_json) == (gpu_selection.functions | to_json)
+          - gpu_action in ['detach', 'unprepare'] or (((gpu_inventory.gpus | selectattr('slot', 'equalto', gpu_selection.slot) | first).functions | to_json) == (gpu_selection.functions | to_json))
+          - gpu_action in ['detach', 'unprepare'] or (((gpu_inventory.gpus | selectattr('slot', 'equalto', gpu_selection.slot) | first).display_bdfs | sort) == (gpu_selection.display_bdfs | sort))
+          - gpu_action in ['detach', 'unprepare'] or (gpu_inventory.gpus | selectattr('slot', 'equalto', gpu_selection.slot) | list | length == 1)
+          - gpu_request.requested_features.binding in gpu_release_contract.supported_bindings
+          - gpu_request.detected.bootloader in ['grub', 'proxmox-boot-tool', 'pve-efiboot-tool']
+          - not (gpu_request.requested_features.blacklist_host_drivers | bool) or (gpu_request.approvals.allow_host_display_loss | bool)
+          - not (gpu_request.requested_features.primary_gpu | bool) or gpu_dry_run or (gpu_request.approvals.allow_guest_console_loss | bool)
+          - gpu_action not in ['attach', 'detach'] or gpu_request.vmid is not none
+          - gpu_action != 'attach' or gpu_request.hostpci_index is not none
+        fail_msg: "Invalid or release-incompatible GPU request."
+
+    - name: Read installed Proxmox version
+      ansible.builtin.command:
+        argv: [pveversion]
+      register: gpu_live_pveversion
+      changed_when: false
+
+    - name: Read installed Debian release
+      ansible.builtin.slurp:
+        src: "{{ gpu_etc_root }}/os-release"
+      register: gpu_live_os_release
+
+    - name: Revalidate the release wrapper against the live node
+      ansible.builtin.assert:
+        that:
+          - gpu_live_pveversion.stdout is search('pve-manager/' + gpu_release_contract.pve_major + '\\.')
+          - gpu_live_pveversion.stdout is search('pve-manager/' + (gpu_platform.pve.version | regex_escape) + '/')
+          - (gpu_live_os_release.content | b64decode) is search('VERSION_CODENAME=' + gpu_release_contract.debian_codename)
+        fail_msg: >-
+          Release wrapper {{ gpu_release_contract.lane }} does not match the live node.
+
+    - name: Confirm every requested PCI function still exists
+      ansible.builtin.stat:
+        path: "{{ gpu_sysfs_root }}/bus/pci/devices/{{ item.bdf }}"
+      loop: "{{ gpu_request.functions }}"
+      register: gpu_live_function_stats
+      when: gpu_action in ['prepare', 'attach']
+
+    - name: Reject stale PCI function requests
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.item.bdf is match('^' + (gpu_request.gpu_slot | regex_escape) + '\\.[0-7]$')
+          - item.item.bdf != gpu_request.gpu_bdf or item.item.class is match('^0x03')
+        fail_msg: "Requested PCI function disappeared: {{ item.item.bdf }}"
+      loop: "{{ gpu_live_function_stats.results | default([]) }}"
+      when: gpu_action in ['prepare', 'attach']
+
+    - name: Revalidate requested PCI identity metadata
+      ansible.builtin.command:
+        argv:
+          - /bin/bash
+          - -ceu
+          - |
+            test "$(cat "$1/class")" = "$2"
+            test "$(cat "$1/vendor")" = "$3"
+            test "$(cat "$1/device")" = "$4"
+          - --
+          - "{{ gpu_sysfs_root }}/bus/pci/devices/{{ item.bdf }}"
+          - "{{ item.class }}"
+          - "{{ item.vendor_id }}"
+          - "{{ item.device_id }}"
+      loop: "{{ gpu_request.functions }}"
+      changed_when: false
+      when: gpu_action in ['prepare', 'attach']
+
+    - name: Revalidate complete IOMMU-group isolation
+      ansible.builtin.shell: |
+        set -eu
+        requested=' {% for function in gpu_request.functions %}{{ function.bdf }} {% endfor %}'
+        for bdf in {% for function in gpu_request.functions %}{{ function.bdf | quote }} {% endfor %}; do
+          group_path="$(readlink -f {{ gpu_sysfs_root | quote }}/bus/pci/devices/"${bdf}"/iommu_group)"
+          test -d "${group_path}/devices"
+          for member_path in "${group_path}"/devices/*; do
+            member="${member_path##*/}"
+            case "${requested}" in
+              *" ${member} "*) continue ;;
+            esac
+            class="$(cat {{ gpu_sysfs_root | quote }}/bus/pci/devices/"${member}"/class)"
+            case "${class}" in
+              0x0604*) ;;
+              *) echo "unrelated endpoint ${member} (${class})" >&2; exit 42 ;;
+            esac
+          done
+        done
+      args:
+        executable: /bin/bash
+      register: gpu_live_iommu_isolation
+      changed_when: false
+      failed_when: false
+      when:
+        - gpu_action == 'attach' or (gpu_request.detected.iommu_ready | bool)
+
+    - name: Require independently verified IOMMU isolation
+      ansible.builtin.assert:
+        that: [gpu_live_iommu_isolation.rc == 0]
+        fail_msg: "Live IOMMU membership changed after runner preflight: {{ gpu_live_iommu_isolation.stderr | default('unknown error') }}"
+      when:
+        - gpu_action == 'attach' or (gpu_request.detected.iommu_ready | bool)
+
+    - name: Revalidate early VFIO ownership immediately before attach
+      ansible.builtin.shell: |
+        set -eu
+        for bdf in {% for function in gpu_request.functions %}{{ function.bdf | quote }} {% endfor %}; do
+          driver="$(basename "$(readlink -f {{ gpu_sysfs_root | quote }}/bus/pci/devices/"${bdf}"/driver)")"
+          test "${driver}" = vfio-pci
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when:
+        - gpu_action == 'attach'
+        - gpu_request.requested_features.binding == 'early'
+
+    - name: Revalidate stopped VM state immediately before mutation
+      ansible.builtin.command:
+        argv: [qm, status, "{{ gpu_request.vmid | string }}"]
+      register: gpu_live_vm_status
+      changed_when: false
+      when: gpu_action in ['attach', 'detach']
+
+    - name: Refuse live VM mutation
+      ansible.builtin.assert:
+        that: [gpu_live_vm_status.stdout is search('status: stopped')]
+        fail_msg: "VM {{ gpu_request.vmid }} is not stopped."
+      when: gpu_action in ['attach', 'detach']
+
+    - name: Revalidate cross-VM GPU assignment conflicts
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        grep -R --exclude={{ ((gpu_request.vmid | string) + '.conf') | quote }}
+        -E '^hostpci[0-9]+:.*({{ gpu_request.gpu_slot | regex_escape }}|{{ gpu_request.gpu_qm_slot | regex_escape }})([,.]|$)'
+        {{ gpu_pve_root | quote }}/qemu-server 2>/dev/null
+      args:
+        executable: /bin/bash
+      register: gpu_live_vm_conflicts
+      changed_when: false
+      failed_when: gpu_live_vm_conflicts.rc not in [0, 1]
+      when: gpu_action == 'attach'
+
+    - name: Refuse a newly conflicting VM assignment
+      ansible.builtin.assert:
+        that: [gpu_live_vm_conflicts.stdout | trim == '']
+        fail_msg: "Another VM began referencing the selected GPU after runner preflight."
+      when: gpu_action == 'attach'
+
+    - name: Ensure the root-only feature state directory exists
+      ansible.builtin.file:
+        path: "{{ gpu_state_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: not gpu_dry_run
+
+    - name: Initialize result and transaction facts
+      ansible.builtin.set_fact:
+        gpu_result_state: "pending"
+        gpu_result_message: "GPU action has not completed"
+        gpu_result_changes: []
+        gpu_result_warnings: []
+        gpu_rollback_complete: true
+
+  tasks:
+    - name: Execute host preparation
+      when: gpu_action == 'prepare'
+      block:
+        - name: Inspect existing managed host state
+          ansible.builtin.stat:
+            path: "{{ gpu_host_state_path }}"
+          register: gpu_existing_host_state_stat
+
+        - name: Read existing managed host state
+          ansible.builtin.slurp:
+            src: "{{ gpu_host_state_path }}"
+          register: gpu_existing_host_state_raw
+          when: gpu_existing_host_state_stat.stat.exists
+
+        - name: Identify a compatible existing host preparation
+          ansible.builtin.set_fact:
+            gpu_existing_host_state_text: >-
+              {{ (gpu_existing_host_state_raw.content | b64decode) if
+                 (gpu_existing_host_state_stat.stat.exists | bool) else '' }}
+            gpu_existing_host_is_v2: >-
+              {{ (gpu_existing_host_state_raw.content | b64decode | trim).startswith('{') }}
+            gpu_existing_host_state: >-
+              {{ (gpu_existing_host_state_raw.content | b64decode | from_json)
+                 if (gpu_existing_host_state_raw.content | b64decode | trim).startswith('{')
+                 else gpu_request.legacy.host }}
+            gpu_existing_host_same: >-
+              {{
+                (gpu_existing_host_state_stat.stat.exists | bool) and
+                (
+                  (
+                    ((gpu_existing_host_state_raw.content | b64decode | trim).startswith('{')) and
+                    (((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_slot | default('')) == gpu_request.gpu_slot) and
+                    ((((gpu_existing_host_state_raw.content | b64decode | from_json).format | default(2) | int) < 3) or
+                      (((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_bdf | default('')) == gpu_request.gpu_bdf)) and
+                    ((((gpu_existing_host_state_raw.content | b64decode | from_json).gpu_functions | default([]) | sort) ==
+                      (gpu_request.functions | map(attribute='bdf') | list | sort))) and
+                    (((gpu_existing_host_state_raw.content | b64decode | from_json).release | default('')) == gpu_release_contract.lane) and
+                    (((gpu_existing_host_state_raw.content | b64decode | from_json).binding_strategy | default('')) == gpu_request.requested_features.binding) and
+                    (((gpu_existing_host_state_raw.content | b64decode | from_json).blacklist_vendor | default('')) ==
+                      (('amd' if (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) == '0x1002'
+                        else 'nvidia') if gpu_request.requested_features.blacklist_host_drivers | bool else '')) and
+                    ((((gpu_existing_host_state_raw.content | b64decode | from_json).iommu_pt | default(false)) | bool) == (gpu_request.requested_features.iommu_pt | bool)) and
+                    (((gpu_existing_host_state_raw.content | b64decode | from_json).bootloader | default('')) == gpu_request.detected.bootloader)
+                  ) or
+                  (
+                    not ((gpu_existing_host_state_raw.content | b64decode | trim).startswith('{')) and
+                    ((gpu_request.legacy.host.gpu_slot | default('')) == gpu_request.gpu_slot) and
+                    ((gpu_request.legacy.host.pve_major | default('')) == gpu_release_contract.pve_major) and
+                    ((gpu_request.legacy.host.blacklist_host_drivers | default(false) | bool) == (gpu_request.requested_features.blacklist_host_drivers | bool))
+                  )
+                )
+              }}
+          when: gpu_existing_host_state_stat.stat.exists
+
+        - name: Reject conflicting host ownership state
+          ansible.builtin.assert:
+            that:
+              - not (gpu_existing_host_state_stat.stat.exists | bool) or (gpu_existing_host_same | default(false) | bool)
+              - not (gpu_existing_host_state_stat.stat.exists | bool) or not (gpu_existing_host_is_v2 | default(false) | bool) or gpu_existing_host_state.applied_files is defined
+            fail_msg: "Managed host state belongs to another GPU or binding strategy; unprepare it first."
+
+        - name: Inspect an existing structured host preparation for drift
+          ansible.builtin.stat:
+            path: "{{ item.path }}"
+            checksum_algorithm: sha256
+          loop: "{{ gpu_existing_host_state.applied_files | default([]) }}"
+          register: gpu_existing_host_live_stats
+          when:
+            - gpu_existing_host_state_stat.stat.exists
+            - gpu_existing_host_is_v2 | default(false) | bool
+
+        - name: Reject drift in an existing host preparation
+          ansible.builtin.assert:
+            that:
+              - (item.stat.exists | bool) == (item.item.existed | bool)
+              - not (item.item.existed | bool) or item.stat.checksum == item.item.checksum
+            fail_msg: "Existing managed host path drifted: {{ item.item.path }}"
+          loop: "{{ gpu_existing_host_live_stats.results | default([]) }}"
+          when:
+            - gpu_existing_host_state_stat.stat.exists
+            - gpu_existing_host_is_v2 | default(false) | bool
+
+        - name: Report idempotent host preparation
+          ansible.builtin.set_fact:
+            gpu_result_state: "already-prepared"
+            gpu_result_message: "Host preparation already matches {{ gpu_request.gpu_slot }}"
+          when: gpu_existing_host_state_stat.stat.exists
+
+        - name: Collect host preparation facts
+          when: not (gpu_existing_host_state_stat.stat.exists | bool)
+          block:
+            - name: Read CPU vendor
+              ansible.builtin.command:
+                argv: [awk, "-F:", "/vendor_id/ {gsub(/[[:space:]]/, \"\", $2); print $2; exit}", "{{ gpu_proc_root }}/cpuinfo"]
+              register: gpu_cpu_vendor_command
+              changed_when: false
+
+            - name: Read active kernel command line
+              ansible.builtin.slurp:
+                src: "{{ gpu_proc_root }}/cmdline"
+              register: gpu_active_cmdline_raw
+
+            - name: Resolve required kernel tokens and selected GPU vendor
+              ansible.builtin.set_fact:
+                gpu_cpu_vendor: "{{ gpu_cpu_vendor_command.stdout | trim }}"
+                gpu_active_cmdline: "{{ gpu_active_cmdline_raw.content | b64decode | trim }}"
+                gpu_selected_vendor: >-
+                  {{ 'amd' if (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) == '0x1002'
+                     else ('nvidia' if (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) == '0x10de'
+                     else 'unsupported') }}
+                gpu_kernel_tokens: []
+
+            - name: Add the Intel IOMMU fallback only when required
+              ansible.builtin.set_fact:
+                gpu_kernel_tokens: "{{ gpu_kernel_tokens + ['intel_iommu=on'] }}"
+              when:
+                - gpu_cpu_vendor == 'GenuineIntel'
+                - not (gpu_request.detected.iommu_ready | bool)
+                - "'intel_iommu=on' not in gpu_active_cmdline"
+
+            - name: Add optional passthrough-domain mode
+              ansible.builtin.set_fact:
+                gpu_kernel_tokens: "{{ gpu_kernel_tokens + ['iommu=pt'] }}"
+              when:
+                - gpu_request.requested_features.iommu_pt | bool
+                - "'iommu=pt' not in gpu_active_cmdline"
+
+            - name: Reject invalid AMD kernel-parameter synthesis
+              ansible.builtin.assert:
+                that:
+                  - gpu_cpu_vendor in ['GenuineIntel', 'AuthenticAMD']
+                  - "'amd_iommu=on' not in gpu_kernel_tokens"
+                  - gpu_selected_vendor in ['amd', 'nvidia']
+
+            - name: Detect collateral display GPUs before vendor blacklisting
+              ansible.builtin.shell: |
+                set -eu
+                selected=' {% for function in gpu_request.functions %}{{ function.bdf }} {% endfor %}'
+                selected_vendor={{ (gpu_request.functions | selectattr('bdf', 'equalto', gpu_request.gpu_bdf) | map(attribute='vendor_id') | first) | quote }}
+                for device_path in {{ gpu_sysfs_root | quote }}/bus/pci/devices/*; do
+                  test -e "${device_path}/class" || continue
+                  bdf="${device_path##*/}"
+                  case "${selected}" in *" ${bdf} "*) continue ;; esac
+                  class="$(cat "${device_path}/class")"
+                  case "${class}" in 0x03*) ;; *) continue ;; esac
+                  vendor="$(cat "${device_path}/vendor")"
+                  test "${vendor}" != "${selected_vendor}" || printf '%s\n' "${bdf}"
+                done
+              args:
+                executable: /bin/bash
+              register: gpu_blacklist_collateral
+              changed_when: false
+              when: gpu_request.requested_features.blacklist_host_drivers | bool
+
+            - name: Refuse a vendor blacklist with collateral display loss
+              ansible.builtin.assert:
+                that: [gpu_blacklist_collateral.stdout | trim == '']
+                fail_msg: >-
+                  Refusing {{ gpu_selected_vendor }} driver blacklist because another display GPU
+                  uses the same vendor family: {{ gpu_blacklist_collateral.stdout_lines | join(', ') }}
+              when: gpu_request.requested_features.blacklist_host_drivers | bool
+
+            - name: Initialize the bounded host transaction path set
+              ansible.builtin.set_fact:
+                gpu_transaction_files: []
+
+            - name: Add exact-BDF early-binding paths to the transaction
+              ansible.builtin.set_fact:
+                gpu_transaction_files: >-
+                  {{ gpu_transaction_files + [
+                    {'key': 'modules', 'path': gpu_modules_path},
+                    {'key': 'initramfs_hook', 'path': gpu_initramfs_hook_path},
+                    {'key': 'initramfs_script', 'path': gpu_initramfs_script_path}
+                  ] }}
+              when: gpu_request.requested_features.binding == 'early'
+
+            - name: Add vendor-blacklist path to the transaction
+              ansible.builtin.set_fact:
+                gpu_transaction_files: >-
+                  {{ gpu_transaction_files + [{'key': 'blacklist', 'path': gpu_blacklist_path}] }}
+              when: gpu_request.requested_features.blacklist_host_drivers | bool
+
+            - name: Add active boot-configuration path to the transaction
+              ansible.builtin.set_fact:
+                gpu_transaction_files: >-
+                  {{ gpu_transaction_files + [
+                    {'key': ('grub_dropin' if gpu_request.detected.bootloader == 'grub' else 'kernel_cmdline'),
+                     'path': (gpu_grub_dropin_path if gpu_request.detected.bootloader == 'grub' else gpu_kernel_cmdline_path)}
+                  ] }}
+              when: gpu_kernel_tokens | length > 0
+
+            - name: Detect optional legacy vfio_virqfd module
+              ansible.builtin.command:
+                argv: [modinfo, vfio_virqfd]
+              register: gpu_vfio_virqfd_probe
+              changed_when: false
+              failed_when: false
+              when: gpu_release_contract.probe_vfio_virqfd | bool
+
+            - name: Create transaction identifier
+              ansible.builtin.command:
+                argv: [date, +%Y%m%dT%H%M%S-%N]
+              register: gpu_transaction_id_command
+              changed_when: false
+
+            - name: Resolve transaction paths
+              ansible.builtin.set_fact:
+                gpu_transaction_id: "{{ gpu_transaction_id_command.stdout | trim }}"
+                gpu_transaction_dir: "{{ gpu_state_root }}/transactions/{{ gpu_transaction_id_command.stdout | trim }}"
+                gpu_original_files: []
+                gpu_applied_files: []
+
+            - name: Create transaction backup directory
+              ansible.builtin.file:
+                path: "{{ gpu_transaction_dir }}"
+                state: directory
+                owner: root
+                group: root
+                mode: "0700"
+              when: not gpu_dry_run
+
+            - name: Inspect every managed host path
+              ansible.builtin.stat:
+                path: "{{ item.path }}"
+                checksum_algorithm: sha256
+              loop: "{{ gpu_transaction_files }}"
+              register: gpu_managed_file_stats
+
+            - name: Refuse to overwrite stale feature paths without ownership state
+              ansible.builtin.assert:
+                that:
+                  - item.item.key == 'kernel_cmdline' or not (item.stat.exists | bool)
+                fail_msg: >-
+                  Refusing to overwrite {{ item.item.path }} without matching host ownership state.
+              loop: "{{ gpu_managed_file_stats.results }}"
+
+            - name: Build original-file transaction manifest
+              ansible.builtin.set_fact:
+                gpu_original_files: >-
+                  {{ gpu_original_files + [{
+                    'key': item.item.key,
+                    'path': item.item.path,
+                    'existed': item.stat.exists | bool,
+                    'checksum': item.stat.checksum | default(''),
+                    'backup': gpu_transaction_dir + '/' + item.item.key
+                  }] }}
+              loop: "{{ gpu_managed_file_stats.results }}"
+
+            - name: Back up existing host files exactly
+              ansible.builtin.copy:
+                src: "{{ item.path }}"
+                dest: "{{ item.backup }}"
+                remote_src: true
+                owner: root
+                group: root
+                mode: preserve
+              loop: "{{ gpu_original_files }}"
+              when:
+                - not gpu_dry_run
+                - item.existed | bool
+
+            - name: Apply host preparation transaction
+              when: not gpu_dry_run
+              block:
+                - name: Install release-capable VFIO module list for early binding
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_modules_path }}"
+                    owner: root
+                    group: root
+                    mode: "0644"
+                    content: |
+                      # Managed by setup/vm/gpu.sh (schema 2)
+                      vfio
+                      vfio_iommu_type1
+                      vfio_pci
+                      {% if gpu_vfio_virqfd_probe is defined and gpu_vfio_virqfd_probe.rc == 0 %}vfio_virqfd
+                      {% endif %}
+                  when: gpu_request.requested_features.binding == 'early'
+
+                - name: Install exact-BDF initramfs hook
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_initramfs_hook_path }}"
+                    owner: root
+                    group: root
+                    mode: "0755"
+                    content: |
+                      #!/bin/sh
+                      # Managed by setup/vm/gpu.sh (schema 2)
+                      set -eu
+                      PREREQ=""
+                      prereqs() { echo "${PREREQ}"; }
+                      case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+                      . /usr/share/initramfs-tools/hook-functions
+                      manual_add_modules vfio
+                      manual_add_modules vfio_iommu_type1
+                      manual_add_modules vfio_pci
+                      {% if gpu_vfio_virqfd_probe is defined and gpu_vfio_virqfd_probe.rc == 0 %}manual_add_modules vfio_virqfd
+                      {% endif %}
+                  when: gpu_request.requested_features.binding == 'early'
+
+                - name: Install exact-BDF initramfs binding script
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_initramfs_script_path }}"
+                    owner: root
+                    group: root
+                    mode: "0755"
+                    content: |
+                      #!/bin/sh
+                      # Managed by setup/vm/gpu.sh (schema 2)
+                      set -eu
+                      PREREQ=""
+                      prereqs() { echo "${PREREQ}"; }
+                      case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+                      modprobe vfio-pci
+                      {% for function in gpu_request.functions %}
+                      if [ -e /sys/bus/pci/devices/{{ function.bdf }}/driver_override ]; then
+                        echo vfio-pci > /sys/bus/pci/devices/{{ function.bdf }}/driver_override
+                        if [ -L /sys/bus/pci/devices/{{ function.bdf }}/driver ]; then
+                          echo {{ function.bdf }} > /sys/bus/pci/devices/{{ function.bdf }}/driver/unbind
+                        fi
+                        echo {{ function.bdf }} > /sys/bus/pci/drivers_probe
+                      fi
+                      {% endfor %}
+                  when: gpu_request.requested_features.binding == 'early'
+
+                - name: Install vendor-specific host-driver blacklist
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_blacklist_path }}"
+                    owner: root
+                    group: root
+                    mode: "0644"
+                    content: |
+                      # Managed by setup/vm/gpu.sh (schema 2)
+                      {% if gpu_selected_vendor == 'amd' %}blacklist amdgpu
+                      blacklist radeon
+                      {% else %}blacklist nouveau
+                      blacklist nvidia
+                      blacklist nvidia_drm
+                      blacklist nvidia_modeset
+                      blacklist nvidia_uvm
+                      blacklist nvidiafb
+                      {% endif %}
+                  when: gpu_request.requested_features.blacklist_host_drivers | bool
+
+                - name: Install managed GRUB kernel-token drop-in
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_grub_dropin_path }}"
+                    owner: root
+                    group: root
+                    mode: "0644"
+                    content: |
+                      # Managed by setup/vm/gpu.sh (schema 2)
+                      GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT:-} {{ gpu_kernel_tokens | join(' ') }}"
+                  when:
+                    - gpu_request.detected.bootloader == 'grub'
+                    - gpu_kernel_tokens | length > 0
+
+                - name: Read systemd-boot kernel command line
+                  ansible.builtin.slurp:
+                    src: "{{ gpu_kernel_cmdline_path }}"
+                  register: gpu_saved_kernel_cmdline
+                  when:
+                    - gpu_request.detected.bootloader in ['proxmox-boot-tool', 'pve-efiboot-tool']
+                    - gpu_kernel_tokens | length > 0
+
+                - name: Initialize updated systemd-boot command line
+                  ansible.builtin.set_fact:
+                    gpu_updated_kernel_cmdline: "{{ gpu_saved_kernel_cmdline.content | b64decode | trim }}"
+                  when: gpu_saved_kernel_cmdline is defined and gpu_saved_kernel_cmdline.content is defined
+
+                - name: Append unique systemd-boot kernel tokens
+                  ansible.builtin.set_fact:
+                    gpu_updated_kernel_cmdline: >-
+                      {{ gpu_updated_kernel_cmdline if (' ' + item + ' ') in (' ' + gpu_updated_kernel_cmdline + ' ')
+                         else (gpu_updated_kernel_cmdline + ' ' + item) | trim }}
+                  loop: "{{ gpu_kernel_tokens }}"
+                  when: gpu_updated_kernel_cmdline is defined
+
+                - name: Write updated systemd-boot command line
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_kernel_cmdline_path }}"
+                    owner: root
+                    group: root
+                    mode: "0644"
+                    content: "{{ gpu_updated_kernel_cmdline }}\n"
+                  when: gpu_updated_kernel_cmdline is defined
+
+                - name: Refresh GRUB configuration
+                  ansible.builtin.command:
+                    argv: [update-grub]
+                  when:
+                    - gpu_request.detected.bootloader == 'grub'
+                    - gpu_kernel_tokens | length > 0
+
+                - name: Refresh Proxmox boot entries
+                  ansible.builtin.command:
+                    argv:
+                      - "{{ gpu_request.detected.bootloader }}"
+                      - refresh
+                  when:
+                    - gpu_request.detected.bootloader in ['proxmox-boot-tool', 'pve-efiboot-tool']
+                    - gpu_kernel_tokens | length > 0
+
+                - name: Rebuild initramfs after host preparation
+                  ansible.builtin.command:
+                    argv: [update-initramfs, -u, -k, all]
+                  when: >-
+                    gpu_request.requested_features.binding == 'early' or
+                    (gpu_request.requested_features.blacklist_host_drivers | bool)
+
+                - name: Inspect committed host transaction paths
+                  ansible.builtin.stat:
+                    path: "{{ item.path }}"
+                    checksum_algorithm: sha256
+                  loop: "{{ gpu_transaction_files }}"
+                  register: gpu_applied_file_stats
+
+                - name: Build committed-file drift manifest
+                  ansible.builtin.set_fact:
+                    gpu_applied_files: >-
+                      {{ gpu_applied_files + [{
+                        'key': item.item.key,
+                        'path': item.item.path,
+                        'existed': item.stat.exists | bool,
+                        'checksum': item.stat.checksum | default('')
+                      }] }}
+                  loop: "{{ gpu_applied_file_stats.results }}"
+
+                - name: Persist schema-v3 host ownership and rollback state
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_host_state_path }}"
+                    owner: root
+                    group: root
+                    mode: "0600"
+                    content: >-
+                      {{ {
+                        'format': 3,
+                        'gpu_bdf': gpu_request.gpu_bdf,
+                        'gpu_slot': gpu_request.gpu_slot,
+                        'gpu_functions': gpu_request.functions | map(attribute='bdf') | list,
+                        'gpu_function_records': gpu_request.functions,
+                        'release': gpu_release_contract.lane,
+                        'binding_strategy': gpu_request.requested_features.binding,
+                        'blacklist_vendor': (gpu_selected_vendor if gpu_request.requested_features.blacklist_host_drivers | bool else ''),
+                        'iommu_pt': gpu_request.requested_features.iommu_pt | bool,
+                        'bootloader': gpu_request.detected.bootloader,
+                        'transaction_dir': gpu_transaction_dir,
+                        'original_files': gpu_original_files,
+                        'applied_files': gpu_applied_files
+                      } | to_nice_json }}
+
+              rescue:
+                - name: Restore pre-transaction host files
+                  ansible.builtin.copy:
+                    src: "{{ item.backup }}"
+                    dest: "{{ item.path }}"
+                    remote_src: true
+                    mode: preserve
+                  loop: "{{ gpu_original_files }}"
+                  when: item.existed | bool
+                  register: gpu_host_restore_results
+                  failed_when: false
+
+                - name: Remove files absent before the failed transaction
+                  ansible.builtin.file:
+                    path: "{{ item.path }}"
+                    state: absent
+                  loop: "{{ gpu_original_files }}"
+                  when: not (item.existed | bool)
+                  register: gpu_host_remove_results
+                  failed_when: false
+
+                - name: Refresh GRUB after failed host preparation
+                  ansible.builtin.command:
+                    argv: [update-grub]
+                  register: gpu_host_rollback_grub
+                  changed_when: false
+                  failed_when: false
+                  when: gpu_request.detected.bootloader == 'grub'
+
+                - name: Refresh Proxmox boot entries after failed host preparation
+                  ansible.builtin.command:
+                    argv: ["{{ gpu_request.detected.bootloader }}", refresh]
+                  register: gpu_host_rollback_boot
+                  changed_when: false
+                  failed_when: false
+                  when: gpu_request.detected.bootloader in ['proxmox-boot-tool', 'pve-efiboot-tool']
+
+                - name: Rebuild initramfs after failed host preparation
+                  ansible.builtin.command:
+                    argv: [update-initramfs, -u, -k, all]
+                  register: gpu_host_rollback_initramfs
+                  changed_when: false
+                  failed_when: false
+
+                - name: Resolve host rollback outcome
+                  ansible.builtin.set_fact:
+                    gpu_host_rollback_complete: >-
+                      {{
+                        (gpu_host_restore_results.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0) and
+                        (gpu_host_remove_results.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0) and
+                        (gpu_host_rollback_grub.rc | default(0) == 0) and
+                        (gpu_host_rollback_boot.rc | default(0) == 0) and
+                        (gpu_host_rollback_initramfs.rc | default(1) == 0)
+                      }}
+
+                - name: Write failed-but-rolled-back result
+                  ansible.builtin.copy:
+                    dest: "{{ gpu_result_path }}"
+                    mode: "0600"
+                    content: >-
+                      {{ {'schema_version': 3, 'action': gpu_action,
+                          'release': {'lane': gpu_release_contract.lane},
+                          'result': {'state': ('failed-rolled-back' if gpu_host_rollback_complete | bool else 'failed-rollback-incomplete'),
+                                     'rollback_complete': gpu_host_rollback_complete | bool,
+                                     'message': ('Host preparation failed and original files were restored'
+                                       if gpu_host_rollback_complete | bool
+                                       else 'Host preparation failed and rollback requires operator inspection')}} | to_nice_json }}
+
+                - name: Fail after host rollback
+                  ansible.builtin.fail:
+                    msg: >-
+                      Host preparation failed; rollback_complete={{ gpu_host_rollback_complete | bool }}.
+                      Inspect {{ gpu_transaction_dir }} before retrying when false.
+
+            - name: Report host preparation dry run
+              ansible.builtin.set_fact:
+                gpu_result_state: "dry-run"
+                gpu_result_message: "Host preparation plan validated; no files were changed"
+              when: gpu_dry_run
+
+            - name: Report completed host preparation
+              ansible.builtin.set_fact:
+                gpu_result_state: "prepared"
+                gpu_result_message: >-
+                  Host preparation completed for {{ gpu_request.gpu_slot }};
+                  reboot_required={{ (gpu_kernel_tokens | length > 0) or
+                  gpu_request.requested_features.binding == 'early' or
+                  (gpu_request.requested_features.blacklist_host_drivers | bool) }}
+              when: not gpu_dry_run
+
+    - name: Execute VM attachment
+      when: gpu_action == 'attach'
+      block:
+        - name: Inspect existing VM ownership state before attach
+          ansible.builtin.stat:
+            path: "{{ gpu_vm_state_path }}"
+          register: gpu_existing_vm_state_stat
+
+        - name: Read existing VM ownership state before attach
+          ansible.builtin.slurp:
+            src: "{{ gpu_vm_state_path }}"
+          register: gpu_existing_vm_state_raw
+          when: gpu_existing_vm_state_stat.stat.exists
+
+        - name: Read target VM configuration before attach
+          ansible.builtin.command:
+            argv: [qm, config, "{{ gpu_request.vmid | string }}"]
+          register: gpu_vm_config_before_attach
+          changed_when: false
+
+        - name: Revalidate target VM eligibility before attach
+          ansible.builtin.assert:
+            that:
+              - gpu_vm_config_before_attach.stdout is search('(?m)^machine: (pc-)?q35([,-]|$)')
+              - gpu_vm_config_before_attach.stdout is not search('(?m)^template: 1$')
+              - gpu_vm_config_before_attach.stdout is not search('(?m)^lock:')
+              - gpu_request.profile == 'linux-compute' or gpu_vm_config_before_attach.stdout is search('(?m)^bios: ovmf$')
+              - gpu_request.profile == 'linux-compute' or gpu_vm_config_before_attach.stdout is search('(?m)^efidisk0:')
+            fail_msg: "Target VM eligibility changed after runner preflight."
+
+        - name: Revalidate target VM HA ownership before attach
+          ansible.builtin.command:
+            argv: [ha-manager, config]
+          register: gpu_live_ha_config
+          changed_when: false
+
+        - name: Refuse an HA-managed target VM
+          ansible.builtin.assert:
+            that:
+              - gpu_live_ha_config.stdout is not search('(?m)^[ \\t]*vm:' + (gpu_request.vmid | string) + '([ \\t]|$)')
+            fail_msg: "VM {{ gpu_request.vmid }} became HA-managed after runner preflight."
+
+        - name: Resolve requested whole-slot hostpci value
+          ansible.builtin.set_fact:
+            gpu_requested_hostpci_value: >-
+              {{ gpu_request.gpu_qm_slot + ',pcie=1' +
+                 (',x-vga=1' if gpu_request.requested_features.primary_gpu | bool else '') }}
+
+        - name: Resolve existing VM ownership state
+          ansible.builtin.set_fact:
+            gpu_existing_vm_state: >-
+              {{ (gpu_existing_vm_state_raw.content | b64decode | from_json)
+                 if ((gpu_existing_vm_state_stat.stat.exists | bool) and
+                     (gpu_existing_vm_state_raw.content | b64decode | trim).startswith('{'))
+                 else (gpu_request.legacy.vm if gpu_existing_vm_state_stat.stat.exists | bool else {}) }}
+          when: gpu_existing_vm_state_stat.stat.exists
+
+        - name: Identify an idempotent existing attachment
+          ansible.builtin.set_fact:
+            gpu_existing_vm_same: >-
+              {{
+                (gpu_existing_vm_state.vmid | default(gpu_request.vmid) | int) == (gpu_request.vmid | int) and
+                (gpu_existing_vm_state.gpu_slot | default('')) == gpu_request.gpu_slot and
+                (((gpu_existing_vm_state.format | default(2) | int) < 3) or
+                  ((gpu_existing_vm_state.gpu_bdf | default('')) == gpu_request.gpu_bdf)) and
+                ((gpu_existing_vm_state.primary_gpu | default(gpu_request.requested_features.primary_gpu) | bool) == (gpu_request.requested_features.primary_gpu | bool)) and
+                ((gpu_existing_vm_state.onboot_managed | default(gpu_request.requested_features.disable_onboot) | bool) == (gpu_request.requested_features.disable_onboot | bool)) and
+                (
+                  (
+                    gpu_existing_vm_state.hostpci_value is defined and
+                    gpu_existing_vm_state.hostpci_value == gpu_requested_hostpci_value and
+                    gpu_vm_config_before_attach.stdout is search(
+                      '(?m)^hostpci' + (gpu_existing_vm_state.hostpci_index | string) + ': ' +
+                      (gpu_existing_vm_state.hostpci_value | regex_escape) + '$'
+                    )
+                  ) or
+                  (
+                    gpu_existing_vm_state.hostpci_value is not defined and
+                    gpu_vm_config_before_attach.stdout is search(
+                      '(?m)^hostpci' + (gpu_existing_vm_state.hostpci_index | string) + ':.*' + gpu_request.gpu_qm_slot
+                    )
+                  )
+                )
+              }}
+          when: gpu_existing_vm_state_stat.stat.exists
+
+        - name: Reject conflicting feature-owned VM state
+          ansible.builtin.assert:
+            that:
+              - not (gpu_existing_vm_state_stat.stat.exists | bool) or (gpu_existing_vm_same | default(false) | bool)
+            fail_msg: "Existing VM ownership state conflicts with the requested attachment."
+
+        - name: Report idempotent VM attachment
+          ansible.builtin.set_fact:
+            gpu_result_state: "already-attached"
+            gpu_result_message: "VM {{ gpu_request.vmid }} already owns {{ gpu_request.gpu_slot }} through feature state"
+          when: gpu_existing_vm_state_stat.stat.exists
+
+        - name: Revalidate free hostpci slot
+          ansible.builtin.assert:
+            that:
+              - gpu_request.vmid is defined
+              - gpu_request.hostpci_index is not none
+              - gpu_vm_config_before_attach.stdout is not search('(?m)^hostpci' + (gpu_request.hostpci_index | string) + ':')
+            fail_msg: "Requested hostpci slot is no longer free."
+          when: not (gpu_existing_vm_state_stat.stat.exists | bool)
+
+        - name: Capture exact mutable VM fields
+          ansible.builtin.set_fact:
+            gpu_original_vga: "{{ (gpu_vm_config_before_attach.stdout | regex_findall('(?m)^vga: (.+)$') | first) | default('__absent__') }}"
+            gpu_original_onboot: "{{ (gpu_vm_config_before_attach.stdout | regex_findall('(?m)^onboot: (.+)$') | first) | default('__absent__') }}"
+            gpu_hostpci_value: "{{ gpu_requested_hostpci_value }}"
+          when: not (gpu_existing_vm_state_stat.stat.exists | bool)
+
+        - name: Report VM attachment dry run
+          ansible.builtin.set_fact:
+            gpu_result_state: "dry-run"
+            gpu_result_message: >-
+              Would attach {{ gpu_request.gpu_slot }} to VM {{ gpu_request.vmid }}
+              as hostpci{{ gpu_request.hostpci_index }}
+          when:
+            - gpu_dry_run
+            - not (gpu_existing_vm_state_stat.stat.exists | bool)
+
+        - name: Apply VM attachment transaction
+          when:
+            - not gpu_dry_run
+            - not (gpu_existing_vm_state_stat.stat.exists | bool)
+          block:
+            - name: Add complete GPU slot to target VM
+              ansible.builtin.command:
+                argv:
+                  - qm
+                  - set
+                  - "{{ gpu_request.vmid | string }}"
+                  - "-hostpci{{ gpu_request.hostpci_index }}"
+                  - "{{ gpu_hostpci_value }}"
+              register: gpu_attach_command
+
+            - name: Disable virtual display for explicitly selected primary GPU
+              ansible.builtin.command:
+                argv: [qm, set, "{{ gpu_request.vmid | string }}", -vga, none]
+              when: gpu_request.requested_features.primary_gpu | bool
+
+            - name: Disable VM autostart during commissioning
+              ansible.builtin.command:
+                argv: [qm, set, "{{ gpu_request.vmid | string }}", -onboot, "0"]
+              when: gpu_request.requested_features.disable_onboot | bool
+
+            - name: Persist schema-v3 VM rollback state
+              ansible.builtin.copy:
+                dest: "{{ gpu_vm_state_path }}"
+                owner: root
+                group: root
+                mode: "0600"
+                content: >-
+                  {{ {
+                    'format': 3,
+                    'vmid': gpu_request.vmid,
+                    'gpu_bdf': gpu_request.gpu_bdf,
+                    'gpu_slot': gpu_request.gpu_slot,
+                    'gpu_functions': gpu_request.functions | map(attribute='bdf') | list,
+                    'gpu_function_records': gpu_request.functions,
+                    'hostpci_index': gpu_request.hostpci_index,
+                    'hostpci_value': gpu_hostpci_value,
+                    'original_vga': gpu_original_vga,
+                    'original_onboot': gpu_original_onboot,
+                    'primary_gpu': gpu_request.requested_features.primary_gpu | bool,
+                    'onboot_managed': gpu_request.requested_features.disable_onboot | bool
+                  } | to_nice_json }}
+
+            - name: Start VM only when explicitly requested
+              ansible.builtin.command:
+                argv: [qm, start, "{{ gpu_request.vmid | string }}"]
+              when: gpu_request.requested_features.start_vm | bool
+
+          rescue:
+            - name: Remove partially attached hostpci entry
+              ansible.builtin.command:
+                argv: [qm, set, "{{ gpu_request.vmid | string }}", -delete, "hostpci{{ gpu_request.hostpci_index }}"]
+              failed_when: false
+              when: gpu_attach_command.rc | default(1) == 0
+
+            - name: Restore original virtual display value
+              ansible.builtin.command:
+                argv: >-
+                  {{ [ 'qm', 'set', gpu_request.vmid | string, '-delete', 'vga' ]
+                     if gpu_original_vga == '__absent__'
+                     else [ 'qm', 'set', gpu_request.vmid | string, '-vga', gpu_original_vga ] }}
+              when:
+                - gpu_attach_command.rc | default(1) == 0
+                - gpu_request.requested_features.primary_gpu | bool
+              failed_when: false
+
+            - name: Restore original onboot value
+              ansible.builtin.command:
+                argv: >-
+                  {{ [ 'qm', 'set', gpu_request.vmid | string, '-delete', 'onboot' ]
+                     if gpu_original_onboot == '__absent__'
+                     else [ 'qm', 'set', gpu_request.vmid | string, '-onboot', gpu_original_onboot ] }}
+              when: gpu_request.requested_features.disable_onboot | bool
+              failed_when: false
+
+            - name: Remove partial VM ownership state
+              ansible.builtin.file:
+                path: "{{ gpu_vm_state_path }}"
+                state: absent
+
+            - name: Write attachment rollback result
+              ansible.builtin.copy:
+                dest: "{{ gpu_result_path }}"
+                mode: "0600"
+                content: >-
+                  {{ {'schema_version': 3, 'action': gpu_action,
+                      'release': {'lane': gpu_release_contract.lane},
+                      'result': {'state': 'failed-rolled-back', 'rollback_complete': true,
+                                 'message': 'VM attachment failed and the original configuration was restored'}} | to_nice_json }}
+
+            - name: Fail after VM attachment rollback
+              ansible.builtin.fail:
+                msg: "VM attachment failed and was rolled back."
+
+        - name: Report completed VM attachment
+          ansible.builtin.set_fact:
+            gpu_result_state: "attached"
+            gpu_result_message: >-
+              Attached {{ gpu_request.gpu_slot }} to VM {{ gpu_request.vmid }}
+              as hostpci{{ gpu_request.hostpci_index }}
+          when:
+            - not gpu_dry_run
+            - not (gpu_existing_vm_state_stat.stat.exists | bool)
+
+    - name: Execute VM detachment
+      when: gpu_action == 'detach'
+      block:
+        - name: Inspect VM ownership state
+          ansible.builtin.stat:
+            path: "{{ gpu_vm_state_path }}"
+          register: gpu_vm_state_stat
+
+        - name: Require feature-owned VM state
+          ansible.builtin.assert:
+            that: [gpu_vm_state_stat.stat.exists]
+            fail_msg: "No feature-owned VM attachment state exists."
+
+        - name: Read VM ownership state
+          ansible.builtin.slurp:
+            src: "{{ gpu_vm_state_path }}"
+          register: gpu_vm_state_raw
+
+        - name: Resolve current or legacy VM state
+          ansible.builtin.set_fact:
+            gpu_vm_state: >-
+              {{ (gpu_vm_state_raw.content | b64decode | from_json)
+                 if (gpu_vm_state_raw.content | b64decode | trim).startswith('{')
+                 else gpu_request.legacy.vm }}
+
+        - name: Read VM configuration before detach
+          ansible.builtin.command:
+            argv: [qm, config, "{{ gpu_request.vmid | string }}"]
+          register: gpu_vm_config_before_detach
+          changed_when: false
+
+        - name: Capture live feature-owned hostpci value before detach
+          ansible.builtin.set_fact:
+            gpu_live_hostpci_value: >-
+              {{ (gpu_vm_config_before_detach.stdout |
+                  regex_findall('(?m)^hostpci' + (gpu_vm_state.hostpci_index | string) + ': (.+)$') |
+                  first) | default('') }}
+
+        - name: Revalidate owned hostpci attachment
+          ansible.builtin.assert:
+            that:
+              - (gpu_vm_state.vmid | default(gpu_request.vmid) | int) == (gpu_request.vmid | int)
+              - gpu_vm_state.gpu_slot == gpu_request.gpu_slot
+              - gpu_vm_config_before_detach.stdout is search('(?m)^hostpci' + (gpu_vm_state.hostpci_index | string) + ':.*' + gpu_request.gpu_qm_slot)
+              - gpu_vm_state.hostpci_value is not defined or gpu_live_hostpci_value == gpu_vm_state.hostpci_value
+              - not (gpu_vm_state.primary_gpu | default(true) | bool) or gpu_vm_config_before_detach.stdout is search('(?m)^vga: none$')
+              - not (gpu_vm_state.onboot_managed | default(false) | bool) or gpu_vm_config_before_detach.stdout is search('(?m)^onboot: 0$')
+            fail_msg: "Current VM configuration no longer matches feature-owned state."
+
+        - name: Report VM detachment dry run
+          ansible.builtin.set_fact:
+            gpu_result_state: "dry-run"
+            gpu_result_message: "Would detach feature-owned hostpci{{ gpu_vm_state.hostpci_index }} from VM {{ gpu_request.vmid }}"
+          when: gpu_dry_run
+
+        - name: Apply VM detachment transaction
+          when: not gpu_dry_run
+          block:
+            - name: Remove feature-owned hostpci entry
+              ansible.builtin.command:
+                argv: [qm, set, "{{ gpu_request.vmid | string }}", -delete, "hostpci{{ gpu_vm_state.hostpci_index }}"]
+              register: gpu_detach_command
+
+            - name: Restore original virtual display
+              ansible.builtin.command:
+                argv: >-
+                  {{ [ 'qm', 'set', gpu_request.vmid | string, '-delete', 'vga' ]
+                     if gpu_vm_state.original_vga == '__absent__'
+                     else [ 'qm', 'set', gpu_request.vmid | string, '-vga', gpu_vm_state.original_vga ] }}
+              when: gpu_vm_state.primary_gpu | default(true) | bool
+
+            - name: Restore original onboot value when managed
+              ansible.builtin.command:
+                argv: >-
+                  {{ [ 'qm', 'set', gpu_request.vmid | string, '-delete', 'onboot' ]
+                     if gpu_vm_state.original_onboot == '__absent__'
+                     else [ 'qm', 'set', gpu_request.vmid | string, '-onboot', gpu_vm_state.original_onboot ] }}
+              when: gpu_vm_state.onboot_managed | default(false) | bool
+
+            - name: Remove completed VM ownership state
+              ansible.builtin.file:
+                path: "{{ gpu_vm_state_path }}"
+                state: absent
+
+          rescue:
+            - name: Restore removed hostpci entry after detach failure
+              ansible.builtin.command:
+                argv: [qm, set, "{{ gpu_request.vmid | string }}", "-hostpci{{ gpu_vm_state.hostpci_index }}", "{{ gpu_live_hostpci_value }}"]
+              when:
+                - gpu_detach_command.rc | default(1) == 0
+                - gpu_live_hostpci_value | length > 0
+              failed_when: false
+
+            - name: Write detachment rollback result
+              ansible.builtin.copy:
+                dest: "{{ gpu_result_path }}"
+                mode: "0600"
+                content: >-
+                  {{ {'schema_version': 3, 'action': gpu_action,
+                      'release': {'lane': gpu_release_contract.lane},
+                      'result': {'state': 'failed-rolled-back', 'rollback_complete': true,
+                                 'message': 'VM detachment failed and the owned attachment was restored'}} | to_nice_json }}
+
+            - name: Fail after VM detachment rollback
+              ansible.builtin.fail:
+                msg: "VM detachment failed and was rolled back."
+
+        - name: Report completed VM detachment
+          ansible.builtin.set_fact:
+            gpu_result_state: "detached"
+            gpu_result_message: "Detached {{ gpu_request.gpu_slot }} from VM {{ gpu_request.vmid }} and restored managed VM fields"
+          when: not gpu_dry_run
+
+    - name: Execute host unprepare
+      when: gpu_action == 'unprepare'
+      block:
+        - name: Find feature-owned VM states
+          ansible.builtin.find:
+            paths: "{{ gpu_state_root }}"
+            patterns: "vm-*.state"
+            file_type: file
+          register: gpu_owned_vm_states
+
+        - name: Refuse host rollback while managed attachments exist
+          ansible.builtin.assert:
+            that: [gpu_owned_vm_states.matched | int == 0]
+            fail_msg: "Detach all feature-owned VM attachments before unprepare."
+
+        - name: Search raw QEMU configs for selected GPU
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            grep -R -E '^hostpci[0-9]+:.*({{ gpu_request.gpu_slot | regex_escape }}|{{ gpu_request.gpu_qm_slot | regex_escape }})([,.]|$)'
+            {{ gpu_pve_root | quote }}/qemu-server 2>/dev/null
+          args:
+            executable: /bin/bash
+          register: gpu_raw_vm_references
+          changed_when: false
+          failed_when: gpu_raw_vm_references.rc not in [0, 1]
+
+        - name: Refuse host rollback while raw VM references exist
+          ansible.builtin.assert:
+            that: [gpu_raw_vm_references.stdout | trim == '']
+            fail_msg: "A QEMU configuration still references the selected GPU."
+
+        - name: Read managed host state for rollback
+          ansible.builtin.slurp:
+            src: "{{ gpu_host_state_path }}"
+          register: gpu_host_state_raw
+
+        - name: Resolve current host state format
+          ansible.builtin.set_fact:
+            gpu_host_state_is_v2: "{{ (gpu_host_state_raw.content | b64decode | trim).startswith('{') }}"
+            gpu_host_state: >-
+              {{ (gpu_host_state_raw.content | b64decode | from_json)
+                 if (gpu_host_state_raw.content | b64decode | trim).startswith('{')
+                 else gpu_request.legacy.host }}
+
+        - name: Validate host state ownership
+          ansible.builtin.assert:
+            that:
+              - gpu_host_state.gpu_slot == gpu_request.gpu_slot
+              - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) == gpu_request.detected.bootloader
+              - not (gpu_host_state_is_v2 | bool) or (gpu_host_state.transaction_dir | default('')).startswith(gpu_state_root + '/transactions/')
+              - not (gpu_host_state_is_v2 | bool) or gpu_host_state.applied_files is defined
+            fail_msg: "Managed host state does not belong to the requested GPU."
+
+        - name: Inspect structured rollback backups
+          ansible.builtin.stat:
+            path: "{{ item.backup }}"
+          loop: "{{ gpu_host_state.original_files | default([]) }}"
+          register: gpu_unprepare_backup_stats
+          when:
+            - gpu_host_state_is_v2 | bool
+            - item.existed | bool
+
+        - name: Require every structured rollback backup before changing files
+          ansible.builtin.assert:
+            that: [item.stat.exists]
+            fail_msg: "Required host rollback backup is missing: {{ item.item.backup }}"
+          loop: "{{ gpu_unprepare_backup_stats.results | default([]) }}"
+          when:
+            - gpu_host_state_is_v2 | bool
+            - item.item.existed | bool
+
+        - name: Inspect current structured managed files for drift
+          ansible.builtin.stat:
+            path: "{{ item.path }}"
+            checksum_algorithm: sha256
+          loop: "{{ gpu_host_state.applied_files | default([]) }}"
+          register: gpu_unprepare_current_stats
+          when: gpu_host_state_is_v2 | bool
+
+        - name: Refuse to overwrite host files changed outside the feature
+          ansible.builtin.assert:
+            that:
+              - (item.stat.exists | bool) == (item.item.existed | bool)
+              - not (item.item.existed | bool) or item.stat.checksum == item.item.checksum
+            fail_msg: "Managed host path drifted after prepare: {{ item.item.path }}"
+          loop: "{{ gpu_unprepare_current_stats.results | default([]) }}"
+          when: gpu_host_state_is_v2 | bool
+
+        - name: Report host unprepare dry run
+          ansible.builtin.set_fact:
+            gpu_result_state: "dry-run"
+            gpu_result_message: "Would restore feature-managed host files for {{ gpu_request.gpu_slot }}"
+          when: gpu_dry_run
+
+        - name: Validate legacy managed-file markers
+          ansible.builtin.shell: >-
+            set -eu;
+            for path in {{ gpu_modules_path | quote }} {{ gpu_blacklist_path | quote }}
+              {{ gpu_grub_dropin_path | quote }} {{ gpu_initramfs_hook_path | quote }}
+              {{ gpu_initramfs_script_path | quote }}; do
+              [ ! -e "$path" ] || grep -Fq 'Managed by setup/vm/gpu.sh' "$path";
+            done
+          args:
+            executable: /bin/bash
+          changed_when: false
+          when:
+            - not (gpu_host_state_is_v2 | bool)
+
+        - name: Inspect legacy systemd-boot command-line backup
+          ansible.builtin.stat:
+            path: "{{ gpu_state_root }}/kernel.cmdline.before"
+          register: gpu_legacy_kernel_cmdline_backup
+          when:
+            - not (gpu_host_state_is_v2 | bool)
+            - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) in ['proxmox-boot-tool', 'pve-efiboot-tool']
+
+        - name: Require legacy systemd-boot command-line backup
+          ansible.builtin.assert:
+            that: [gpu_legacy_kernel_cmdline_backup.stat.exists]
+            fail_msg: "Legacy kernel command-line backup is missing; refusing partial rollback."
+          when:
+            - not (gpu_host_state_is_v2 | bool)
+            - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) in ['proxmox-boot-tool', 'pve-efiboot-tool']
+
+        - name: Create structured unprepare rollback directory
+          ansible.builtin.file:
+            path: "{{ gpu_host_state.transaction_dir }}/unprepare-current"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+          when:
+            - not gpu_dry_run
+            - gpu_host_state_is_v2 | bool
+
+        - name: Back up current prepared files before unprepare
+          ansible.builtin.copy:
+            src: "{{ item.item.path }}"
+            dest: "{{ gpu_host_state.transaction_dir }}/unprepare-current/{{ item.item.key }}"
+            remote_src: true
+            mode: preserve
+          loop: "{{ gpu_unprepare_current_stats.results | default([]) }}"
+          when:
+            - not gpu_dry_run
+            - gpu_host_state_is_v2 | bool
+            - item.stat.exists | bool
+
+        - name: Apply host unprepare transaction
+          when: not gpu_dry_run
+          block:
+            - name: Restore structured original host files
+              ansible.builtin.copy:
+                src: "{{ item.backup }}"
+                dest: "{{ item.path }}"
+                remote_src: true
+                mode: preserve
+              loop: "{{ gpu_host_state.original_files | default([]) }}"
+              when:
+                - gpu_host_state_is_v2 | bool
+                - item.existed | bool
+
+            - name: Remove structured files absent before preparation
+              ansible.builtin.file:
+                path: "{{ item.path }}"
+                state: absent
+              loop: "{{ gpu_host_state.original_files | default([]) }}"
+              when:
+                - gpu_host_state_is_v2 | bool
+                - not (item.existed | bool)
+
+            - name: Remove legacy feature-owned host files
+              ansible.builtin.file:
+                path: "{{ item }}"
+                state: absent
+              loop:
+                - "{{ gpu_modules_path }}"
+                - "{{ gpu_blacklist_path }}"
+                - "{{ gpu_grub_dropin_path }}"
+                - "{{ gpu_initramfs_hook_path }}"
+                - "{{ gpu_initramfs_script_path }}"
+              when: not (gpu_host_state_is_v2 | bool)
+
+            - name: Restore legacy systemd-boot command line
+              ansible.builtin.copy:
+                src: "{{ gpu_state_root }}/kernel.cmdline.before"
+                dest: "{{ gpu_kernel_cmdline_path }}"
+                remote_src: true
+                mode: preserve
+              when:
+                - not (gpu_host_state_is_v2 | bool)
+                - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) in ['proxmox-boot-tool', 'pve-efiboot-tool']
+
+            - name: Refresh GRUB after host rollback
+              ansible.builtin.command:
+                argv: [update-grub]
+              when:
+                - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) == 'grub'
+                - not (gpu_host_state_is_v2 | bool) or (gpu_host_state.original_files | default([]) | length > 0)
+
+            - name: Refresh Proxmox boot entries after host rollback
+              ansible.builtin.command:
+                argv: ["{{ gpu_host_state.bootloader | default(gpu_request.detected.bootloader) }}", refresh]
+              when:
+                - gpu_host_state.bootloader | default(gpu_request.detected.bootloader) in ['proxmox-boot-tool', 'pve-efiboot-tool']
+                - not (gpu_host_state_is_v2 | bool) or (gpu_host_state.original_files | default([]) | length > 0)
+
+            - name: Rebuild initramfs after host rollback
+              ansible.builtin.command:
+                argv: [update-initramfs, -u, -k, all]
+              when: not (gpu_host_state_is_v2 | bool) or (gpu_host_state.original_files | default([]) | length > 0)
+
+            - name: Remove completed host ownership state
+              ansible.builtin.file:
+                path: "{{ gpu_host_state_path }}"
+                state: absent
+
+          rescue:
+            - name: Restore prepared structured files after unprepare failure
+              ansible.builtin.copy:
+                src: "{{ gpu_host_state.transaction_dir }}/unprepare-current/{{ item.item.key }}"
+                dest: "{{ item.item.path }}"
+                remote_src: true
+                mode: preserve
+              loop: "{{ gpu_unprepare_current_stats.results | default([]) }}"
+              when:
+                - gpu_host_state_is_v2 | bool
+                - item.stat.exists | bool
+              register: gpu_unprepare_restore_results
+              failed_when: false
+
+            - name: Remove paths absent before failed unprepare
+              ansible.builtin.file:
+                path: "{{ item.item.path }}"
+                state: absent
+              loop: "{{ gpu_unprepare_current_stats.results | default([]) }}"
+              when:
+                - gpu_host_state_is_v2 | bool
+                - not (item.stat.exists | bool)
+              register: gpu_unprepare_remove_results
+              failed_when: false
+
+            - name: Refresh GRUB after failed unprepare
+              ansible.builtin.command:
+                argv: [update-grub]
+              register: gpu_unprepare_rescue_grub
+              changed_when: false
+              failed_when: false
+              when: gpu_request.detected.bootloader == 'grub'
+
+            - name: Refresh Proxmox boot entries after failed unprepare
+              ansible.builtin.command:
+                argv: ["{{ gpu_request.detected.bootloader }}", refresh]
+              register: gpu_unprepare_rescue_boot
+              changed_when: false
+              failed_when: false
+              when: gpu_request.detected.bootloader in ['proxmox-boot-tool', 'pve-efiboot-tool']
+
+            - name: Rebuild initramfs after failed unprepare
+              ansible.builtin.command:
+                argv: [update-initramfs, -u, -k, all]
+              register: gpu_unprepare_rescue_initramfs
+              changed_when: false
+              failed_when: false
+
+            - name: Resolve unprepare rollback outcome
+              ansible.builtin.set_fact:
+                gpu_unprepare_rollback_complete: >-
+                  {{
+                    (gpu_host_state_is_v2 | bool) and
+                    (gpu_unprepare_restore_results.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0) and
+                    (gpu_unprepare_remove_results.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0) and
+                    (gpu_unprepare_rescue_grub.rc | default(0) == 0) and
+                    (gpu_unprepare_rescue_boot.rc | default(0) == 0) and
+                    (gpu_unprepare_rescue_initramfs.rc | default(1) == 0)
+                  }}
+
+            - name: Write failed unprepare result
+              ansible.builtin.copy:
+                dest: "{{ gpu_result_path }}"
+                mode: "0600"
+                content: >-
+                  {{ {'schema_version': 3, 'action': gpu_action,
+                      'release': {'lane': gpu_release_contract.lane},
+                      'result': {'state': ('failed-rolled-back' if gpu_unprepare_rollback_complete | bool else 'failed-rollback-incomplete'),
+                                 'rollback_complete': gpu_unprepare_rollback_complete | bool,
+                                 'message': 'Host unprepare failed; prepared state restoration was attempted'}} | to_nice_json }}
+
+            - name: Fail after unprepare rollback
+              ansible.builtin.fail:
+                msg: "Host unprepare failed; rollback_complete={{ gpu_unprepare_rollback_complete | bool }}."
+
+        - name: Remove completed structured transaction backups
+          ansible.builtin.file:
+            path: "{{ gpu_host_state.transaction_dir }}"
+            state: absent
+          failed_when: false
+          when:
+            - not gpu_dry_run
+            - gpu_host_state_is_v2 | bool
+
+        - name: Remove completed legacy kernel command-line backup
+          ansible.builtin.file:
+            path: "{{ gpu_state_root }}/kernel.cmdline.before"
+            state: absent
+          failed_when: false
+          when:
+            - not gpu_dry_run
+            - not (gpu_host_state_is_v2 | bool)
+
+        - name: Report completed host rollback
+          ansible.builtin.set_fact:
+            gpu_result_state: "unprepared"
+            gpu_result_message: "Restored feature-managed host configuration for {{ gpu_request.gpu_slot }}; reboot required"
+          when: not gpu_dry_run
+
+  post_tasks:
+    - name: Write canonical action result
+      ansible.builtin.copy:
+        dest: "{{ gpu_result_path }}"
+        mode: "0600"
+        content: >-
+          {{ {
+            'schema_version': 3,
+            'action': gpu_action,
+            'release': {
+              'lane': gpu_release_contract.lane,
+              'pve_major': gpu_release_contract.pve_major,
+              'debian_codename': gpu_release_contract.debian_codename
+            },
+            'request': {
+              'vmid': gpu_request.vmid | default(None),
+              'gpu_slot': gpu_request.gpu_slot,
+              'profile': gpu_request.profile,
+              'dry_run': gpu_dry_run
+            },
+            'effective_features': gpu_request.requested_features,
+            'changes': gpu_result_changes,
+            'warnings': gpu_result_warnings,
+            'result': {
+              'state': gpu_result_state,
+              'message': gpu_result_message,
+              'rollback_complete': gpu_rollback_complete
+            }
+          } | to_nice_json }}
