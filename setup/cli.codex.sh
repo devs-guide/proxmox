@@ -175,7 +175,7 @@ prepare.feature.files() {
 run.feature.playbook() {
   local playbook_path="$1"
   shift
-  "${ANSIBLE_VENV_BIN}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "$@" "${playbook_path}"
+  ansible.runtime.run -i localhost, -c local -e "@${GROUP_VARS_PATH}" "$@" "${playbook_path}"
 }
 
 write.cli.codex.extra.vars.file() {
