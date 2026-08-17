@@ -273,7 +273,7 @@ check_setup_cli_refs() {
     rc=1
     return
   fi
-  if ! read.runner.array "${runner_path}" "FEATURE_CLI_FILES" "1"; then
+  if ! read.runner.array "${runner_path}" "FEATURE_CLI_FILES" "0"; then
     return
   fi
 
