@@ -191,8 +191,32 @@ jobs:
 
       - name: Validate release, runtime, and feature contracts
         run: |
-          ./actions/validate.release.sh
-          ./actions/validate.runtime.sh
+          run_contract_validator() {
+            local validator="$1"
+            local output=""
+            local status=0
+            local summary=""
+
+            set +e
+            output="$("${validator}" 2>&1)"
+            status=$?
+            set -e
+            printf '%s\n' "${output}"
+
+            if [[ "${status}" -ne 0 ]]; then
+              summary="$(printf '%s\n' "${output}" | awk 'NF { line=$0 } END { print line }')"
+              [[ -n "${summary}" ]] || summary="exited with status ${status}"
+              summary="${summary//'%'/'%25'}"
+              summary="${summary//$'\r'/'%0D'}"
+              summary="${summary//$'\n'/'%0A'}"
+              printf '::error file=%s,title=Validation contract failed::%s\n' \
+                "${validator#./}" "${summary}"
+              return "${status}"
+            fi
+          }
+
+          run_contract_validator ./actions/validate.release.sh
+          run_contract_validator ./actions/validate.runtime.sh
 
           for validator in ./actions/validate.*.sh; do
             case "$(basename "${validator}")" in
@@ -201,7 +225,7 @@ jobs:
                 ;;
             esac
             echo "[www.pages] running dedicated validator: ${validator}"
-            "${validator}"
+            run_contract_validator "${validator}"
           done
 
       - name: Build static Pages tree
