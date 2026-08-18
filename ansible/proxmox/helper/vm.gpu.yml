@@ -108,9 +108,9 @@
     - name: Revalidate the release wrapper against the live node
       ansible.builtin.assert:
         that:
-          - gpu_live_pveversion.stdout is search('pve-manager/' + gpu_release_contract.pve_major + '\\.')
-          - gpu_live_pveversion.stdout is search('pve-manager/' + (gpu_platform.pve.version | regex_escape) + '/')
-          - (gpu_live_os_release.content | b64decode) is search('VERSION_CODENAME=' + gpu_release_contract.debian_codename)
+          - "gpu_live_pveversion.stdout is search('pve-manager/' + gpu_release_contract.pve_major + '\\.')"
+          - "gpu_live_pveversion.stdout is search('pve-manager/' + (gpu_platform.pve.version | regex_escape) + '/')"
+          - "(gpu_live_os_release.content | b64decode) is search('VERSION_CODENAME=' + gpu_release_contract.debian_codename)"
         fail_msg: >-
           Release wrapper {{ gpu_release_contract.lane }} does not match the live node.
 
@@ -872,11 +872,11 @@
         - name: Revalidate target VM eligibility before attach
           ansible.builtin.assert:
             that:
-              - gpu_vm_config_before_attach.stdout is search('(?m)^machine: (pc-)?q35([,-]|$)')
-              - gpu_vm_config_before_attach.stdout is not search('(?m)^template: 1$')
-              - gpu_vm_config_before_attach.stdout is not search('(?m)^lock:')
-              - gpu_request.profile == 'linux-compute' or gpu_vm_config_before_attach.stdout is search('(?m)^bios: ovmf$')
-              - gpu_request.profile == 'linux-compute' or gpu_vm_config_before_attach.stdout is search('(?m)^efidisk0:')
+              - "gpu_vm_config_before_attach.stdout is search('(?m)^machine: (pc-)?q35([,-]|$)')"
+              - "gpu_vm_config_before_attach.stdout is not search('(?m)^template: 1$')"
+              - "gpu_vm_config_before_attach.stdout is not search('(?m)^lock:')"
+              - "gpu_request.profile == 'linux-compute' or gpu_vm_config_before_attach.stdout is search('(?m)^bios: ovmf$')"
+              - "gpu_request.profile == 'linux-compute' or gpu_vm_config_before_attach.stdout is search('(?m)^efidisk0:')"
             fail_msg: "Target VM eligibility changed after runner preflight."
 
         - name: Revalidate target VM HA ownership before attach
@@ -888,7 +888,7 @@
         - name: Refuse an HA-managed target VM
           ansible.builtin.assert:
             that:
-              - gpu_live_ha_config.stdout is not search('(?m)^[ \\t]*vm:' + (gpu_request.vmid | string) + '([ \\t]|$)')
+              - "gpu_live_ha_config.stdout is not search('(?m)^[ \\t]*vm:' + (gpu_request.vmid | string) + '([ \\t]|$)')"
             fail_msg: "VM {{ gpu_request.vmid }} became HA-managed after runner preflight."
 
         - name: Resolve requested whole-slot hostpci value
@@ -952,7 +952,7 @@
             that:
               - gpu_request.vmid is defined
               - gpu_request.hostpci_index is not none
-              - gpu_vm_config_before_attach.stdout is not search('(?m)^hostpci' + (gpu_request.hostpci_index | string) + ':')
+              - "gpu_vm_config_before_attach.stdout is not search('(?m)^hostpci' + (gpu_request.hostpci_index | string) + ':')"
             fail_msg: "Requested hostpci slot is no longer free."
           when: not (gpu_existing_vm_state_stat.stat.exists | bool)
 
@@ -1125,10 +1125,10 @@
             that:
               - (gpu_vm_state.vmid | default(gpu_request.vmid) | int) == (gpu_request.vmid | int)
               - gpu_vm_state.gpu_slot == gpu_request.gpu_slot
-              - gpu_vm_config_before_detach.stdout is search('(?m)^hostpci' + (gpu_vm_state.hostpci_index | string) + ':.*' + gpu_request.gpu_qm_slot)
+              - "gpu_vm_config_before_detach.stdout is search('(?m)^hostpci' + (gpu_vm_state.hostpci_index | string) + ':.*' + gpu_request.gpu_qm_slot)"
               - gpu_vm_state.hostpci_value is not defined or gpu_live_hostpci_value == gpu_vm_state.hostpci_value
-              - not (gpu_vm_state.primary_gpu | default(true) | bool) or gpu_vm_config_before_detach.stdout is search('(?m)^vga: none$')
-              - not (gpu_vm_state.onboot_managed | default(false) | bool) or gpu_vm_config_before_detach.stdout is search('(?m)^onboot: 0$')
+              - "not (gpu_vm_state.primary_gpu | default(true) | bool) or gpu_vm_config_before_detach.stdout is search('(?m)^vga: none$')"
+              - "not (gpu_vm_state.onboot_managed | default(false) | bool) or gpu_vm_config_before_detach.stdout is search('(?m)^onboot: 0$')"
             fail_msg: "Current VM configuration no longer matches feature-owned state."
 
         - name: Report VM detachment dry run
