@@ -344,8 +344,8 @@ gpu.load_host_state_selection() {
           and ($selected | startswith($gpu.slot + "."))
           and all($gpu.functions[]; .bdf | startswith($gpu.slot + "."))
           and ($gpu.functions | any(.bdf == $selected and (.class | startswith("0x03"))))))
-      and ((.blacklist_vendors // []) | difference(["amd", "nvidia"]) | length == 0)
-      and ((.exact_bind_only_vendors // []) | difference(["amd", "nvidia"]) | length == 0)
+      and (((.blacklist_vendors // []) - ["amd", "nvidia"]) | length == 0)
+      and (((.exact_bind_only_vendors // []) - ["amd", "nvidia"]) | length == 0)
       and (. as $state
         | [($state.blacklist_vendors // [])[]
             | . as $vendor
