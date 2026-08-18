@@ -399,7 +399,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
   REAL_MULTI_GPU_RESULT="${FIXTURE}/real-multi-ansible-result.json"
   REAL_PARTIAL_GPU_RESULT="${FIXTURE}/real-partial-ansible-result.json"
   REAL_GPU_RESULT="${FIXTURE}/real-ansible-result.json"
-  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
+  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "GPU_TEST_VM_CONFIG=${VM_CONFIG}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e ansible_become=false \
     -e "ansible_python_interpreter=$(command -v python3)" \
@@ -412,7 +412,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
     and (.request.gpu_slots | length) == 3
     and .result.state == "dry-run"
   ' "${REAL_MULTI_GPU_RESULT}" >/dev/null || fail "real Ansible multi-GPU preparation dry-run did not complete"
-  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
+  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "GPU_TEST_VM_CONFIG=${VM_CONFIG}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e ansible_become=false \
     -e "ansible_python_interpreter=$(command -v python3)" \
@@ -427,7 +427,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
     and (.warnings | length) == 1
     and .result.state == "dry-run"
   ' "${REAL_PARTIAL_GPU_RESULT}" >/dev/null || fail "real Ansible partial exact-binding dry-run did not report its warning"
-  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "${REAL_ANSIBLE_PLAYBOOK}" \
+  run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "GPU_TEST_VM_CONFIG=${VM_CONFIG}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e ansible_become=false \
     -e "ansible_python_interpreter=$(command -v python3)" \
