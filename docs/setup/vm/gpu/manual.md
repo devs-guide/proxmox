@@ -131,6 +131,9 @@ For a complete observed acceptance case covering an unmanaged primary-GPU
 replacement, both read-only primary confirmation forms, expected blacklist
 refusal, automatic attach preview, and feature-owned final attachment, see
 [`examples.md`](examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario).
+The PVE 9 multi-AMD early-binding, failed-attempt rollback, reboot, VM 100, and
+macOS Metal acceptance record is in
+[`pve9-multi-amd-macos-acceptance.md`](pve9-multi-amd-macos-acceptance.md).
 
 ## 1. Inventory and inspect
 
@@ -252,9 +255,34 @@ unsupported vendors such as a Matrox management display. An explicit partial
 set such as `--blacklist '{"amd":["0000:3b:00.0"]}'` is reported as
 `exact-bind-only` because a kernel module blacklist cannot target one PCI BDF.
 
+For an explicit JSON array that covers every inventoried GPU of its vendor,
+require the dry-run result to place that vendor under `effective_vendors` and
+leave `exact_bind_only_vendors` empty. It must include every same-slot function
+and exclude unsupported management displays. Treat a different selection as a
+failed commissioning gate.
+
+For the first live multi-GPU preparation, omit `--reboot`, preserve the JSON
+result, and inspect `/etc/ansible/proxmox/gpu-passthrough/host.state` before
+rebooting. Format-4 state must record every selected slot and function, the
+effective blacklist vendors, the binding strategy, and the transaction
+backups. Also inspect the feature-owned module list, exact-BDF initramfs script,
+initramfs hook, and vendor blacklist. Reboot only after `result.state` is
+`prepared`, rollback is complete, and those files match the reviewed dry run.
+
 ## 4. Verify and attach
 
-After an early-binding reboot:
+After an early-binding reboot, a format-4 host preparation can be verified as
+a complete set without supplying one `--gpu`:
+
+```bash
+"${GPU_RUNNER}" \
+  --action verify \
+  --output json
+```
+
+The result must report `ready: true` with binding `early`. Confirm through live
+inventory that every selected function uses `vfio-pci` and that the management
+display retains its original driver. Then verify the reviewed VM/GPU pair:
 
 ```bash
 "${GPU_RUNNER}" \
@@ -289,8 +317,12 @@ For a primary guest display, preview and apply the explicit console change:
   --yes
 ```
 
-Inspect `qm config "${VM_ID}"` before starting. Add `--start` only when an immediate
-start is intentional.
+Add `--binding early` to both attachment invocations when following the
+explicit early-binding path in section 3B; leave the adapter default in place
+for the automatic path in section 3A. Inspect `qm config "${VM_ID}"` before
+starting. Add `--start` only when an immediate start is intentional. A
+successful host verification and attachment proves VFIO ownership, not guest
+acceleration; complete the vendor-driver and workload checks inside the guest.
 
 ## 5. Exercise stop/start and collect evidence
 

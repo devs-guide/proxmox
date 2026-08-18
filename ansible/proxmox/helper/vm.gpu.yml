@@ -99,6 +99,7 @@
         argv: [pveversion]
       register: gpu_live_pveversion
       changed_when: false
+      check_mode: false
 
     - name: Read installed Debian release
       ansible.builtin.slurp:
@@ -146,6 +147,7 @@
           - "{{ item.device_id }}"
       loop: "{{ gpu_request.functions }}"
       changed_when: false
+      check_mode: false
       when: gpu_action in ['prepare', 'attach']
 
     - name: Revalidate complete IOMMU-group isolation
@@ -172,6 +174,7 @@
       register: gpu_live_iommu_isolation
       changed_when: false
       failed_when: false
+      check_mode: false
       when:
         - gpu_action == 'attach' or (gpu_request.detected.iommu_ready | bool)
 
@@ -245,6 +248,7 @@
       register: gpu_live_prepare_vm_conflicts
       changed_when: false
       failed_when: gpu_live_prepare_vm_conflicts.rc not in [0, 1]
+      check_mode: false
       when: gpu_action == 'prepare'
 
     - name: Refuse host preparation after a new VM assignment
@@ -395,6 +399,7 @@
                 argv: [awk, "-F:", "/vendor_id/ {gsub(/[[:space:]]/, \"\", $2); print $2; exit}", "{{ gpu_proc_root }}/cpuinfo"]
               register: gpu_cpu_vendor_command
               changed_when: false
+              check_mode: false
 
             - name: Read active kernel command line
               ansible.builtin.slurp:
@@ -449,6 +454,7 @@
                 executable: /bin/bash
               register: gpu_blacklist_collateral
               changed_when: false
+              check_mode: false
               when: gpu_request.requested_features.blacklist_host_drivers | bool
 
             - name: Refuse a vendor blacklist with collateral display loss
@@ -495,13 +501,20 @@
               register: gpu_vfio_virqfd_probe
               changed_when: false
               failed_when: false
+              check_mode: false
               when: gpu_release_contract.probe_vfio_virqfd | bool
+
+            - name: Resolve optional legacy vfio_virqfd availability
+              ansible.builtin.set_fact:
+                gpu_vfio_virqfd_available: >-
+                  {{ (gpu_vfio_virqfd_probe.rc | default(1) | int) == 0 }}
 
             - name: Create transaction identifier
               ansible.builtin.command:
                 argv: [date, +%Y%m%dT%H%M%S-%N]
               register: gpu_transaction_id_command
               changed_when: false
+              check_mode: false
 
             - name: Resolve transaction paths
               ansible.builtin.set_fact:
@@ -573,7 +586,7 @@
                       vfio
                       vfio_iommu_type1
                       vfio_pci
-                      {% if gpu_vfio_virqfd_probe is defined and gpu_vfio_virqfd_probe.rc == 0 %}vfio_virqfd
+                      {% if gpu_vfio_virqfd_available | bool %}vfio_virqfd
                       {% endif %}
                   when: gpu_request.requested_features.binding == 'early'
 
@@ -594,7 +607,7 @@
                       manual_add_modules vfio
                       manual_add_modules vfio_iommu_type1
                       manual_add_modules vfio_pci
-                      {% if gpu_vfio_virqfd_probe is defined and gpu_vfio_virqfd_probe.rc == 0 %}manual_add_modules vfio_virqfd
+                      {% if gpu_vfio_virqfd_available | bool %}manual_add_modules vfio_virqfd
                       {% endif %}
                   when: gpu_request.requested_features.binding == 'early'
 

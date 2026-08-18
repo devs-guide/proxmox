@@ -12,6 +12,7 @@ SHARED_PLAYBOOK="${ROOT}/ansible/proxmox/helper/vm.gpu.yml"
 MANIFEST="${ROOT}/actions/pages.features.txt"
 EXAMPLES_DOC="${ROOT}/docs/setup/vm/gpu/examples.md"
 MANUAL_DOC="${ROOT}/docs/setup/vm/gpu/manual.md"
+PVE9_MULTI_AMD_DOC="${ROOT}/docs/setup/vm/gpu/pve9-multi-amd-macos-acceptance.md"
 TMP_DIR="$(mktemp -d)"
 ANSIBLE_VENV_ROOT="${TMP_DIR}/ansible-venv"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -42,6 +43,17 @@ run_real_ansible() {
   fi
 }
 
+run_real_ansible_log() {
+  local log_path="$1"
+  shift
+  local observed=0
+  "$@" > "${log_path}" 2>&1 || observed=$?
+  if ((observed != 0)); then
+    cat "${log_path}" >&2
+    fail "real Ansible invocation exited ${observed}: $*"
+  fi
+}
+
 for file in "${RUNNER}" "${PLATFORM}" "${INVENTORY}" "${COMMON}" "${INSPECT}" "${APPLY}"; do
   [[ -f "${file}" ]] || fail "missing GPU shell component: ${file#${ROOT}/}"
   bash -n "${file}" || fail "Bash syntax failed: ${file#${ROOT}/}"
@@ -58,6 +70,13 @@ grep -Fq 'supported_bindings: ["early"]' "${ROOT}/ansible/release/6.4/gpu.yml" |
 grep -Fq 'supported_bindings: ["automatic", "early"]' "${ROOT}/ansible/release/9.1/gpu.yml" || fail "PVE 9.1 release contract does not expose automatic/early binding"
 grep -Fq 'adapter_id: "pve6-buster"' "${ROOT}/ansible/release/6.4/gpu.yml" || fail "PVE 6 adapter identity is missing"
 grep -Fq 'adapter_id: "pve9-trixie"' "${ROOT}/ansible/release/9.1/gpu.yml" || fail "PVE 9 adapter identity is missing"
+grep -Fq 'Resolve optional legacy vfio_virqfd availability' "${SHARED_PLAYBOOK}" \
+  || fail "shared GPU playbook does not normalize the optional vfio_virqfd probe"
+if grep -Fq 'gpu_vfio_virqfd_probe is defined and gpu_vfio_virqfd_probe.rc == 0' "${SHARED_PLAYBOOK}"; then
+  fail "shared GPU playbook still dereferences rc from a skipped vfio_virqfd probe"
+fi
+[[ "$(grep -Fc 'gpu_vfio_virqfd_available | bool' "${SHARED_PLAYBOOK}")" -eq 2 ]] \
+  || fail "both VFIO module templates must use the normalized vfio_virqfd availability fact"
 
 for ref in \
   '"release/6.4/gpu.yml"' \
@@ -197,12 +216,16 @@ cp "${request}" "${GPU_TEST_REQUEST_CAPTURE}"
 jq -c '{schema_version:4,action:.gpu_request.action,platform:.gpu_request.platform,adapter:.gpu_request.adapter,effective_features:.gpu_request.requested_features,result:{state:(if .gpu_request.dry_run == true then "dry-run" else "ok" end),message:"stubbed mutation",rollback_complete:true}}' "${request}" > "${result}"
 EOF
 
-for command_name in flock lspci modinfo proxmox-boot-tool reboot update-grub update-initramfs; do
+for command_name in flock lspci proxmox-boot-tool reboot update-grub update-initramfs; do
   cat > "${STUB_BIN}/${command_name}" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
 done
+cat > "${STUB_BIN}/modinfo" <<'EOF'
+#!/usr/bin/env bash
+exit "${GPU_TEST_MODINFO_RC:-0}"
+EOF
 chmod 0755 "${STUB_BIN}"/*
 cp "${STUB_BIN}/ansible-playbook" "${ANSIBLE_VENV_ROOT}/bin/ansible-playbook"
 ln -s "$(command -v python3)" "${ANSIBLE_VENV_ROOT}/bin/python"
@@ -399,6 +422,133 @@ if command -v ansible-playbook >/dev/null 2>&1; then
   REAL_MULTI_GPU_RESULT="${FIXTURE}/real-multi-ansible-result.json"
   REAL_PARTIAL_GPU_RESULT="${FIXTURE}/real-partial-ansible-result.json"
   REAL_GPU_RESULT="${FIXTURE}/real-ansible-result.json"
+
+  RENDER_ROOT="${FIXTURE}/vfio-virqfd-render"
+  PVE9_RENDER_ROOT="${RENDER_ROOT}/pve9-skipped"
+  PVE6_PRESENT_RENDER_ROOT="${RENDER_ROOT}/pve6-present"
+  PVE6_ABSENT_RENDER_ROOT="${RENDER_ROOT}/pve6-absent"
+  PVE9_RENDER_REQUEST="${PVE9_RENDER_ROOT}/request.json"
+  PVE6_PRESENT_RENDER_REQUEST="${PVE6_PRESENT_RENDER_ROOT}/request.json"
+  PVE6_ABSENT_RENDER_REQUEST="${PVE6_ABSENT_RENDER_ROOT}/request.json"
+
+  initialize_render_root() {
+    local render_root="$1" codename="$2" version="$3"
+    mkdir -p \
+      "${render_root}/etc/modules-load.d" \
+      "${render_root}/etc/modprobe.d" \
+      "${render_root}/etc/default/grub.d" \
+      "${render_root}/etc/initramfs-tools/hooks" \
+      "${render_root}/etc/initramfs-tools/scripts/init-top" \
+      "${render_root}/etc/kernel" \
+      "${render_root}/state"
+    printf '%s\n' \
+      'ID=debian' \
+      "VERSION_ID=\"${version}\"" \
+      "VERSION_CODENAME=${codename}" > "${render_root}/etc/os-release"
+    printf '%s\n' 'root=ZFS=rpool/ROOT/pve-1 boot=zfs' > "${render_root}/etc/kernel/cmdline"
+  }
+
+  initialize_render_root "${PVE9_RENDER_ROOT}" trixie 13
+  initialize_render_root "${PVE6_PRESENT_RENDER_ROOT}" buster 10
+  initialize_render_root "${PVE6_ABSENT_RENDER_ROOT}" buster 10
+
+  jq --arg etc "${PVE9_RENDER_ROOT}/etc" --arg state "${PVE9_RENDER_ROOT}/state" '
+    .gpu_request.dry_run = false
+    | .gpu_request.roots.etc = $etc
+    | .gpu_request.roots.state = $state
+  ' "${MULTI_REQUEST_CAPTURE}" > "${PVE9_RENDER_REQUEST}"
+
+  create_pve6_render_request() {
+    local render_root="$1" request_path="$2"
+    jq --arg etc "${render_root}/etc" --arg state "${render_root}/state" '
+      .gpu_request.dry_run = false
+      | .gpu_request.roots.etc = $etc
+      | .gpu_request.roots.state = $state
+      | .gpu_request.release = "6.4"
+      | .gpu_request.platform.pve.version = "6.4.15"
+      | .gpu_request.platform.pve.major = "6"
+      | .gpu_request.platform.debian.version = "10"
+      | .gpu_request.platform.debian.codename = "buster"
+      | .gpu_request.adapter = {
+          "schema_version": 1,
+          "id": "pve6-buster",
+          "lane": "6.4",
+          "playbook": "release/6.4/gpu.yml",
+          "default_binding": "early",
+          "supported_bindings": ["early"],
+          "automatic_handoff": false,
+          "probe_vfio_virqfd": true,
+          "legacy_boot_tool_fallback": true
+        }
+    ' "${MULTI_REQUEST_CAPTURE}" > "${request_path}"
+  }
+
+  create_pve6_render_request "${PVE6_PRESENT_RENDER_ROOT}" "${PVE6_PRESENT_RENDER_REQUEST}"
+  create_pve6_render_request "${PVE6_ABSENT_RENDER_ROOT}" "${PVE6_ABSENT_RENDER_REQUEST}"
+
+  extract_ansible_task_output() {
+    local log_path="$1" task_name="$2"
+    awk -v marker="TASK [${task_name}]" '
+      index($0, marker) == 1 { capture=1; next }
+      capture && index($0, "TASK [") == 1 { exit }
+      capture { print }
+    ' "${log_path}"
+  }
+
+  run_vfio_virqfd_render_case() {
+    local label="$1" request_path="$2" playbook="$3" pve_version="$4" probe_rc="$5" expected="$6"
+    local log_path="${RENDER_ROOT}/${label}.log"
+    local modules_output="" hook_output=""
+
+    run_real_ansible_log "${log_path}" env \
+      "PATH=${STUB_BIN}:${PATH}" \
+      "GPU_TEST_VM_CONFIG=${VM_CONFIG}" \
+      "GPU_TEST_PVEVERSION=${pve_version}" \
+      "GPU_TEST_MODINFO_RC=${probe_rc}" \
+      ANSIBLE_NOCOLOR=1 \
+      ANSIBLE_FORCE_COLOR=0 \
+      "${REAL_ANSIBLE_PLAYBOOK}" \
+      -i localhost, -c local \
+      -e ansible_become=false \
+      -e "ansible_python_interpreter=$(command -v python3)" \
+      -e "@${request_path}" \
+      -e "gpu_result_path=${RENDER_ROOT}/${label}-result.json" \
+      --check --diff \
+      "${playbook}"
+
+    modules_output="$(extract_ansible_task_output "${log_path}" 'Install release-capable VFIO module list for early binding')"
+    hook_output="$(extract_ansible_task_output "${log_path}" 'Install exact-BDF initramfs hook')"
+    grep -Fq 'vfio_pci' <<< "${modules_output}" \
+      || fail "${label} did not render the VFIO module list in non-dry-run check mode"
+    grep -Fq 'manual_add_modules vfio_pci' <<< "${hook_output}" \
+      || fail "${label} did not render the initramfs hook in non-dry-run check mode"
+
+    if [[ "${expected}" == include ]]; then
+      grep -Fq 'vfio_virqfd' <<< "${modules_output}" \
+        || fail "${label} omitted available vfio_virqfd from the module list"
+      grep -Fq 'manual_add_modules vfio_virqfd' <<< "${hook_output}" \
+        || fail "${label} omitted available vfio_virqfd from the initramfs hook"
+    else
+      if grep -Fq 'vfio_virqfd' <<< "${modules_output}"; then
+        fail "${label} rendered unavailable vfio_virqfd in the module list"
+      fi
+      if grep -Fq 'manual_add_modules vfio_virqfd' <<< "${hook_output}"; then
+        fail "${label} rendered unavailable vfio_virqfd in the initramfs hook"
+      fi
+    fi
+  }
+
+  run_vfio_virqfd_render_case \
+    pve9-skipped "${PVE9_RENDER_REQUEST}" "${ROOT}/ansible/release/9.1/gpu.yml" \
+    pve-manager/9.1.0/test 99 omit
+  run_vfio_virqfd_render_case \
+    pve6-present "${PVE6_PRESENT_RENDER_REQUEST}" "${ROOT}/ansible/release/6.4/gpu.yml" \
+    pve-manager/6.4.15/test 0 include
+  run_vfio_virqfd_render_case \
+    pve6-absent "${PVE6_ABSENT_RENDER_REQUEST}" "${ROOT}/ansible/release/6.4/gpu.yml" \
+    pve-manager/6.4.15/test 1 omit
+  ok "non-dry-run Ansible check mode renders both VFIO templates for skipped, present, and absent vfio_virqfd probes"
+
   run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "GPU_TEST_VM_CONFIG=${VM_CONFIG}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
     -e ansible_become=false \
@@ -640,7 +790,23 @@ grep -Fq 'examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario' 
   || fail "GPU manual does not link the primary-GPU replacement acceptance scenario"
 grep -Fq 'docs/setup/vm/gpu/examples.md' "${ROOT}/readme.md" \
   || fail "repository documentation index does not link GPU acceptance examples"
-ok "manual primary-GPU replacement acceptance documentation is indexed and complete"
+[[ -f "${PVE9_MULTI_AMD_DOC}" ]] || fail "PVE 9 multi-AMD acceptance evidence is missing"
+for marker in \
+  'Failed live attempt and rollback evidence' \
+  'result.state: failed-rolled-back' \
+  "FEATURE_SHA='<published-fix-sha>'" \
+  'All ten AMD functions must report `vfio-pci`' \
+  'Complete at least three controlled guest shutdown/start cycles'; do
+  grep -Fq "${marker}" "${PVE9_MULTI_AMD_DOC}" \
+    || fail "PVE 9 multi-AMD acceptance evidence is missing: ${marker}"
+done
+grep -Fq 'pve9-multi-amd-macos-acceptance.md' "${EXAMPLES_DOC}" \
+  || fail "GPU examples do not link the PVE 9 multi-AMD acceptance evidence"
+grep -Fq 'pve9-multi-amd-macos-acceptance.md' "${MANUAL_DOC}" \
+  || fail "GPU manual does not link the PVE 9 multi-AMD acceptance evidence"
+grep -Fq 'docs/setup/vm/gpu/pve9-multi-amd-macos-acceptance.md' "${ROOT}/readme.md" \
+  || fail "repository documentation index does not link PVE 9 multi-AMD acceptance evidence"
+ok "manual primary-GPU and multi-AMD acceptance documentation is indexed and complete"
 
 if command -v ansible-playbook >/dev/null 2>&1; then
   ansible-playbook -i localhost, -c local --syntax-check "${ROOT}/ansible/release/6.4/gpu.yml" >/dev/null || fail "PVE 6.4 GPU playbook syntax failed"

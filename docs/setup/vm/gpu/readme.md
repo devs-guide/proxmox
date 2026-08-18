@@ -1819,6 +1819,40 @@ Metal acceleration is active.
 The VM boots repeatedly after full shutdown.
 ```
 
+Inside the macOS guest, capture the display and accelerator registrations:
+
+```bash
+system_profiler SPDisplaysDataType |
+    egrep 'Chipset Model|Type: GPU|Bus:|PCIe Lane Width|VRAM|Vendor|Device ID|Metal'
+ioreg -r -c IOAccelerator -l
+```
+
+Require the expected passed-through AMD device and VRAM, a supported Metal
+feature set, and an `IOAccelerator` instance. When Xcode command-line tools are
+already installed, this optional smoke test also submits a Metal command buffer:
+
+```bash
+xcrun swift - <<'SWIFT'
+import Metal
+
+if let device = MTLCreateSystemDefaultDevice(),
+   let queue = device.makeCommandQueue(),
+   let command = queue.makeCommandBuffer() {
+    command.commit()
+    command.waitUntilCompleted()
+    precondition(command.status == .completed)
+    print("Metal command completed on: \(device.name)")
+} else {
+    fatalError("No usable Metal device")
+}
+SWIFT
+```
+
+Registration and an empty command buffer are necessary smoke checks, not a
+complete performance qualification. Run a representative Metal render or
+compute workload during every reset cycle and preserve its result with the
+host-side VFIO and kernel evidence.
+
 ## 27.6 Reset-cycle validation
 
 Run at least three cycles:

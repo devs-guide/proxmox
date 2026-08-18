@@ -107,6 +107,10 @@ node with several identical AMD GPUs. The identifiers are example topology,
 not defaults. Re-run inventory and replace every value before using the
 scenario on another node.
 
+The node-specific five-WX-4100 early-binding, rollback, and macOS acceptance
+evidence is preserved in
+[`pve9-multi-amd-macos-acceptance.md`](pve9-multi-amd-macos-acceptance.md).
+
 Set one reviewed Pages candidate URL on a single line:
 
 ```bash
@@ -323,3 +327,8 @@ The expected VM fields are `hostpci0: 0000:3b:00,pcie=1,x-vga=1` and
 `vga: none`. If automatic attachment fails, stop and preserve the error before
 reviewing exact-BDF early preparation. Do not substitute a global driver
 blacklist.
+
+The exceptional all-AMD early-binding continuation, including the failed-live
+rollback record, corrected streamed retry, reboot verification, VM 100
+attachment, Metal workload, and reset-cycle gates, is maintained only in the
+dedicated acceptance runbook linked above.
