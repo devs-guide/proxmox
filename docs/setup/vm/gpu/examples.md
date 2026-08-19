@@ -3,6 +3,12 @@
 These examples use a downloaded and reviewed Pages candidate. Do not stream a
 mutating action into `bash`.
 
+For a complete first-use sequence, hardened `wget` download flags, checksum
+verification, and release-specific rollback, use:
+
+- [PVE 6.4 / Buster GPU passthrough](pve-6.4.md)
+- [PVE 9.1 / Trixie GPU passthrough](pve-9.1.md)
+
 ```bash
 GPU_URL='https://devs-guide.github.io/proxmox/setup/vm/gpu.sh'
 GPU_RUNNER='/root/proxmox-gpu-review/gpu.sh'

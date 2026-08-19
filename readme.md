@@ -27,6 +27,8 @@ Human operator documentation:
 
 - [End-to-end and manual VM restore runbook](docs/setup/vm/restore.md)
 - [Whole-GPU passthrough test runbook](docs/setup/vm/gpu/manual.md)
+- [PVE 6.4 / Buster GPU passthrough runbook](docs/setup/vm/gpu/pve-6.4.md)
+- [PVE 9.1 / Trixie GPU passthrough runbook](docs/setup/vm/gpu/pve-9.1.md)
 - [Manual GPU passthrough acceptance examples](docs/setup/vm/gpu/examples.md)
 - [PVE 9 multi-AMD macOS acceptance runbook and evidence](docs/setup/vm/gpu/pve9-multi-amd-macos-acceptance.md)
 - [Whole-GPU passthrough implementation plan](docs/setup/vm/gpu/master.plan)

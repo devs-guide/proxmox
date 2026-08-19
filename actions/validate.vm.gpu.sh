@@ -12,6 +12,8 @@ SHARED_PLAYBOOK="${ROOT}/ansible/proxmox/helper/vm.gpu.yml"
 MANIFEST="${ROOT}/actions/pages.features.txt"
 EXAMPLES_DOC="${ROOT}/docs/setup/vm/gpu/examples.md"
 MANUAL_DOC="${ROOT}/docs/setup/vm/gpu/manual.md"
+PVE64_DOC="${ROOT}/docs/setup/vm/gpu/pve-6.4.md"
+PVE91_DOC="${ROOT}/docs/setup/vm/gpu/pve-9.1.md"
 PVE9_MULTI_AMD_DOC="${ROOT}/docs/setup/vm/gpu/pve9-multi-amd-macos-acceptance.md"
 TMP_DIR="$(mktemp -d)"
 ANSIBLE_VENV_ROOT="${TMP_DIR}/ansible-venv"
@@ -790,6 +792,58 @@ grep -Fq 'examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario' 
   || fail "GPU manual does not link the primary-GPU replacement acceptance scenario"
 grep -Fq 'docs/setup/vm/gpu/examples.md' "${ROOT}/readme.md" \
   || fail "repository documentation index does not link GPU acceptance examples"
+for release_doc in "${PVE64_DOC}" "${PVE91_DOC}"; do
+  [[ -f "${release_doc}" ]] \
+    || fail "release GPU runbook is missing: ${release_doc#${ROOT}/}"
+  for marker in \
+    '--https-only' \
+    '--secure-protocol=TLSv1_2' \
+    '--header=' \
+    'Cache-Control: no-cache' \
+    'setup/vm/gpu.sh|setup/vm/gpu.sh|0755' \
+    'ansible.runtime.sh|bootstrap/ansible.runtime.sh|0644' \
+    'Do not stream a mutating action' \
+    '--action inventory' \
+    '--action preflight' \
+    '--dry-run' \
+    '--attach' \
+    '--test' \
+    '--remove' \
+    '--action unprepare' \
+    'feature-installed blacklist' \
+    'unexpected loss of a host display'; do
+    grep -Fq -- "${marker}" "${release_doc}" \
+      || fail "${release_doc#${ROOT}/} is missing operator marker: ${marker}"
+  done
+done
+for marker in \
+  'PVE 6.4 / Buster GPU passthrough runbook' \
+  '--release 6.4' \
+  'default_binding == "early"' \
+  'PVE 6 uses exact-address early VFIO binding' \
+  'If PVE 6 still needs early binding without a blacklist'; do
+  grep -Fq -- "${marker}" "${PVE64_DOC}" \
+    || fail "PVE 6.4 GPU runbook is missing: ${marker}"
+done
+for marker in \
+  'PVE 9.1 / Trixie GPU passthrough runbook' \
+  '--release 9.1' \
+  'default_binding == "automatic"' \
+  'Automatic handoff path' \
+  'Reviewed early-binding fallback'; do
+  grep -Fq -- "${marker}" "${PVE91_DOC}" \
+    || fail "PVE 9.1 GPU runbook is missing: ${marker}"
+done
+for index_doc in "${MANUAL_DOC}" "${EXAMPLES_DOC}" "${ROOT}/docs/setup/vm/gpu/readme.md"; do
+  grep -Fq 'pve-6.4.md' "${index_doc}" \
+    || fail "${index_doc#${ROOT}/} does not link the PVE 6.4 runbook"
+  grep -Fq 'pve-9.1.md' "${index_doc}" \
+    || fail "${index_doc#${ROOT}/} does not link the PVE 9.1 runbook"
+done
+grep -Fq 'docs/setup/vm/gpu/pve-6.4.md' "${ROOT}/readme.md" \
+  || fail "repository documentation index does not link the PVE 6.4 runbook"
+grep -Fq 'docs/setup/vm/gpu/pve-9.1.md' "${ROOT}/readme.md" \
+  || fail "repository documentation index does not link the PVE 9.1 runbook"
 [[ -f "${PVE9_MULTI_AMD_DOC}" ]] || fail "PVE 9 multi-AMD acceptance evidence is missing"
 for marker in \
   'Failed live attempt and rollback evidence' \

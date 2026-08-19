@@ -3,6 +3,13 @@
 > Research reference retained for review provenance. The current implementation
 > plan is `master.plan`; use `manual.md` for supported commands and safety gates.
 
+Operator runbooks:
+
+- [Shared action and state contract](manual.md)
+- [PVE 6.4 / Buster GPU passthrough](pve-6.4.md)
+- [PVE 9.1 / Trixie GPU passthrough](pve-9.1.md)
+- [Command examples](examples.md)
+
 **Review date:** August 15, 2026
 **Primary target:** Proxmox VE 9.x on x86-64
 **Current release baseline:** PVE 9.2; Linux 7.0 is the current stable default kernel

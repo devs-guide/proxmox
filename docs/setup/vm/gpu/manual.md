@@ -8,6 +8,15 @@ release playbook through `cli/gpu/apply.sh`.
 Run commands on the Proxmox node as `root`. Keep tested SSH and out-of-band
 console access before changing GPU ownership or boot configuration.
 
+Use the independently executable release runbook for the node under test:
+
+- [PVE 6.4 / Buster GPU passthrough](pve-6.4.md)
+- [PVE 9.1 / Trixie GPU passthrough](pve-9.1.md)
+
+Both release runbooks download and checksum the complete published dependency
+closure before any mutation. This shared manual remains the authoritative
+action, feature-flag, state, and rollback contract.
+
 ## Scope and safety
 
 The feature attaches one AMD or NVIDIA GPU slot per VM command. Host preparation
