@@ -1,0 +1,137 @@
+---
+# Canonical Debian package groups for Proxmox host prep and hardening.
+# Can be consumed by ansible-core via `lookup('file', 'ansible/debian.install.pkg.list') | from_yaml`.
+groups:
+  base:
+    description: Essential base tooling and SSH.
+    packages:
+      - sudo
+      - ca-certificates
+      - gnupg
+      - curl
+      - lsb-release
+      - net-tools
+      - iproute2
+      - openssh-server
+  time_sync:
+    description: Reliable time sync (prefer chrony over timesyncd on servers).
+    packages:
+      - chrony
+  security:
+    description: Host-level hardening/fencing.
+    packages:
+      - ufw
+      - apparmor
+      - apparmor-profiles
+      - apparmor-profiles-extra
+      - unattended-upgrades
+      - apt-listchanges
+      - needrestart
+      - fail2ban
+      - auditd
+      - audispd-plugins
+      - libpam-tmpdir
+      - libpam-passwdqc
+  storage:
+    description: Disk management, RAID, filesystems.
+    packages:
+      - nvme-cli
+      - hdparm
+      - util-linux
+      - mdadm
+      - lvm2
+      - lsscsi
+      - smartmontools
+      - xattr
+  monitoring_benchmark:
+    description: System monitoring and I/O benchmarks.
+    packages:
+      - htop
+      - sysstat
+      - atop
+      - nmon
+      - dstat
+      - iotop
+      - bmon
+      - lm-sensors
+      - fancontrol
+      - i2c-tools
+      - radeontop
+      - fio
+      - bonnie++
+  networking:
+    description: Network tests and small utilities.
+    packages:
+      - iperf3
+      - tree
+      - mailutils
+      - nftables
+      - iptables-persistent
+  hardware_info:
+    description: Hardware inventory and firmware data.
+    packages:
+      - lshw
+      - dmidecode
+      - inxi
+      - pciutils
+      - usbutils
+      - hwinfo
+      - ipmitool
+      - freeipmi-tools
+      - ipmiutil
+      - smartmontools
+      - nvme-cli
+      - hdparm
+      - openssh-client
+  gpu_vendor_optional:
+    description: GPU vendor helpers (opt-in; availability varies)
+    packages:
+      - intel-gpu-tools
+      - nvidia-detect
+      - firmware-amd-graphics
+  dev_tools:
+    description: Developer/admin utilities.
+    packages:
+      - git
+      - python3
+      - ksh
+      - jq
+  archive_iso_tools:
+    description: Archive/compression and disk image utilities.
+    packages:
+      - p7zip-full
+      - unrar-free
+      - libarchive-tools
+      - genisoimage
+      - xorriso
+      - udftools
+      - dmg2img
+      - file
+      - apt-file
+      - sleuthkit
+
+  apple_media_optional:
+    description: macOS/APFS/HFS utilities (opt-in; availability varies by release)
+    packages:
+      - hfsprogs
+      - hfsplus
+      - libfsapfs-utils
+      - xar
+  desktop_rdp_optional:
+    description: Optional lightweight GUI and RDP stack.
+    packages:
+      - xrdp
+      - xfce4
+      - xfce4-goodies
+      - xorg
+      - dbus-x11
+      - x11-xserver-utils
+      - task-lxde-desktop
+  performance_power:
+    description: CPU power management.
+    packages:
+      - linux-cpupower
+  firmware:
+    description: Firmware commonly needed on commodity NICs.
+    packages:
+      # Leave firmware installs opt-in per release; empty by default on shared catalog

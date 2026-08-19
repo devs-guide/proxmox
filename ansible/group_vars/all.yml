@@ -1,0 +1,66 @@
+# Shared locations and filenames for published Ansible artifacts (GitHub Pages)
+repo_owner: "devs-guide"
+repo_name: "proxmox"
+
+# Base URL to the published assets (www branch)
+pages_base_url: "https://{{ repo_owner }}.github.io/{{ repo_name }}"
+
+# Directory under the published base that holds Ansible artifacts
+pages_ansible_dir: "ansible"
+
+# Common filenames
+playlist_filename: "install.playbooks.txt"
+package_catalog_filename: "debian.packages.yml"
+
+# Resolved URLs for common artifacts
+package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_catalog_filename }}"
+
+# Apt cache policy (defaults; override per-play as needed)
+apt_cache_valid_time: 86400   # 1 day
+apt_skip_cache_refresh: true  # set to false, when not debuging playlists
+
+# Shared bootstrap/runtime contract.
+# These defaults stay neutral so release overlays can choose bridge mode or
+# direct handoff without the parent files forcing one early-bootstrap policy.
+controller_python_version: "3.12.3"
+controller_python_major_minor: "3.12"
+controller_python_prefix: "/usr/local"
+controller_ansible_venv: "/opt/ansible-venv"
+controller_ansible_core_version: "2.20.5"
+controller_ansible_core_spec: "ansible-core=={{ controller_ansible_core_version }}"
+controller_ansible_core_min: "{{ controller_ansible_core_version }}"
+managed_target_python_version: "3.12.3"
+managed_target_python_major_minor: "3.12"
+managed_target_python_source_prefix: "/usr/local"
+managed_target_python_home: "/opt/ansible/py312"
+managed_target_python_path: "{{ managed_target_python_home }}/bin/python"
+managed_target_handoff_marker: "{{ managed_target_python_home }}/.handoff-ready"
+bootstrap_mode: "direct_handoff"
+bootstrap_use_raw_only: false
+bootstrap_gather_facts: false
+bootstrap_needs_target_python_build: false
+
+# Interpreter paths used once the bootstrap contract selects a mode.
+ansible_python_interpreter_system: "/usr/bin/python3"
+ansible_python_interpreter_managed: "{{ managed_target_python_path }}"
+
+# Shared default accounts. Passwords default to the username when not overridden.
+user_defs:
+  - name: app
+  - name: agent
+  - name: proxmox
+  - name: root
+
+# Optional explicit SSH policy override. When empty, SSH users are derived from
+# network_defaults.allowed_users or shared user_defs.
+ssh_allowed_users: []
+
+# Networking defaults (can be overridden per host/group). allowed_users is
+# derived from shared user_defs; root is always added at play time to avoid lockouts.
+network_defaults:
+  allowed_users: []
+  allow_subnets:
+    - 10.0.0.0/24       # Local LAN default
+  allow_rdp: true
+  ssh_port: 22
+  rdp_port: 3389

@@ -1,0 +1,77 @@
+---
+- name: "[proxmox]: verify applied guest high-speed data NIC plan"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../group_vars/proxmox.yml"
+    proxmox_network_facts_dir: "/etc/ansible/proxmox/facts"
+    proxmox_network_plan_path: "{{ proxmox_network_plan_path | default(proxmox_network_facts_dir + '/network.plan.tsv') }}"
+    proxmox_network_verify_path: "{{ proxmox_network_verify_path | default(proxmox_network_facts_dir + '/network.verify.tsv') }}"
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults when available
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+      ignore_errors: true
+
+    - name: Stat update plan TSV
+      stat:
+        path: "{{ proxmox_network_plan_path }}"
+      register: proxmox_network_plan_stat
+
+    - name: Assert update plan TSV exists for verification
+      assert:
+        that:
+          - proxmox_network_plan_stat.stat.exists
+          - not proxmox_network_plan_stat.stat.isdir
+        fail_msg: "Missing update plan TSV for verification: {{ proxmox_network_plan_path }}"
+
+  tasks:
+    - name: Verify guest network plan was applied
+      shell: |
+        set -euo pipefail
+        plan="{{ proxmox_network_plan_path }}"
+        verify="{{ proxmox_network_verify_path }}"
+        tab="$(printf '\t')"
+        errors=0
+
+        printf 'guest_type\tguest_id\tguest_name\tnet_slot\tdesired_value\tactual_value\tstatus\n' > "${verify}"
+
+        while IFS="${tab}" read -r guest_type guest_id guest_name net_slot desired_value reason; do
+          [ "${guest_type}" = "guest_type" ] && continue
+          actual_value=""
+          status="ok"
+
+          if [ "${guest_type}" = "lxc" ]; then
+            actual_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+          elif [ "${guest_type}" = "vm" ]; then
+            actual_value="$(qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+          else
+            status="unsupported_guest_type"
+          fi
+
+          if [ "${status}" = "ok" ] && [ "${actual_value}" != "${desired_value}" ]; then
+            status="mismatch"
+            errors=$((errors + 1))
+          fi
+
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "${guest_type}" "${guest_id}" "${guest_name}" "${net_slot}" "${desired_value}" "${actual_value}" "${status}" >> "${verify}"
+        done < "${plan}"
+
+        echo "__ERRORS__=${errors}"
+        [ "${errors}" -eq 0 ]
+      args:
+        executable: /bin/bash
+      register: proxmox_network_verify_exec
+      changed_when: false
+
+    - name: Show verify output path
+      debug:
+        msg:
+          - "Verification TSV: {{ proxmox_network_verify_path }}"
+          - "{{ proxmox_network_verify_exec.stdout_lines | default([]) }}"

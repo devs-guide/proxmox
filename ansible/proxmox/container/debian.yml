@@ -1,0 +1,4 @@
+---
+# Canonical container playbook entrypoint for Debian LXC bootstrap.
+# Distinguishes LXC container policy from non-LXC Proxmox/debian baseline files.
+- import_playbook: debian.base.yml

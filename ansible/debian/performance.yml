@@ -1,0 +1,95 @@
+---
+- name: "[debian]: performance tweaks (optional)"
+  hosts: all
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    cpupower_enable: false
+    cpupower_default_path: /etc/default/cpupower
+    usb_autosuspend_disable: false
+    disable_console_blanking: false
+
+  tasks:
+    - name: Check whether linux-cpupower is installed
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - -f=${Status}
+          - linux-cpupower
+      register: cpupower_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Set CPU governor to performance (if cpupower installed)
+      ansible.builtin.copy:
+        dest: "{{ cpupower_default_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by Ansible: set governor to performance for low-latency hosts
+          GOVERNOR="performance"
+      when:
+        - cpupower_enable
+        - cpupower_package_check.rc == 0
+        - "'install ok installed' in (cpupower_package_check.stdout | default(''))"
+      notify: Restart cpupower service
+
+    - name: Ensure cpupower service enabled (if present)
+      ansible.builtin.systemd:
+        name: cpupower.service
+        enabled: true
+        state: started
+      when:
+        - cpupower_enable
+        - cpupower_package_check.rc == 0
+        - "'install ok installed' in (cpupower_package_check.stdout | default(''))"
+        - ansible_facts.services is defined
+        - "'cpupower.service' in ansible_facts.services or 'cpupower' in ansible_facts.services"
+
+    - name: Disable USB autosuspend (modprobe)
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/99-usb-autosuspend.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by Ansible: keep USB devices powered (UPS disks, USB NICs)
+          options usbcore autosuspend=-1
+      when: usb_autosuspend_disable
+
+    - name: Disable console blanking on tty1 (optional)
+      ansible.builtin.file:
+        path: /etc/systemd/system/getty@tty1.service.d
+        state: directory
+        mode: "0755"
+      when: disable_console_blanking
+
+    - name: Apply console no-blank drop-in
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/getty@tty1.service.d/override.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=-/sbin/agetty -o '-p -- \\u' --noclear --keep-baud tty1 115200,38400,9600 linux
+          ExecStartPost=/bin/sh -c '/usr/bin/setterm -blank 0 -powerdown 0 >/dev/tty1'
+      when: disable_console_blanking
+      notify: Reload systemd daemon
+
+  handlers:
+    - name: Reload systemd daemon
+      ansible.builtin.command: systemctl daemon-reload
+      become: true
+
+    - name: Restart cpupower service
+      ansible.builtin.service:
+        name: cpupower
+        state: restarted

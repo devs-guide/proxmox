@@ -1,0 +1,560 @@
+---
+- name: "[proxmox]: configure Samba NAS workload inside Debian LXC"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
+    proxmox_feature_facts_dir: "{{ proxmox_feature_facts_dir | default('/etc/ansible/proxmox/facts') }}"
+    proxmox_samba_container_facts_path: "{{ proxmox_samba.container_facts_path | default(proxmox_feature_facts_dir ~ '/container.yml') }}"
+    proxmox_samba_runtime_facts_path: "{{ proxmox_samba.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/samba.yml') }}"
+    proxmox_samba_mounts_tsv_path: "{{ proxmox_samba.mounts_tsv_path | default(proxmox_feature_facts_dir ~ '/samba.mounts.tsv') }}"
+    proxmox_samba_selection_path: "{{ proxmox_samba.selection_path | default(proxmox_feature_facts_dir ~ '/samba.selection.yml') }}"
+    proxmox_samba_defaults_safe:
+      samba:
+        enabled: false
+        mode: "apply"
+        require_container: true
+        require_operator_selection: true
+      feature:
+        packages:
+          - samba
+          - samba-common-bin
+          - acl
+          - attr
+          - iproute2
+          - util-linux
+          - ca-certificates
+        preflight_packages:
+          - smbclient
+        optional_packages:
+          avahi:
+            enabled: true
+            packages:
+              - avahi-daemon
+          ssh:
+            enabled: false
+            packages:
+              - openssh-server
+          ufw:
+            enabled: false
+            packages:
+              - ufw
+          wsdd:
+            enabled: false
+            packages:
+              - wsdd2
+        identity:
+          workgroup: "WORKGROUP"
+          netbios_name: null
+          server_string: "Proxmox Samba NAS"
+          fruit_model: "Xserve"
+        network:
+          allow_subnets:
+            - "10.0.0.0/24"
+            - "192.168.0.0/16"
+          smb_ports:
+            - 445
+          ssh_port: 22
+          bind_interfaces_only: true
+          interfaces:
+            - "lo"
+            - "eth0"
+        ssh:
+          enabled: false
+          include_path: "/etc/ssh/sshd_config.d/90-proxmox-samba.conf"
+          permit_root_login: "yes"
+          password_authentication: null
+          # Two-tier intent: container-common baseline users (root, app, agent)
+          # unless a runner-provided list or CLI override supplies alternatives.
+          allow_users:
+            - root
+            - app
+            - agent
+        firewall:
+          enabled: false
+        samba:
+          guest_mode: true
+          map_to_guest: "Bad User"
+          guest_account: "nobody"
+          force_user: "root"
+          force_group: "root"
+          create_mask: "0666"
+          directory_mask: "0777"
+          force_create_mode: "0666"
+          force_directory_mode: "0777"
+          allocation_roundup_size: 4096
+          min_protocol: "SMB3_02"
+          max_protocol: "SMB3_11"
+          disable_netbios: true
+          load_printers: false
+          macos_vfs_objects:
+            - catia
+            - fruit
+            - streams_xattr
+          fruit_aapl: true
+          fruit_time_machine: false
+          fruit_resource: "xattr"
+          fruit_nfs_aces: false
+        shares:
+          explicit: []
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+
+    - name: Normalize Samba feature defaults
+      set_fact:
+        proxmox_feature_defaults_effective: >-
+          {{
+            proxmox_samba_defaults_safe.samba
+            | combine(proxmox_feature_defaults.samba | default({}), recursive=true)
+          }}
+        proxmox_samba_defaults_effective: >-
+          {{
+            proxmox_samba_defaults_safe.feature
+            | combine(proxmox_feature_defaults.samba | default({}), recursive=true)
+            | combine(proxmox_samba | default({}), recursive=true)
+          }}
+
+    - name: Assert Samba feature was explicitly enabled
+      assert:
+        that:
+          - proxmox_feature_defaults_effective.enabled | bool
+        fail_msg: "Samba feature execution is disabled."
+
+    - name: Assert Samba mode is valid
+      assert:
+        that:
+          - proxmox_feature_defaults_effective.mode in ['preflight', 'apply']
+        fail_msg: "Unsupported Samba mode: {{ proxmox_feature_defaults_effective.mode }}"
+
+    - name: Stat operator selection file
+      stat:
+        path: "{{ proxmox_samba_selection_path }}"
+      register: proxmox_samba_selection_stat
+
+    - name: Require operator selection file when selection policy is enabled
+      assert:
+        that:
+          - proxmox_samba_selection_stat.stat.exists
+        fail_msg: >-
+          Operator selection file is required at {{ proxmox_samba_selection_path }}.
+      when: proxmox_feature_defaults_effective.require_operator_selection | bool
+
+    - name: Load operator selection file
+      include_vars:
+        file: "{{ proxmox_samba_selection_path }}"
+      when: proxmox_samba_selection_stat.stat.exists
+
+  tasks:
+    - name: Assert this host is Debian-family
+      assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: "This Samba feature only supports Debian-family LXC containers."
+
+    - name: Check for Proxmox host markers
+      stat:
+        path: /etc/pve
+      register: proxmox_samba_host_marker
+
+    - name: Check for pveversion command
+      command:
+        argv:
+          - sh
+          - -c
+          - command -v pveversion
+      register: proxmox_samba_pveversion
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if run on a Proxmox host
+      assert:
+        that:
+          - not proxmox_samba_host_marker.stat.exists
+          - proxmox_samba_pveversion.rc != 0
+        fail_msg: "This Samba feature must run inside a Debian LXC container, not on the Proxmox host."
+      when: proxmox_feature_defaults_effective.require_container | bool
+
+    - name: Normalize Samba selection payload
+      set_fact:
+        proxmox_samba_selection: "{{ proxmox_samba_operator_selection | default({}) }}"
+
+    - name: Build effective Samba model
+      set_fact:
+        proxmox_samba_effective:
+          mode: "{{ proxmox_feature_defaults_effective.mode }}"
+          identity: >-
+            {{
+              proxmox_samba_defaults_effective.identity
+            }}
+          network: >-
+            {{
+              proxmox_samba_defaults_effective.network
+              | combine(proxmox_samba_selection.network | default({}), recursive=true)
+            }}
+          ssh: >-
+            {{
+              proxmox_samba_defaults_effective.ssh
+              | combine(
+                {
+                  'allow_users': (
+                    proxmox_samba_access_users_cli
+                    | default([], true)
+                    | flatten
+                    if (proxmox_samba_access_users_override | default(false) | bool)
+                    else (
+                      proxmox_samba_access_users_runner
+                      | default([], true)
+                      | flatten
+                    )
+                    if (proxmox_samba_access_users_runner | default([], true) | length > 0)
+                    else proxmox_samba_defaults_effective.ssh.allow_users
+                  )
+                }
+              )
+            }}
+          firewall: >-
+            {{
+              proxmox_samba_defaults_effective.firewall
+            }}
+          samba: >-
+            {{
+              proxmox_samba_defaults_effective.samba
+            }}
+          shares: >-
+            {{
+              proxmox_samba_defaults_effective.shares
+              | combine({'explicit': proxmox_samba_selection.shares | default([])}, recursive=true)
+            }}
+
+    - name: Build effective Samba package list
+      set_fact:
+        proxmox_samba_packages_effective: >-
+          {{
+            proxmox_samba_defaults_effective.packages
+            + proxmox_samba_defaults_effective.preflight_packages
+            + (
+              proxmox_samba_defaults_effective.optional_packages.avahi.packages
+              if proxmox_samba_defaults_effective.optional_packages.avahi.enabled | default(false) | bool
+              else []
+            )
+            + (
+              proxmox_samba_defaults_effective.optional_packages.ssh.packages
+              if proxmox_samba_effective.ssh.enabled | bool
+              else []
+            )
+            + (
+              proxmox_samba_defaults_effective.optional_packages.ufw.packages
+              if proxmox_samba_effective.firewall.enabled | bool
+              else []
+            )
+            + (
+              proxmox_samba_defaults_effective.optional_packages.wsdd.packages
+              if proxmox_samba_defaults_effective.optional_packages.wsdd.enabled | default(false) | bool
+              else []
+            )
+          }}
+
+    - name: Note when Samba is being configured without shares
+      debug:
+        msg: "No Samba shares were selected. Continuing with base Samba setup only."
+      when: (proxmox_samba_effective.shares.explicit | default([]) | length) == 0
+
+    - name: Report effective Samba share count before smb.conf render
+      debug:
+        msg:
+          share_count: "{{ proxmox_samba_effective.shares.explicit | default([]) | length }}"
+          selected_shares: "{{ proxmox_samba_effective.shares.explicit | map(attribute='path') | list }}"
+
+    - name: Report Samba preflight summary
+      debug:
+        msg:
+          mode: "{{ proxmox_samba_effective.mode }}"
+          hostname: "{{ ansible_facts.hostname }}"
+          selected_shares: "{{ proxmox_samba_effective.shares.explicit }}"
+          share_count: "{{ proxmox_samba_effective.shares.explicit | default([]) | length }}"
+          allow_subnets: "{{ proxmox_samba_effective.network.allow_subnets }}"
+      when: proxmox_samba_effective.mode == 'preflight'
+
+    - name: Configure Samba workload in apply mode
+      block:
+        - name: Ensure Proxmox Samba facts directory exists
+          file:
+            path: "{{ proxmox_feature_facts_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: Install Samba workload packages
+          package:
+            name: "{{ proxmox_samba_packages_effective }}"
+            state: present
+
+        - name: Ensure Samba force group exists
+          group:
+            name: "{{ proxmox_samba_effective.samba.force_group }}"
+            state: present
+
+        - name: Ensure Samba force user exists when a non-root custom account is requested
+          user:
+            name: "{{ proxmox_samba_effective.samba.force_user }}"
+            group: "{{ proxmox_samba_effective.samba.force_group }}"
+            system: true
+            create_home: false
+            shell: /usr/sbin/nologin
+            state: present
+          when:
+            - proxmox_samba_effective.samba.force_user is not none
+            - proxmox_samba_effective.samba.force_user | string | length > 0
+            - proxmox_samba_effective.samba.force_user not in ['root', 'nobody']
+
+        - name: Ensure Samba guest account exists when a custom guest account is requested
+          user:
+            name: "{{ proxmox_samba_effective.samba.guest_account }}"
+            group: "{{ proxmox_samba_effective.samba.force_group }}"
+            system: true
+            create_home: false
+            shell: /usr/sbin/nologin
+            state: present
+          when:
+            - proxmox_samba_effective.samba.guest_account is defined
+            - proxmox_samba_effective.samba.guest_account | string | length > 0
+            - proxmox_samba_effective.samba.guest_account not in ['root', 'nobody']
+
+        - name: Backup existing Samba config when present
+          copy:
+            src: /etc/samba/smb.conf
+            dest: "/etc/samba/smb.conf.bak.proxmox-samba.{{ ansible_facts.date_time.iso8601_basic_short }}"
+            remote_src: true
+            mode: "0644"
+          when: ansible_facts['filesystems'] is defined or true
+          failed_when: false
+
+        - name: Write managed Samba config
+          copy:
+            dest: /etc/samba/smb.conf
+            mode: "0644"
+            content: |
+              [global]
+                  workgroup = {{ proxmox_samba_effective.identity.workgroup }}
+                  netbios name = {{ proxmox_samba_effective.identity.netbios_name | default(ansible_facts.hostname, true) }}
+                  server string = {{ proxmox_samba_effective.identity.server_string }}
+                  security = user
+                  map to guest = {{ proxmox_samba_effective.samba.map_to_guest | lower }}
+                  usershare allow guests = yes
+                  guest account = {{ proxmox_samba_effective.samba.guest_account }}
+                  create mask = {{ proxmox_samba_effective.samba.create_mask }}
+                  force create mode = {{ proxmox_samba_effective.samba.force_create_mode | default(proxmox_samba_effective.samba.create_mask) }}
+                  directory mask = {{ proxmox_samba_effective.samba.directory_mask }}
+                  force directory mode = {{ proxmox_samba_effective.samba.force_directory_mode | default(proxmox_samba_effective.samba.directory_mask) }}
+                  force group = {{ proxmox_samba_effective.samba.force_group }}
+                  allocation roundup size = {{ proxmox_samba_effective.samba.allocation_roundup_size }}
+                  vfs objects = {{ proxmox_samba_effective.samba.macos_vfs_objects | join(' ') }}
+                  fruit:aapl = {{ 'yes' if proxmox_samba_effective.samba.fruit_aapl else 'no' }}
+                  fruit:time machine = {{ 'yes' if proxmox_samba_effective.samba.fruit_time_machine else 'no' }}
+                  fruit:resource = {{ proxmox_samba_effective.samba.fruit_resource }}
+                  fruit:nfs_aces = {{ 'yes' if proxmox_samba_effective.samba.fruit_nfs_aces else 'no' }}
+                  fruit:model = {{ proxmox_samba_effective.identity.fruit_model }}
+                  ea support = yes
+                  store dos attributes = yes
+                  server min protocol = {{ proxmox_samba_effective.samba.min_protocol }}
+                  server max protocol = {{ proxmox_samba_effective.samba.max_protocol }}
+                  smb ports = {{ proxmox_samba_effective.network.smb_ports | join(' ') }}
+                  disable netbios = {{ 'yes' if proxmox_samba_effective.samba.disable_netbios else 'no' }}
+                  load printers = {{ 'yes' if proxmox_samba_effective.samba.load_printers else 'no' }}
+                  bind interfaces only = {{ 'yes' if proxmox_samba_effective.network.bind_interfaces_only else 'no' }}
+                  interfaces = {{ proxmox_samba_effective.network.interfaces | join(' ') }}
+                  log file = /var/log/samba/log.%m
+                  logging = file
+                  max log size = 1000
+              {% if proxmox_samba_effective.samba.force_user is not none and proxmox_samba_effective.samba.force_user | string | length > 0 %}
+                  force user = {{ proxmox_samba_effective.samba.force_user }}
+              {% endif %}
+              {% for share in proxmox_samba_effective.shares.explicit %}
+
+              [{{ (share.name | default((share.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}]
+                  path = {{ share.path }}
+                  browsable = yes
+                  guest ok = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
+                  guest only = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
+                  writable = {{ 'yes' if share.writable | default(true) else 'no' }}
+                  read only = {{ 'no' if share.writable | default(true) else 'yes' }}
+                  public = {{ 'yes' if share.guest_ok | default(proxmox_samba_effective.samba.guest_mode) else 'no' }}
+              {% endfor %}
+
+        - name: Write Avahi SMB service advertisement
+          copy:
+            dest: /etc/avahi/services/samba.service
+            mode: "0644"
+            content: |
+              <?xml version="1.0" standalone='no'?>
+              <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+              <service-group>
+                <name replace-wildcards="yes">%h</name>
+                <service>
+                  <type>_smb._tcp</type>
+                  <port>{{ proxmox_samba_effective.network.smb_ports | first }}</port>
+                </service>
+              </service-group>
+          when: proxmox_samba_defaults_effective.optional_packages.avahi.enabled | default(false) | bool
+
+        - name: Write SSH include file
+          copy:
+            dest: "{{ proxmox_samba_effective.ssh.include_path }}"
+            mode: "0644"
+            content: |
+              Port {{ proxmox_samba_effective.network.ssh_port }}
+              PermitRootLogin {{ proxmox_samba_effective.ssh.permit_root_login }}
+              UsePAM yes
+              X11Forwarding no
+              AllowUsers {{ proxmox_samba_effective.ssh.allow_users | join(' ') }}
+          when: proxmox_samba_effective.ssh.enabled | bool
+
+        - name: Ensure SSH host keys exist
+          command:
+            argv:
+              - ssh-keygen
+              - -A
+          changed_when: false
+          when: proxmox_samba_effective.ssh.enabled | bool
+
+        - name: Validate Samba config with testparm
+          command:
+            argv:
+              - testparm
+              - -s
+          register: proxmox_samba_testparm
+          changed_when: false
+
+        - name: Assert testparm passed
+          assert:
+            that:
+              - proxmox_samba_testparm.rc == 0
+            fail_msg: "testparm failed for generated /etc/samba/smb.conf."
+
+        - name: Validate SSH config
+          shell: |
+            set -eu
+            if command -v sshd >/dev/null 2>&1; then
+              sshd -t
+            else
+              /usr/sbin/sshd -t
+            fi
+          args:
+            executable: /bin/bash
+          register: proxmox_samba_sshd_test
+          changed_when: false
+          when: proxmox_samba_effective.ssh.enabled | bool
+
+        - name: Enable UFW rules for trusted subnets
+          shell: |
+            set -eu
+            {% if proxmox_samba_effective.ssh.enabled | bool %}
+            ufw allow from "{{ item }}" to any port "{{ proxmox_samba_effective.network.ssh_port }}" proto tcp
+            {% endif %}
+            ufw allow from "{{ item }}" to any port "{{ proxmox_samba_effective.network.smb_ports | first }}" proto tcp
+          args:
+            executable: /bin/bash
+          loop: "{{ proxmox_samba_effective.network.allow_subnets }}"
+          when: proxmox_samba_effective.firewall.enabled | bool
+
+        - name: Enable UFW
+          command:
+            argv:
+              - ufw
+              - --force
+              - enable
+          changed_when: false
+          when: proxmox_samba_effective.firewall.enabled | bool
+
+        - name: Enable and restart smbd
+          systemd:
+            name: smbd
+            enabled: true
+            state: restarted
+
+        - name: Enable and reload ssh
+          systemd:
+            name: ssh
+            enabled: true
+            state: reloaded
+          when: proxmox_samba_effective.ssh.enabled | bool
+
+        - name: Enable and restart avahi-daemon
+          systemd:
+            name: avahi-daemon
+            enabled: true
+            state: restarted
+          when: proxmox_samba_defaults_effective.optional_packages.avahi.enabled | default(false) | bool
+
+        - name: Capture listener state
+          shell: |
+            set -eu
+            ss -lntp | grep -E ':(22|445)\b' || true
+          args:
+            executable: /bin/bash
+          register: proxmox_samba_listener_state
+          changed_when: false
+          failed_when: false
+
+        - name: Probe Samba shares locally
+          command:
+            argv:
+              - smbclient
+              - -L
+              - //localhost
+              - -N
+          register: proxmox_samba_smbclient_probe
+          changed_when: false
+          failed_when: false
+
+        - name: Assert guest browse lists selected shares when guest mode is enabled
+          assert:
+            that:
+              - proxmox_samba_smbclient_probe.rc == 0
+              - >-
+                (
+                  (proxmox_samba_smbclient_probe.stdout | default(''))
+                  | regex_search(
+                      '(^|\\n)\\s*'
+                      ~ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_'))))
+                      ~ '\\s+Disk(\\s|$)',
+                      multiline=True
+                    )
+                ) is not none
+            fail_msg: >-
+              Guest browse probe did not list expected share
+              {{
+                item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
+              }}.
+          loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
+          when:
+            - proxmox_samba_effective.samba.guest_mode | bool
+            - (proxmox_samba_effective.shares.explicit | default([]) | length) > 0
+
+        - name: Persist runtime Samba summary
+          copy:
+            dest: "{{ proxmox_samba_runtime_facts_path }}"
+            mode: "0644"
+            content: |
+              ---
+              proxmox_samba_runtime:
+                hostname: {{ ansible_facts.hostname | to_json }}
+                mode: {{ proxmox_samba_effective.mode | to_json }}
+                share_count: {{ proxmox_samba_effective.shares.explicit | default([]) | length }}
+                shares: {{ proxmox_samba_effective.shares.explicit | to_nice_yaml(indent=2) | indent(4, true) }}
+
+        - name: Report Samba apply summary
+          debug:
+            msg:
+              - "Samba apply completed for {{ ansible_facts.hostname }}."
+              - "Share count: {{ proxmox_samba_effective.shares.explicit | default([]) | length }}"
+              - "Selected shares: {{ proxmox_samba_effective.shares.explicit | map(attribute='path') | list }}"
+              - "Listener state:"
+              - "{{ proxmox_samba_listener_state.stdout_lines | default([]) }}"
+      when: proxmox_samba_effective.mode == 'apply'

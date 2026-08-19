@@ -1,0 +1,22 @@
+---
+- name: "[debian]: logging hardening"
+  hosts: all
+  become: true
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+
+  tasks:
+    - name: Ensure rsyslog and logrotate are present
+      command:
+        argv:
+          - apt-get
+          - "-y"
+          - install
+          - rsyslog
+          - logrotate
+
+    - name: Ensure rsyslog is running and enabled
+      service:
+        name: rsyslog
+        state: started
+        enabled: true

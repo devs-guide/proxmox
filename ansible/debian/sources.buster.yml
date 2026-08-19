@@ -1,0 +1,44 @@
+---
+- name: "[debian]: secure apt sources (buster)"
+  hosts: all
+  become: true
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    debian_release: "buster"
+    debian_components: "main contrib non-free"
+
+  tasks:
+    - name: Enforce Debian archive mirrors for buster
+      copy:
+        dest: /etc/apt/sources.list
+        mode: "0644"
+        content: |
+          deb http://archive.debian.org/debian {{ debian_release }} {{ debian_components }}
+          deb-src http://archive.debian.org/debian {{ debian_release }} {{ debian_components }}
+          deb http://archive.debian.org/debian-security {{ debian_release }}/updates {{ debian_components }}
+          deb-src http://archive.debian.org/debian-security {{ debian_release }}/updates {{ debian_components }}
+
+    - name: Allow archived (expired) metadata
+      copy:
+        dest: /etc/apt/apt.conf.d/99-archive-{{ debian_release }}
+        mode: "0644"
+        content: |
+          Acquire::Check-Valid-Until "false";
+          Acquire::AllowInsecureRepositories "true";
+
+    - name: Remove Proxmox enterprise repo if present
+      file:
+        path: /etc/apt/sources.list.d/pve-enterprise.list
+        state: absent
+
+    - name: Configure Proxmox archive no-subscription repo
+      copy:
+        dest: /etc/apt/sources.list.d/pve-no-subscription.list
+        mode: "0644"
+        content: |
+          deb http://archive.proxmox.com/debian/pve buster pve-no-subscription
+
+    - name: Refresh apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 0

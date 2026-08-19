@@ -1,0 +1,701 @@
+---
+- name: "[proxmox]: create or prepare Debian LXC on the Proxmox host"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
+    proxmox_feature_facts_dir: "{{ proxmox_feature_facts_dir | default('/etc/ansible/proxmox/facts') }}"
+    proxmox_lxc_debian_selection_path: "{{ proxmox_lxc_debian.selection_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.selection.yml') }}"
+    proxmox_lxc_debian_runtime_facts_path: "{{ proxmox_lxc_debian.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/lxc.debian.yml') }}"
+    proxmox_lxc_debian_defaults_safe:
+      feature:
+        enabled: false
+        mode: "apply"
+        require_proxmox_host: true
+        require_operator_selection: true
+      defaults:
+        rootfs_storage: "local-lvm"
+        rootfs_size_gb: 10
+        cores: 1
+        memory_mb: 512
+        swap_mb: 256
+        bridge: "vmbr1"
+        ipv4_mode: "dhcp"
+        ipv4_cidr: null
+        gateway: null
+        unprivileged: true
+        nesting: false
+        fuse: false
+        mountpoints: []
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+
+    - name: Normalize Debian LXC feature defaults
+      set_fact:
+        proxmox_lxc_debian_feature_defaults: >-
+          {{
+            proxmox_lxc_debian_defaults_safe.feature
+            | combine(proxmox_feature_defaults.debian_lxc | default({}), recursive=true)
+          }}
+        proxmox_lxc_debian_defaults_effective: >-
+          {{
+            proxmox_lxc_debian_defaults_safe.defaults
+            | combine(proxmox_lxc_debian.defaults | default({}), recursive=true)
+          }}
+
+    - name: Assert Debian LXC feature was explicitly enabled
+      assert:
+        that:
+          - proxmox_lxc_debian_feature_defaults.enabled | bool
+        fail_msg: "Debian LXC feature execution is disabled."
+
+    - name: Assert Debian LXC mode is valid
+      assert:
+        that:
+          - proxmox_lxc_debian_feature_defaults.mode in ['preflight', 'create', 'harden', 'apply']
+        fail_msg: "Unsupported Debian LXC mode: {{ proxmox_lxc_debian_feature_defaults.mode }}"
+
+    - name: Stat operator selection file
+      stat:
+        path: "{{ proxmox_lxc_debian_selection_path }}"
+      register: proxmox_lxc_debian_selection_stat
+
+    - name: Require operator selection file when selection policy is enabled
+      assert:
+        that:
+          - proxmox_lxc_debian_selection_stat.stat.exists
+        fail_msg: "Operator selection file is required at {{ proxmox_lxc_debian_selection_path }}"
+      when: proxmox_lxc_debian_feature_defaults.require_operator_selection | bool
+
+    - name: Load operator selection file
+      include_vars:
+        file: "{{ proxmox_lxc_debian_selection_path }}"
+      when: proxmox_lxc_debian_selection_stat.stat.exists
+
+  tasks:
+    - name: Check for Proxmox host marker
+      stat:
+        path: /etc/pve
+      register: proxmox_lxc_debian_host_marker
+
+    - name: Check for pveversion command
+      command:
+        argv:
+          - sh
+          - -c
+          - command -v pveversion
+      register: proxmox_lxc_debian_pveversion
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when not running on a Proxmox host
+      assert:
+        that:
+          - proxmox_lxc_debian_host_marker.stat.exists
+          - proxmox_lxc_debian_pveversion.rc == 0
+        fail_msg: "This Debian LXC feature must run on the Proxmox host."
+      when: proxmox_lxc_debian_feature_defaults.require_proxmox_host | bool
+
+    - name: Normalize Debian LXC operator selection
+      set_fact:
+        proxmox_lxc_debian_selection: "{{ proxmox_lxc_debian_operator_selection | default({}) }}"
+
+    - name: Build Debian LXC effective model
+      set_fact:
+        proxmox_lxc_debian_effective:
+          mode: "{{ proxmox_lxc_debian_feature_defaults.mode }}"
+          operation: "{{ proxmox_lxc_debian_selection.operation | default('create') }}"
+          ctid: "{{ proxmox_lxc_debian_selection.ctid | string }}"
+          hostname: "{{ proxmox_lxc_debian_selection.hostname | default(None) }}"
+          template: "{{ proxmox_lxc_debian_selection.template | default({}) }}"
+          resources: >-
+            {{
+              proxmox_lxc_debian_defaults_effective
+              | combine(proxmox_lxc_debian_selection.resources | default({}), recursive=true)
+            }}
+          network: >-
+            {{
+              {
+                'bridge': proxmox_lxc_debian_defaults_effective.bridge,
+                'vlan_tag': None,
+                'ipv4_mode': proxmox_lxc_debian_defaults_effective.ipv4_mode,
+                'ipv4_cidr': proxmox_lxc_debian_defaults_effective.ipv4_cidr | default(None),
+                'gateway': proxmox_lxc_debian_defaults_effective.gateway | default(None)
+              } | combine(proxmox_lxc_debian_selection.network | default({}), recursive=true)
+            }}
+          hardening: "{{ proxmox_lxc_debian_selection.hardening | default({}) }}"
+          mountpoints: >-
+            {{
+              proxmox_lxc_debian_selection.mountpoints
+              | default(proxmox_lxc_debian_defaults_effective.mountpoints | default([]), true)
+            }}
+
+    - name: Capture current container status
+      command:
+        argv:
+          - pct
+          - status
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+      register: proxmox_lxc_debian_status_before
+      changed_when: false
+      failed_when: false
+
+    - name: Check selected bridge exists
+      command:
+        argv:
+          - ip
+          - -o
+          - link
+          - show
+          - dev
+          - "{{ proxmox_lxc_debian_effective.network.bridge }}"
+      register: proxmox_lxc_debian_bridge_check
+      changed_when: false
+
+    - name: Assert selected bridge exists
+      assert:
+        that:
+          - proxmox_lxc_debian_bridge_check.rc == 0
+        fail_msg: "Selected bridge {{ proxmox_lxc_debian_effective.network.bridge }} does not exist."
+
+    - name: Check selected storage exists
+      shell: >-
+        pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | grep -Fx
+        {{ proxmox_lxc_debian_effective.resources.rootfs_storage | quote }}
+      register: proxmox_lxc_debian_storage_check
+      changed_when: false
+      failed_when: false
+
+    - name: Assert selected storage exists
+      assert:
+        that:
+          - proxmox_lxc_debian_storage_check.rc == 0
+        fail_msg: "Selected storage {{ proxmox_lxc_debian_effective.resources.rootfs_storage }} is not valid."
+
+    - name: Check selected local template path
+      stat:
+        path: "/var/lib/vz/template/cache/{{ proxmox_lxc_debian_effective.template.name | default('') }}"
+      register: proxmox_lxc_debian_template_stat
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.name is defined
+        - proxmox_lxc_debian_effective.template.name | length > 0
+
+    - name: Normalize selected template download method
+      set_fact:
+        proxmox_lxc_debian_template_download_method: >-
+          {{ proxmox_lxc_debian_effective.template.download_method | default('pveam') }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+
+    - name: Require URL when official URL fallback is selected
+      assert:
+        that:
+          - proxmox_lxc_debian_effective.template.url is defined
+          - proxmox_lxc_debian_effective.template.url | length > 0
+          - proxmox_lxc_debian_effective.template.url is match('^https://download\.proxmox\.com/images/system/debian-[0-9]+-standard_')
+        fail_msg: "Template URL fallback requires an official Proxmox images/system Debian template URL."
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'url'
+
+    - name: Ensure local template cache directory exists for URL fallback
+      file:
+        path: /var/lib/vz/template/cache
+        state: directory
+        mode: "0755"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'url'
+
+    - name: Refresh template catalog when pveam download is requested
+      command:
+        argv:
+          - pveam
+          - update
+      changed_when: false
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'pveam'
+
+    - name: Download selected Debian template through pveam when missing
+      command:
+        argv:
+          - pveam
+          - download
+          - "{{ proxmox_lxc_debian_effective.template.storage | default('local') }}"
+          - "{{ proxmox_lxc_debian_effective.template.name }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'pveam'
+
+    - name: Download selected Debian template from official Proxmox URL fallback when missing
+      get_url:
+        url: "{{ proxmox_lxc_debian_effective.template.url }}"
+        dest: "/var/lib/vz/template/cache/{{ proxmox_lxc_debian_effective.template.name }}"
+        mode: "0644"
+        timeout: 120
+        force: false
+        validate_certs: true
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.download_if_missing | default(false) | bool
+        - not proxmox_lxc_debian_template_stat.stat.exists | default(false)
+        - proxmox_lxc_debian_template_download_method == 'url'
+
+    - name: Assert template exists for create flow
+      stat:
+        path: "/var/lib/vz/template/cache/{{ proxmox_lxc_debian_effective.template.name | default('') }}"
+      register: proxmox_lxc_debian_template_after
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.template.name is defined
+        - proxmox_lxc_debian_effective.template.name | length > 0
+
+    - name: Require selected template for create flow
+      assert:
+        that:
+          - proxmox_lxc_debian_effective.template.name is defined
+          - proxmox_lxc_debian_effective.template.name | length > 0
+          - proxmox_lxc_debian_template_after.stat.exists | default(false)
+        fail_msg: "Selected Debian template is not available locally for create flow."
+      when: proxmox_lxc_debian_effective.operation == 'create'
+
+    - name: Fail if selected CTID already exists during create flow
+      assert:
+        that:
+          - proxmox_lxc_debian_status_before.rc != 0
+        fail_msg: "Selected CTID {{ proxmox_lxc_debian_effective.ctid }} already exists."
+      when: proxmox_lxc_debian_effective.operation == 'create'
+
+    - name: Assert existing container is present for harden/apply existing flow
+      assert:
+        that:
+          - proxmox_lxc_debian_status_before.rc == 0
+        fail_msg: "Selected existing CTID {{ proxmox_lxc_debian_effective.ctid }} was not found."
+      when: proxmox_lxc_debian_effective.operation == 'use_existing'
+
+    - name: Require static IPv4 details when static mode is selected
+      assert:
+        that:
+          - proxmox_lxc_debian_effective.network.ipv4_cidr is not none
+          - proxmox_lxc_debian_effective.network.ipv4_cidr | string | length > 0
+          - proxmox_lxc_debian_effective.network.gateway is not none
+          - proxmox_lxc_debian_effective.network.gateway | string | length > 0
+        fail_msg: "Static IPv4 mode requires both ipv4_cidr and gateway."
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
+    - name: Capture runner-normalized static IPv4 CIDR for pct create
+      set_fact:
+        proxmox_lxc_debian_ipv4_cidr_effective: >-
+          {{
+            proxmox_lxc_debian_effective.network.ipv4_cidr
+            | default('', true)
+            | string
+            | trim
+          }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
+    - name: Append default /24 when static IPv4 selection is a bare address
+      set_fact:
+        proxmox_lxc_debian_ipv4_cidr_effective: "{{ proxmox_lxc_debian_ipv4_cidr_effective ~ '/24' }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+        - (proxmox_lxc_debian_ipv4_cidr_effective | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+
+    - name: Report effective static IPv4 payload before pct create
+      debug:
+        msg:
+          requested_ip: "{{ proxmox_lxc_debian_effective.network.ipv4_cidr | default('unset') }}"
+          effective_ip: "{{ proxmox_lxc_debian_ipv4_cidr_effective | default('unset') }}"
+          gateway: "{{ proxmox_lxc_debian_effective.network.gateway | default('unset') }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
+    - name: Assert effective static IPv4 and gateway syntax before pct create
+      assert:
+        that:
+          - proxmox_lxc_debian_ipv4_cidr_effective is not none
+          - proxmox_lxc_debian_ipv4_cidr_effective | string | length > 0
+          - (proxmox_lxc_debian_ipv4_cidr_effective | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+          - (proxmox_lxc_debian_effective.network.gateway | string) is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+        fail_msg: >-
+          Static IPv4 mode requires a valid IPv4/CIDR and gateway for pct create.
+          normalized_ip={{ proxmox_lxc_debian_ipv4_cidr_effective | default('unset') }}
+          gateway={{ proxmox_lxc_debian_effective.network.gateway | default('unset') }}
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+
+    - name: Build pct network string
+      set_fact:
+        proxmox_lxc_debian_net0: >-
+          {{
+            'name=eth0,bridge=' ~ proxmox_lxc_debian_effective.network.bridge
+            ~ ',type=veth'
+            ~ ',firewall=1'
+            ~ (',tag=' ~ proxmox_lxc_debian_effective.network.vlan_tag
+               if (proxmox_lxc_debian_effective.network.vlan_tag is not none
+                   and proxmox_lxc_debian_effective.network.vlan_tag | string | length > 0)
+               else '')
+            ~ (
+              ',ip=' ~ proxmox_lxc_debian_ipv4_cidr_effective
+              ~ (',gw=' ~ proxmox_lxc_debian_effective.network.gateway
+                 if (proxmox_lxc_debian_effective.network.gateway is not none
+                     and proxmox_lxc_debian_effective.network.gateway | string | length > 0)
+                 else '')
+              if proxmox_lxc_debian_effective.network.ipv4_mode == 'static'
+              else ',ip=dhcp'
+            )
+          }}
+
+    - name: Report effective pct net0 string before pct create
+      debug:
+        msg:
+          net0: "{{ proxmox_lxc_debian_net0 }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+
+    - name: Build pct feature string
+      set_fact:
+        proxmox_lxc_debian_features: >-
+          {{
+            [
+              'nesting=1' if proxmox_lxc_debian_effective.resources.nesting | bool else '',
+              'fuse=1' if proxmox_lxc_debian_effective.resources.fuse | bool else ''
+            ] | reject('equalto', '') | join(',')
+          }}
+
+    - name: Create selected Debian LXC
+      command:
+        argv:
+          - pct
+          - create
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - "local:vztmpl/{{ proxmox_lxc_debian_effective.template.name }}"
+          - -ostype
+          - debian
+          - -hostname
+          - "{{ proxmox_lxc_debian_effective.hostname }}"
+          - -rootfs
+          - "{{ proxmox_lxc_debian_effective.resources.rootfs_storage }}:{{ proxmox_lxc_debian_effective.resources.rootfs_size_gb }}"
+          - -cores
+          - "{{ proxmox_lxc_debian_effective.resources.cores | string }}"
+          - -memory
+          - "{{ proxmox_lxc_debian_effective.resources.memory_mb | string }}"
+          - -swap
+          - "{{ proxmox_lxc_debian_effective.resources.swap_mb | string }}"
+          - -unprivileged
+          - "{{ '1' if proxmox_lxc_debian_effective.resources.unprivileged | bool else '0' }}"
+          - -net0
+          - "{{ proxmox_lxc_debian_net0 }}"
+          - -onboot
+          - "1"
+      when: proxmox_lxc_debian_effective.operation == 'create'
+
+    - name: Apply optional pct features
+      command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - -features
+          - "{{ proxmox_lxc_debian_features }}"
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - proxmox_lxc_debian_features | length > 0
+
+    - name: Validate selected host mountpoints exist on the Proxmox host
+      stat:
+        path: "{{ item.host_path }}"
+      register: proxmox_lxc_debian_host_mount_stats
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Assert selected host mountpoints remain valid
+      assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: "Selected host mountpoint {{ item.stat.path | default('unknown') }} does not exist as a directory on the Proxmox host."
+      loop: "{{ proxmox_lxc_debian_host_mount_stats.results | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Prepare selected container mountpoint target directories
+      block:
+        - name: Mount selected container rootfs for mountpoint preparation
+          command:
+            argv:
+              - pct
+              - mount
+              - "{{ proxmox_lxc_debian_effective.ctid }}"
+          register: proxmox_lxc_debian_pct_mount
+          changed_when: proxmox_lxc_debian_pct_mount.rc == 0
+
+        - name: Derive default mounted container rootfs path
+          set_fact:
+            proxmox_lxc_debian_rootfs_path_default: "/var/lib/lxc/{{ proxmox_lxc_debian_effective.ctid }}/rootfs"
+
+        - name: Check default mounted container rootfs path
+          stat:
+            path: "{{ proxmox_lxc_debian_rootfs_path_default }}"
+          register: proxmox_lxc_debian_rootfs_default_stat
+
+        - name: Resolve mounted container rootfs path as a scalar string
+          set_fact:
+            proxmox_lxc_debian_rootfs_path: >-
+              {{
+                proxmox_lxc_debian_rootfs_path_default
+                if proxmox_lxc_debian_rootfs_default_stat.stat.exists
+                else (
+                  proxmox_lxc_debian_pct_mount.stdout
+                  | default('')
+                  | regex_search('/var/lib/lxc/[0-9]+/rootfs')
+                  | default('', true)
+                )
+              }}
+
+        - name: Assert mounted container rootfs path resolved to scalar string
+          assert:
+            that:
+              - proxmox_lxc_debian_rootfs_path is string
+              - proxmox_lxc_debian_rootfs_path | length > 0
+              - "'[' not in proxmox_lxc_debian_rootfs_path"
+              - "']' not in proxmox_lxc_debian_rootfs_path"
+            fail_msg: "Mounted container rootfs path could not be resolved as a scalar string. pct mount output={{ proxmox_lxc_debian_pct_mount.stdout | default('') }}"
+
+        - name: Assert mounted container rootfs path exists
+          stat:
+            path: "{{ proxmox_lxc_debian_rootfs_path }}"
+          register: proxmox_lxc_debian_rootfs_stat
+
+        - name: Require mounted container rootfs path for mountpoint preparation
+          assert:
+            that:
+              - proxmox_lxc_debian_rootfs_stat.stat.exists
+              - proxmox_lxc_debian_rootfs_stat.stat.isdir
+            fail_msg: "Mounted container rootfs path {{ proxmox_lxc_debian_rootfs_path }} was not found after pct mount."
+
+        - name: Ensure parent directories for selected mountpoint targets exist inside mounted container rootfs
+          file:
+            path: "{{ proxmox_lxc_debian_rootfs_path }}{{ item.container_path | dirname }}"
+            state: directory
+            mode: "0755"
+          loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+
+        - name: Ensure selected mountpoint targets exist inside mounted container rootfs
+          file:
+            path: "{{ proxmox_lxc_debian_rootfs_path }}{{ item.container_path }}"
+            state: directory
+            mode: "0755"
+          loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      always:
+        - name: Unmount selected container rootfs after mountpoint preparation
+          command:
+            argv:
+              - pct
+              - unmount
+              - "{{ proxmox_lxc_debian_effective.ctid }}"
+          changed_when: false
+          failed_when: false
+          when:
+            - proxmox_lxc_debian_pct_mount is defined
+            - proxmox_lxc_debian_pct_mount.rc == 0
+      when:
+        - proxmox_lxc_debian_effective.operation == 'create'
+        - (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Attach selected mountpoints to the container
+      command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - "-mp{{ ansible_loop.index0 }}"
+          - "{{ item.host_path }},mp={{ item.container_path }},backup={{ '1' if item.backup | default(false) | bool else '0' }}"
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      loop_control:
+        extended: true
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Capture container config after mountpoint attachment
+      command:
+        argv:
+          - pct
+          - config
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+      register: proxmox_lxc_debian_config_after_mounts
+      changed_when: false
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Assert selected mountpoints were attached to container config
+      assert:
+        that:
+          - >-
+            (
+              proxmox_lxc_debian_config_after_mounts.stdout
+              | default('')
+              | regex_search(
+                  '(^|\\n)mp'
+                  ~ ansible_loop.index0
+                  ~ ':\\s*'
+                  ~ (item.host_path | regex_escape)
+                  ~ ',mp='
+                  ~ (item.container_path | regex_escape)
+                  ~ '([,\\n]|$)',
+                  multiline=True
+                )
+            ) is not none
+        fail_msg: "Container config is missing expected mp{{ ansible_loop.index0 }} attachment for {{ item.host_path }} -> {{ item.container_path }}."
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      loop_control:
+        extended: true
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Ensure selected container console settings support interactive login
+      command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - -console
+          - "1"
+          - -cmode
+          - shell
+          - -tty
+          - "2"
+
+    - name: Start selected container
+      command:
+        argv:
+          - pct
+          - start
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+      register: proxmox_lxc_debian_start
+      changed_when: proxmox_lxc_debian_start.rc == 0
+      failed_when: false
+
+    - name: Wait for container to report running
+      command:
+        argv:
+          - pct
+          - status
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+      register: proxmox_lxc_debian_status_after
+      changed_when: false
+      until: "'running' in (proxmox_lxc_debian_status_after.stdout | default(''))"
+      retries: 10
+      delay: 2
+
+    - name: Wait for DHCP IPv4 assignment on selected container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - --
+          - ip
+          - -o
+          - -4
+          - addr
+          - show
+          - scope
+          - global
+      register: proxmox_lxc_debian_ipv4_wait
+      changed_when: false
+      failed_when: false
+      until: "(proxmox_lxc_debian_ipv4_wait.stdout_lines | default([]) | length) > 0"
+      retries: 15
+      delay: 2
+      when: proxmox_lxc_debian_effective.network.ipv4_mode == 'dhcp'
+
+    - name: Capture container IPv4 summary
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - --
+          - ip
+          - -o
+          - -4
+          - addr
+          - show
+          - scope
+          - global
+      register: proxmox_lxc_debian_ipv4
+      changed_when: false
+      failed_when: false
+
+    - name: Verify selected mountpoints are visible inside the running container
+      command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_lxc_debian_effective.ctid }}"
+          - --
+          - findmnt
+          - -n
+          - --target
+          - "{{ item.container_path }}"
+      register: proxmox_lxc_debian_container_mounts
+      changed_when: false
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Assert selected mountpoints are visible inside the running container
+      assert:
+        that:
+          - item.rc == 0
+        fail_msg: "Attached mountpoint {{ item.item.container_path }} is not visible inside container {{ proxmox_lxc_debian_effective.ctid }}."
+      loop: "{{ proxmox_lxc_debian_container_mounts.results | default([], true) }}"
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
+    - name: Persist Debian LXC runtime facts
+      copy:
+        dest: "{{ proxmox_lxc_debian_runtime_facts_path }}"
+        mode: "0644"
+        content: |
+          ---
+          proxmox_lxc_debian_runtime:
+            ctid: "{{ proxmox_lxc_debian_effective.ctid }}"
+            hostname: "{{ proxmox_lxc_debian_effective.hostname | default('') }}"
+            operation: "{{ proxmox_lxc_debian_effective.operation }}"
+            mode: "{{ proxmox_lxc_debian_effective.mode }}"
+            template: "{{ proxmox_lxc_debian_effective.template.name | default('') }}"
+            bridge: "{{ proxmox_lxc_debian_effective.network.bridge }}"
+            ipv4_summary: "{{ proxmox_lxc_debian_ipv4.stdout_lines | default([]) }}"
+            mountpoints: {{ proxmox_lxc_debian_effective.mountpoints | default([], true) | to_json }}
+
+    - name: Report Debian LXC host-side completion summary
+      debug:
+        msg:
+          ctid: "{{ proxmox_lxc_debian_effective.ctid }}"
+          hostname: "{{ proxmox_lxc_debian_effective.hostname }}"
+          mode: "{{ proxmox_lxc_debian_effective.mode }}"
+          operation: "{{ proxmox_lxc_debian_effective.operation }}"
+          template: "{{ proxmox_lxc_debian_effective.template.name | default('') }}"
+          bridge: "{{ proxmox_lxc_debian_effective.network.bridge }}"
+          ipv4_summary: "{{ proxmox_lxc_debian_ipv4.stdout_lines | default([]) }}"
+          mountpoints: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"

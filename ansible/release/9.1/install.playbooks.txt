@@ -1,0 +1,17 @@
+# Proxmox VE 9.1 (Trixie) playlist
+# Order matters
+debian/sources.trixie.yml
+enterprise.yml
+bootstrap.yml
+packages.yml
+debian/install.packages.yml
+debian/users.yml
+debian/lan.yml
+debian/network.yml
+debian/security.yml
+debian/sysctl.yml
+debian/power.yml
+debian/logging.yml
+debian/performance.yml
+certs.yml
+debian/node.yml

@@ -1,0 +1,129 @@
+---
+- name: "[pve-9.x]: regenerate pveproxy cert with IP SAN"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    cert_days: 730
+    cert_renewal_window_seconds: 2592000
+    cert_key_path: /etc/pve/local/pveproxy-ssl.key
+    cert_crt_path: /etc/pve/local/pveproxy-ssl.pem
+    cert_tmp_cnf: /tmp/pveproxy-openssl.cnf
+    cert_common_name: "{{ ansible_facts['hostname'] }}{{ '.local' if (ansible_facts.get('domain', '')) == '' else '' }}"
+
+  tasks:
+    - name: Build SAN list
+      set_fact:
+        cert_sans: >-
+          {{
+            (
+              [
+                'DNS:' ~ ansible_facts['hostname'],
+                'DNS:' ~ ansible_facts.get('fqdn', ansible_facts['hostname'])
+              ]
+              + (
+                [ 'IP:' ~ ansible_facts.get('default_ipv4', {}).get('address') ]
+                if (ansible_facts.get('default_ipv4', {}).get('address') is not none)
+                else []
+              )
+            ) | unique
+          }}
+
+    - name: Check whether current pveproxy cert exists
+      stat:
+        path: "{{ cert_crt_path }}"
+      register: pveproxy_cert_stat
+
+    - name: Check whether current cert covers desired renewal window
+      command:
+        argv:
+          - openssl
+          - x509
+          - -checkend
+          - "{{ cert_renewal_window_seconds | string }}"
+          - -noout
+          - -in
+          - "{{ cert_crt_path }}"
+      register: pveproxy_cert_expiry
+      changed_when: false
+      failed_when: false
+      when: pveproxy_cert_stat.stat.exists
+
+    - name: Read current pveproxy SAN list
+      command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ cert_crt_path }}"
+          - -noout
+          - -ext
+          - subjectAltName
+      register: pveproxy_cert_sans
+      changed_when: false
+      failed_when: false
+      when: pveproxy_cert_stat.stat.exists
+
+    - name: Decide whether pveproxy cert regeneration is required
+      set_fact:
+        pveproxy_cert_regen_required: >-
+          {{
+            (not pveproxy_cert_stat.stat.exists)
+            or (pveproxy_cert_expiry.rc | default(1)) != 0
+            or (
+              cert_sans
+              | reject('in', (pveproxy_cert_sans.stdout | default('')))
+              | list
+              | length > 0
+            )
+          }}
+
+    - name: Write temporary OpenSSL config for pveproxy cert
+      copy:
+        dest: "{{ cert_tmp_cnf }}"
+        mode: "0644"
+        content: |
+          [ req ]
+          default_bits       = 2048
+          prompt             = no
+          default_md         = sha256
+          req_extensions     = v3_req
+          distinguished_name = req_distinguished_name
+
+          [ req_distinguished_name ]
+          C  = XX
+          ST = XX
+          L  = XX
+          O  = Proxmox Virtual Environment
+          OU = PVE Cluster Node
+          CN = {{ cert_common_name }}
+
+          [ v3_req ]
+          subjectAltName = {{ cert_sans | join(',') }}
+      when: pveproxy_cert_regen_required
+
+    - name: Generate pveproxy key and certificate with SAN
+      command: >
+        openssl req -x509 -nodes
+        -newkey rsa:2048
+        -keyout {{ cert_key_path }}
+        -out {{ cert_crt_path }}
+        -days {{ cert_days }}
+        -config {{ cert_tmp_cnf }}
+        -extensions v3_req
+      when: pveproxy_cert_regen_required
+
+    - name: Restart pveproxy to load new cert
+      service:
+        name: pveproxy
+        state: restarted
+      when: pveproxy_cert_regen_required
+
+    - name: Remove temporary OpenSSL config
+      file:
+        path: "{{ cert_tmp_cnf }}"
+        state: absent
+      when: pveproxy_cert_regen_required

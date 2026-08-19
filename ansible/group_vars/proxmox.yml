@@ -1,0 +1,456 @@
+---
+# Manual Proxmox feature defaults.
+# This file is for user-invoked feature playbooks under ansible/proxmox/ and
+# setup runners under setup/. It is not part of the Debian baseline bootstrap.
+
+proxmox_feature_defaults:
+  debian_lxc:
+    enabled: false
+    mode: "apply"  # preflight | create | harden | apply
+    require_proxmox_host: true
+    require_operator_selection: true
+  vlan:
+    enabled: false
+    mode: "preflight"  # preflight | write | apply
+    use_discovered_hardware: true
+    require_operator_selection: true
+  samba:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
+    require_operator_selection: true
+  cli_codex:
+    enabled: false
+    mode: "apply"  # preflight | apply
+  network:
+    enabled: false
+    mode: "check"  # check | apply
+  lxc_network:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
+    require_operator_selection: true
+  lxc_codex:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
+  lxc_users:
+    enabled: false
+    mode: "apply"  # preflight | apply
+    require_container: true
+
+proxmox_vlan_ui:
+  enabled: true
+  facts_dir: "/etc/ansible/proxmox/facts"
+  hardware_facts_path: "/etc/ansible/proxmox/facts/hardware.yml"
+  hardware_nics_tsv_path: "/etc/ansible/proxmox/facts/hardware.nics.tsv"
+  selection_path: "/etc/ansible/proxmox/facts/vlan.selection.yml"
+  default_data_bridge: "vmbr1"
+  default_bridge_vids: "10 20 30 40"
+  allow_vlan_1: false
+  allow_all_vlan_range: false
+  allow_same_management_and_data_nic: false
+  allow_data_nic_with_host_ip: false
+  allow_data_nic_bridge_member: false
+
+proxmox_vlan:
+  management:
+    bridge: null
+    nic: null
+    ip_cidr: null
+    gateway: null
+    gui_port: 8006
+
+  data:
+    bridge: "vmbr1"
+    nic: null
+    expected_driver: null
+    expected_pci: null
+    bridge_vlan_aware: true
+    bridge_fd: 2
+    bridge_vids: "10 20 30 40"
+    host_ip: null
+
+  safety:
+    require_oob_console: true
+    require_management_unchanged: true
+    require_data_nic_unused: true
+    require_data_nic_no_ip: true
+    require_ifreload_dry_run: true
+    normalize_legacy_bridge_fd_zero: true
+
+  workloads:
+    migrate: false
+    vm_vlan_map: {}
+    ct_vlan_map: {}
+
+proxmox_network:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  preflight_facts_path: "/etc/ansible/proxmox/facts/network.preflight.latest.yml"
+  preflight_json_path: "/etc/ansible/proxmox/facts/network.preflight.latest.json"
+  intent_path: "/etc/ansible/proxmox/facts/network.intent.yml"
+  plan_path: "/etc/ansible/proxmox/facts/network.plan.tsv"
+  verify_path: "/etc/ansible/proxmox/facts/network.verify.tsv"
+  update_runtime_facts_path: "/etc/ansible/proxmox/facts/network.update.runtime.yml"
+  defaults:
+    admin_bridge: "vmbr0"
+    data_bridge: "vmbr1"
+    lan_cidr: "10.0.0.0/24"
+    guest_admin_if: "eth0"
+    guest_data_if: "eth1"
+    lxc_strategy: "highspeed_only"
+    vlan_tag: 1
+    vm_model: "virtio"
+    mode: "check"
+
+proxmox_samba:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  container_facts_path: "/etc/ansible/proxmox/facts/container.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/samba.yml"
+  mounts_tsv_path: "/etc/ansible/proxmox/facts/samba.mounts.tsv"
+  selection_path: "/etc/ansible/proxmox/facts/samba.selection.yml"
+
+  packages:
+    - samba
+    - samba-common-bin
+    - acl
+    - attr
+    - iproute2
+    - util-linux
+    - ca-certificates
+  preflight_packages:
+    - smbclient
+  optional_packages:
+    avahi:
+      enabled: true
+      packages:
+        - avahi-daemon
+    ssh:
+      enabled: false
+      packages:
+        - openssh-server
+    ufw:
+      enabled: false
+      packages:
+        - ufw
+    wsdd:
+      enabled: false
+      packages:
+        - wsdd2
+
+  identity:
+    workgroup: "WORKGROUP"
+    netbios_name: null
+    server_string: "Proxmox Samba NAS"
+    fruit_model: "Xserve"
+
+  network:
+    allow_subnets:
+      - "10.0.0.0/24"
+      - "192.168.0.0/16"
+    smb_ports:
+      - 445
+    ssh_port: 22
+    bind_interfaces_only: true
+    interfaces:
+      - "lo"
+      - "eth0"
+    include_discovered_ipv4_networks: true
+
+  ssh:
+    enabled: false
+    include_path: "/etc/ssh/sshd_config.d/90-proxmox-samba.conf"
+    permit_root_login: "yes"
+    password_authentication: null
+    allow_users:
+      - root
+      - proxmox
+      - agent
+
+  firewall:
+    enabled: false
+
+  samba:
+    guest_mode: true
+    map_to_guest: "Bad User"
+    guest_account: "nobody"
+    force_user: "root"
+    force_group: "root"
+    create_mask: "0666"
+    directory_mask: "0777"
+    force_create_mode: "0666"
+    force_directory_mode: "0777"
+    allocation_roundup_size: 4096
+    min_protocol: "SMB3_02"
+    max_protocol: "SMB3_11"
+    disable_netbios: true
+    load_printers: false
+    macos_vfs_objects:
+      - catia
+      - fruit
+      - streams_xattr
+    fruit_aapl: true
+    fruit_time_machine: false
+    fruit_resource: "xattr"
+    fruit_nfs_aces: false
+
+  shares:
+    auto_discover: true
+    include_paths:
+      - "/media"
+      - "/mnt"
+      - "/srv/storage"
+      - "/storage"
+    exclude_paths:
+      - "/"
+      - "/boot"
+      - "/dev"
+      - "/etc"
+      - "/proc"
+      - "/run"
+      - "/sys"
+      - "/tmp"
+      - "/var"
+    explicit: []
+
+proxmox_lxc_network:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  container_facts_path: "/etc/ansible/proxmox/facts/container.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.network.yml"
+  selection_path: "/etc/ansible/proxmox/facts/lxc.network.selection.yml"
+  packages:
+    base:
+      - sudo
+      - ca-certificates
+      - gnupg
+      - curl
+      - wget
+      - python3
+      - python3-venv
+      - python3-apt
+      - net-tools
+      - iproute2
+      - util-linux
+      - rsync
+      - tmux
+      - less
+      - vim-tiny
+      - git
+      - openssh-client
+    file_clients:
+      - openssh-server
+      - openssh-client
+      - sshfs
+      - fuse3
+      - cifs-utils
+      - nfs-common
+    debug:
+      - dnsutils
+      - ethtool
+      - tcpdump
+      - iperf3
+      - lsof
+  hardening:
+    access_profile: "local_only"
+    access_users: []
+    allow_subnets: []
+    expected_dns: "10.0.0.1"
+    internet_probe_ipv4: "1.1.1.1"
+    enable_ssh: true
+    enable_ufw: false
+    enable_fuse_client: false
+    enable_avahi: false
+  ssh:
+    include_path: "/etc/ssh/sshd_config.d/90-proxmox-lxc-network.conf"
+    port: 22
+    permit_root_login: "yes"
+    password_authentication: "yes"
+    kbd_interactive_authentication: "no"
+    use_pam: "yes"
+    x11_forwarding: "no"
+    pubkey_authentication: null
+  sftp:
+    enabled: true
+    subsystem_name: "sftp"
+    subsystem_path: "/usr/lib/openssh/sftp-server"
+    require_subsystem: true
+    validate_binary: true
+  optional_packages:
+    avahi:
+      enabled: false
+      packages:
+        - avahi-daemon
+    ufw:
+      enabled: false
+      packages:
+        - ufw
+    ssh:
+      enabled: true
+      packages:
+        - openssh-server
+
+proxmox_cli_codex:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/cli.codex.yml"
+  nvm_version: "v0.39.7"
+  node_version: "lts/*"
+  codex_package: "@openai/codex"
+  codex_version: "latest"
+  install_docs_mcp: true
+  docs_mcp_name: "openaiDeveloperDocs"
+  docs_mcp_url: "https://developers.openai.com/mcp"
+
+proxmox_lxc_debian:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  containers_tsv_path: "/etc/ansible/proxmox/facts/lxc.debian.containers.tsv"
+  templates_tsv_path: "/etc/ansible/proxmox/facts/lxc.debian.templates.tsv"
+  isos_tsv_path: "/etc/ansible/proxmox/facts/lxc.debian.isos.tsv"
+  selection_path: "/etc/ansible/proxmox/facts/lxc.debian.selection.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.debian.yml"
+
+  defaults:
+    rootfs_storage: "local-lvm"
+    rootfs_size_gb: 10
+    cores: 1
+    memory_mb: 512
+    swap_mb: 256
+    bridge: "vmbr1"
+    ipv4_mode: "dhcp"
+    ipv4_cidr: null
+    gateway: null
+    unprivileged: true
+    nesting: false
+    fuse: false
+
+  template_policy:
+    prefer_pveam_live_catalog: true
+    allow_last_known_fallback: true
+    base_url: "https://download.proxmox.com/images/system"
+    fallback_download_method: "url"
+    storage: "local"
+    releases:
+      - major: 10
+        codename: "buster"
+        label: "Buster"
+        template: "debian-10-standard_10.7-1_amd64.tar.gz"
+        status: "legacy"
+      - major: 11
+        codename: "bullseye"
+        label: "Bullseye"
+        template: "debian-11-standard_11.7-1_amd64.tar.zst"
+        status: "oldstable"
+      - major: 12
+        codename: "bookworm"
+        label: "Bookworm"
+        template: "debian-12-standard_12.12-1_amd64.tar.zst"
+        status: "stable-minus-one"
+      - major: 13
+        codename: "trixie"
+        label: "Trixie"
+        template: "debian-13-standard_13.1-2_amd64.tar.zst"
+        status: "current"
+
+  package_profiles:
+    minimal:
+      - sudo
+      - ca-certificates
+      - gnupg
+      - curl
+      - wget
+      - python3
+      - python3-venv
+      - python3-apt
+      - net-tools
+      - iproute2
+      - util-linux
+      - rsync
+      - tmux
+      - less
+      - vim-tiny
+    tools:
+      - htop
+      - nmon
+      - lsof
+      - pciutils
+      - usbutils
+      - lshw
+      - nvme-cli
+      - smartmontools
+      - lm-sensors
+      - dnsutils
+      - ethtool
+      - tcpdump
+
+  hardening:
+    access_profile: "local_only"
+    access_users:
+      - name: "root"
+      - name: "proxmox"
+      - name: "agent"
+    ssh:
+      port: 22
+      include_path: "/etc/ssh/sshd_config.d/90-proxmox-debian.conf"
+      permit_root_login: "yes"
+      password_authentication: "yes"
+      kbd_interactive_authentication: "no"
+      use_pam: "yes"
+      x11_forwarding: "no"
+      pubkey_authentication: null
+    allow_subnets:
+      - "10.0.0.0/24"
+      - "192.168.0.0/16"
+    expected_dns: "10.0.0.1"
+    internet_probe_ipv4: "1.1.1.1"
+    enable_ufw: false
+    enable_ssh: false
+
+  mounts:
+    include_paths:
+      - "/media"
+      - "/mnt"
+      - "/srv/storage"
+      - "/storage"
+    exclude_paths:
+      - "/"
+      - "/boot"
+      - "/dev"
+      - "/etc"
+      - "/proc"
+      - "/run"
+      - "/sys"
+      - "/tmp"
+      - "/var"
+
+proxmox_lxc_codex:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  node_runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.codex.node.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.codex.yml"
+  node_install_scope: "shared"
+  node_shared_nvm_dir: "/usr/local/lib/nvm"
+  node_nvm_version: "v0.40.4"
+  node_version: "lts/*"
+  node_npm_policy: "bundled"
+  node_npm_version: ""
+  node_create_system_symlinks: true
+  node_enable_corepack: false
+  codex_npm_package: "@openai/codex"
+  codex_version: "latest"
+  codex_install_docs_mcp: true
+  codex_docs_mcp_name: "openaiDeveloperDocs"
+  codex_docs_mcp_url: "https://developers.openai.com/mcp"
+
+proxmox_lxc_users:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.users.yml"
+  default_sudo_group: "sudo"
+  default_nonroot_sudo: true
+  passwordless_sudo: false
+  default_user_update_password: "always"
+  managed_users_require_sudo: true
+  user_defs:
+    - name: "root"
+      password: "root"
+    - name: "app"
+      password: "app"
+    - name: "agent"
+      password: "agent"

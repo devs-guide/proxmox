@@ -1,0 +1,907 @@
+---
+- name: "[proxmox]: configure local-LAN access for Debian LXC containers"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
+    proxmox_feature_facts_dir: "{{ proxmox_feature_facts_dir | default('/etc/ansible/proxmox/facts') }}"
+    proxmox_lxc_network_container_facts_path: "{{ proxmox_lxc_network.container_facts_path | default(proxmox_feature_facts_dir ~ '/container.yml') }}"
+    proxmox_lxc_network_runtime_facts_path: "{{ proxmox_lxc_network.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/lxc.network.yml') }}"
+    proxmox_lxc_network_selection_path: "{{ proxmox_lxc_network.selection_path | default(proxmox_feature_facts_dir ~ '/lxc.network.selection.yml') }}"
+
+    proxmox_lxc_network_defaults_safe:
+      lxc_network:
+        enabled: false
+        mode: "apply"
+        require_container: true
+        require_operator_selection: true
+      feature:
+        facts_dir: "/etc/ansible/proxmox/facts"
+        container_facts_path: "/etc/ansible/proxmox/facts/container.yml"
+        runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.network.yml"
+        selection_path: "/etc/ansible/proxmox/facts/lxc.network.selection.yml"
+        packages:
+          base:
+            - sudo
+            - ca-certificates
+            - gnupg
+            - curl
+            - wget
+            - python3
+            - python3-venv
+            - python3-apt
+            - net-tools
+            - iproute2
+            - util-linux
+            - rsync
+            - tmux
+            - less
+            - vim-tiny
+            - git
+            - openssh-client
+          file_clients:
+            - sshfs
+            - fuse3
+            - cifs-utils
+            - nfs-common
+          debug:
+            - dnsutils
+            - ethtool
+            - tcpdump
+            - iperf3
+            - lsof
+        hardening:
+          access_profile: "local_only"
+          access_users: []
+          allow_subnets: []
+          expected_dns: "10.0.0.1"
+          internet_probe_ipv4: "1.1.1.1"
+          enable_ssh: true
+          enable_ufw: false
+          enable_fuse_client: false
+          enable_avahi: false
+        ssh:
+          include_path: "/etc/ssh/sshd_config.d/90-proxmox-lxc-network.conf"
+          port: 22
+          permit_root_login: "yes"
+          password_authentication: "yes"
+          kbd_interactive_authentication: "no"
+          use_pam: "yes"
+          x11_forwarding: "no"
+          pubkey_authentication: null
+        sftp:
+          enabled: true
+          subsystem_name: "sftp"
+          subsystem_path: "/usr/lib/openssh/sftp-server"
+          require_subsystem: true
+          validate_binary: true
+        optional_packages:
+          avahi:
+            enabled: false
+            packages:
+              - avahi-daemon
+          ssh:
+            enabled: true
+            packages:
+              - openssh-server
+          ufw:
+            enabled: false
+            packages:
+              - ufw
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+
+    - name: Normalize LXC network feature defaults
+      set_fact:
+        proxmox_feature_defaults_effective: >-
+          {{
+            proxmox_lxc_network_defaults_safe.lxc_network
+            | combine(proxmox_feature_defaults.lxc_network | default({}), recursive=true)
+          }}
+        proxmox_lxc_network_defaults_effective: >-
+          {{
+            proxmox_lxc_network_defaults_safe.feature
+            | combine(proxmox_feature_defaults.lxc_network | default({}), recursive=true)
+            | combine(proxmox_lxc_network | default({}), recursive=true)
+          }}
+
+    - name: Assert LXC network feature was explicitly enabled
+      assert:
+        that:
+          - proxmox_feature_defaults_effective.enabled | bool
+        fail_msg: "LXC network feature execution is disabled."
+
+    - name: Assert LXC network mode is valid
+      assert:
+        that:
+          - proxmox_feature_defaults_effective.mode in ['preflight', 'apply']
+        fail_msg: "Unsupported LXC network mode: {{ proxmox_feature_defaults_effective.mode }}"
+
+    - name: Stat operator selection file
+      stat:
+        path: "{{ proxmox_lxc_network_selection_path }}"
+      register: proxmox_lxc_network_selection_stat
+
+    - name: Require operator selection file
+      assert:
+        that:
+          - proxmox_lxc_network_selection_stat.stat.exists
+        fail_msg: >-
+          Operator selection file is required at {{ proxmox_lxc_network_selection_path }}.
+      when: proxmox_feature_defaults_effective.require_operator_selection | bool
+
+    - name: Load operator selection file
+      include_vars:
+        file: "{{ proxmox_lxc_network_selection_path }}"
+      when: proxmox_lxc_network_selection_stat.stat.exists
+
+  tasks:
+    - name: Assert this host is Debian-family
+      assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: "This feature only supports Debian-family LXC containers."
+
+    - name: Check for Proxmox host markers
+      stat:
+        path: /etc/pve
+      register: proxmox_lxc_network_host_marker
+
+    - name: Check for pveversion command
+      command:
+        argv:
+          - sh
+          - -c
+          - command -v pveversion
+      register: proxmox_lxc_network_pveversion
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if run on a Proxmox host
+      assert:
+        that:
+          - not proxmox_lxc_network_host_marker.stat.exists
+          - proxmox_lxc_network_pveversion.rc != 0
+        fail_msg: "This LXC network feature must run inside a Debian LXC container, not on the Proxmox host."
+      when: proxmox_feature_defaults_effective.require_container | bool
+
+    - name: Normalize operator selection payload
+      set_fact:
+        proxmox_lxc_network_operator_selection: "{{ proxmox_lxc_network_operator_selection | default({}) }}"
+        proxmox_lxc_network_selector_hardening: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true) }}"
+        proxmox_lxc_network_selector_ssh: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).ssh | default({}, true) }}"
+        proxmox_lxc_network_selector_sftp: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).sftp | default({}, true) }}"
+        proxmox_lxc_network_selector_optional_packages: "{{ (proxmox_lxc_network_operator_selection | default({}, true)).optional_packages | default({}, true) }}"
+        proxmox_lxc_network_selector_access_users: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).access_users | default([], true) }}"
+        proxmox_lxc_network_selector_allow_subnets: "{{ ((proxmox_lxc_network_operator_selection | default({}, true)).hardening | default({}, true)).allow_subnets | default([], true) }}"
+
+    - name: Build effective access profile
+      set_fact:
+        proxmox_lxc_network_access_profile: >-
+          {{
+            proxmox_lxc_network_selector_hardening.access_profile
+            | default(proxmox_lxc_network_defaults_effective.hardening.access_profile, true)
+          }}
+
+    - name: Discover login-capable container users for access policy fallback
+      command:
+        argv:
+          - sh
+          - -c
+          - |
+            uid_min="$(awk '$1=="UID_MIN" && $2 ~ /^[0-9]+$/ {print $2; exit}' /etc/login.defs 2>/dev/null || true)"
+            uid_min="${uid_min:-1000}"
+            getent passwd | awk -F: -v uid_min="${uid_min}" '
+              ($3 == 0 || $3 >= uid_min) && $7 !~ /(nologin|false)$/ { print $1 }
+            '
+      register: proxmox_lxc_network_discovered_access_users_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Normalize discovered container access users
+      set_fact:
+        proxmox_lxc_network_discovered_access_users: >-
+          {{
+            (
+              proxmox_lxc_network_discovered_access_users_cmd.stdout_lines
+              | default([], true)
+              | map('trim')
+              | reject('equalto', '')
+              | list
+            ) | unique
+          }}
+
+    - name: Ensure discovered container access users fallback includes root
+      set_fact:
+        proxmox_lxc_network_discovered_access_users: ['root']
+      when: proxmox_lxc_network_discovered_access_users | length == 0
+
+    - name: Build requested access user allow-list
+      set_fact:
+        proxmox_lxc_network_requested_access_users: >-
+          {{
+            (
+              (proxmox_lxc_network_defaults_effective.hardening.access_users | default([], true))
+              + (proxmox_lxc_network_selector_access_users | default([], true))
+            ) | unique
+          }}
+
+    - name: Discover local IPv4 subnets for firewall access fallback
+      command:
+        argv:
+          - sh
+          - -c
+          - |
+            {
+              ip -o -4 route show proto kernel scope link 2>/dev/null | awk '{print $1}';
+              ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}';
+            } | awk 'NF' | sort -u
+      register: proxmox_lxc_network_discovered_subnets_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Normalize discovered local IPv4 subnet list
+      set_fact:
+        proxmox_lxc_network_discovered_subnets: >-
+          {{
+            (
+              proxmox_lxc_network_discovered_subnets_cmd.stdout_lines
+              | default([], true)
+              | map('trim')
+              | reject('equalto', '')
+              | reject('match', '^127\\.')
+              | reject('match', '^169\\.254\\.')
+              | list
+            ) | unique
+          }}
+
+    - name: Build requested local subnet allow-list
+      set_fact:
+        proxmox_lxc_network_requested_allow_subnets: >-
+          {{
+            (
+              (proxmox_lxc_network_defaults_effective.hardening.allow_subnets | default([], true))
+              + (proxmox_lxc_network_selector_allow_subnets | default([], true))
+            ) | unique
+          }}
+
+    - name: Build effective access user allow-lists
+      set_fact:
+        proxmox_lxc_network_access_users: >-
+          {{
+            (
+              (proxmox_lxc_network_discovered_access_users | default([], true))
+              + (proxmox_lxc_network_requested_access_users | default([], true))
+            ) | unique
+          }}
+        proxmox_lxc_network_access_users_non_root: >-
+          {{
+            (
+              (proxmox_lxc_network_discovered_access_users | default([], true))
+              + (proxmox_lxc_network_requested_access_users | default([], true))
+            )
+            | reject('equalto', 'root')
+            | unique
+          }}
+        proxmox_lxc_network_sudo_users_non_root: >-
+          {{
+            (
+              proxmox_lxc_network_discovered_access_users | default([], true)
+            )
+            | reject('equalto', 'root')
+            | unique
+          }}
+
+    - name: Build effective runtime configuration
+      set_fact:
+        proxmox_lxc_network_effective_mode: "{{ proxmox_feature_defaults_effective.mode }}"
+        proxmox_lxc_network_allow_subnets: >-
+          {{
+            proxmox_lxc_network_requested_allow_subnets
+            if (proxmox_lxc_network_requested_allow_subnets | length > 0)
+            else proxmox_lxc_network_discovered_subnets
+          }}
+        proxmox_lxc_network_expected_dns: >-
+          {{
+            proxmox_lxc_network_selector_hardening.expected_dns
+            | default(proxmox_lxc_network_defaults_effective.hardening.expected_dns, true)
+          }}
+        proxmox_lxc_network_internet_probe_ipv4: >-
+          {{
+            proxmox_lxc_network_selector_hardening.internet_probe_ipv4
+            | default(proxmox_lxc_network_defaults_effective.hardening.internet_probe_ipv4, true)
+          }}
+        proxmox_lxc_network_sftp_enabled: "{{ proxmox_lxc_network_selector_sftp.enabled | default(proxmox_lxc_network_defaults_effective.sftp.enabled, true) | bool }}"
+        proxmox_lxc_network_sftp_subsystem_name: "{{ proxmox_lxc_network_selector_sftp.subsystem_name | default(proxmox_lxc_network_defaults_effective.sftp.subsystem_name, true) }}"
+        proxmox_lxc_network_sftp_subsystem_path: "{{ proxmox_lxc_network_selector_sftp.subsystem_path | default(proxmox_lxc_network_defaults_effective.sftp.subsystem_path, true) }}"
+        proxmox_lxc_network_sftp_require_subsystem: "{{ proxmox_lxc_network_selector_sftp.require_subsystem | default(proxmox_lxc_network_defaults_effective.sftp.require_subsystem, true) | bool }}"
+        proxmox_lxc_network_sftp_validate_binary: "{{ proxmox_lxc_network_selector_sftp.validate_binary | default(proxmox_lxc_network_defaults_effective.sftp.validate_binary, true) | bool }}"
+        proxmox_lxc_network_ssh_port: "{{ proxmox_lxc_network_selector_ssh.port | default(proxmox_lxc_network.ssh.port | default(proxmox_lxc_network_defaults_safe.ssh.port, true), true) }}"
+        proxmox_lxc_network_include_path: "{{ proxmox_lxc_network.ssh.include_path | default(proxmox_lxc_network_defaults_effective.ssh.include_path, true) }}"
+        proxmox_lxc_network_enable_ssh: "{{ proxmox_lxc_network_selector_hardening.enable_ssh | default(proxmox_lxc_network_defaults_effective.hardening.enable_ssh, true) | bool }}"
+        proxmox_lxc_network_enable_ufw: "{{ proxmox_lxc_network_selector_hardening.enable_ufw | default(proxmox_lxc_network_defaults_effective.hardening.enable_ufw, true) | bool }}"
+        proxmox_lxc_network_enable_fuse_client: "{{ proxmox_lxc_network_selector_hardening.enable_fuse_client | default(proxmox_lxc_network_defaults_effective.hardening.enable_fuse_client, true) | bool }}"
+        proxmox_lxc_network_enable_avahi: "{{ (proxmox_lxc_network_selector_hardening.enable_avahi | default(proxmox_lxc_network_defaults_effective.hardening.enable_avahi, true)) | bool }}"
+        proxmox_lxc_network_allow_ssh_with_passwords: "{{ proxmox_lxc_network_defaults_effective.ssh.password_authentication | default('yes') }}"
+
+    - name: Apply access profile behavior overrides
+      set_fact:
+        proxmox_lxc_network_enable_ssh: "{{ (proxmox_lxc_network_enable_ssh or proxmox_lxc_network_sftp_enabled | bool or proxmox_lxc_network_access_profile == 'test_access' or proxmox_lxc_network_access_profile == 'builder') | bool }}"
+        proxmox_lxc_network_enable_ufw: "{{ (proxmox_lxc_network_enable_ufw or proxmox_lxc_network_access_profile == 'builder') | bool }}"
+        proxmox_lxc_network_enable_fuse_client: "{{ (proxmox_lxc_network_enable_fuse_client or proxmox_lxc_network_access_profile == 'builder') | bool }}"
+        proxmox_lxc_network_enable_avahi: "{{ (proxmox_lxc_network_enable_avahi or proxmox_lxc_network_access_profile == 'builder') | bool }}"
+
+    - name: Require local subnet allow-list when UFW is enabled
+      assert:
+        that:
+          - proxmox_lxc_network_allow_subnets | length > 0
+        fail_msg: >-
+          UFW is enabled but no local IPv4 subnets were discovered. Set
+          proxmox_lxc_network.hardening.allow_subnets or
+          PROXMOX_LXC_NETWORK_ALLOW_SUBNETS explicitly.
+      when: proxmox_lxc_network_enable_ufw | bool
+
+    - name: Build effective package set
+      set_fact:
+        proxmox_lxc_network_packages_effective: >-
+          {{
+            (proxmox_lxc_network_defaults_effective.packages.base | default([]))
+            + (proxmox_lxc_network_defaults_effective.packages.file_clients
+              if proxmox_lxc_network_enable_fuse_client | bool else [])
+            + (proxmox_lxc_network_defaults_effective.packages.debug
+              if proxmox_lxc_network_access_profile == 'builder' else [])
+            + (proxmox_lxc_network_defaults_effective.optional_packages.ssh.packages
+              if proxmox_lxc_network_enable_ssh | bool else [])
+            + (proxmox_lxc_network_defaults_effective.optional_packages.ufw.packages
+              if proxmox_lxc_network_enable_ufw | bool else [])
+            + (proxmox_lxc_network_defaults_effective.optional_packages.avahi.packages
+              if proxmox_lxc_network_enable_avahi | bool else [])
+          }}
+
+    - name: Ensure effective access metadata is available
+      debug:
+        msg:
+          mode: "{{ proxmox_lxc_network_effective_mode }}"
+          profile: "{{ proxmox_lxc_network_access_profile }}"
+          access_users: "{{ proxmox_lxc_network_access_users }}"
+          non_root_access_users: "{{ proxmox_lxc_network_access_users_non_root }}"
+          sudo_users_non_root: "{{ proxmox_lxc_network_sudo_users_non_root }}"
+          enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
+          sftp_enabled: "{{ proxmox_lxc_network_sftp_enabled }}"
+          sftp_subsystem: "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}"
+          enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
+          enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
+          enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"
+          package_count: "{{ proxmox_lxc_network_packages_effective | length }}"
+
+    - name: Capture current host networking facts
+      command:
+        argv:
+          - ip
+          - -o
+          - -4
+          - addr
+          - show
+          - scope
+          - global
+      register: proxmox_lxc_network_ipv4
+      changed_when: false
+      failed_when: false
+
+    - name: Capture current default route
+      command:
+        argv:
+          - ip
+          - route
+          - show
+          - default
+      register: proxmox_lxc_network_default_route
+      changed_when: false
+      failed_when: false
+
+    - name: Capture current nameservers
+      command:
+        argv:
+          - awk
+          - '/^nameserver[[:space:]]+/{print $2}'
+          - /etc/resolv.conf
+      register: proxmox_lxc_network_nameservers
+      changed_when: false
+      failed_when: false
+
+    - name: Probe outbound connectivity in preflight
+      block:
+        - name: Probe DNS resolution
+          command:
+            argv:
+              - getent
+              - hosts
+              - debian.org
+          register: proxmox_lxc_network_dns_probe
+          changed_when: false
+          failed_when: false
+
+        - name: Probe internet IPv4
+          command:
+            argv:
+              - ping
+              - -c
+              - "1"
+              - -W
+              - "2"
+              - "{{ proxmox_lxc_network_internet_probe_ipv4 }}"
+          register: proxmox_lxc_network_internet_probe
+          changed_when: false
+          failed_when: false
+      when: proxmox_lxc_network_effective_mode == 'preflight'
+
+    - name: Configure LXC network access in apply mode
+      when: proxmox_lxc_network_effective_mode == 'apply'
+      block:
+        - name: Ensure feature facts directory exists
+          file:
+            path: "{{ proxmox_feature_facts_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: Install local-LAN access packages
+          package:
+            name: "{{ proxmox_lxc_network_packages_effective }}"
+            state: present
+
+        - name: Ensure sudoers drop-in directory exists
+          file:
+            path: /etc/sudoers.d
+            state: directory
+            owner: root
+            group: root
+            mode: "0750"
+
+        - name: Ensure all detected non-root login-capable users can use sudo
+          copy:
+            dest: /etc/sudoers.d/90-proxmox-lxc-network.users
+            owner: root
+            group: root
+            mode: "0440"
+            validate: /usr/sbin/visudo -cf %s
+            content: |
+              {% for user in proxmox_lxc_network_sudo_users_non_root %}
+              {{ user }} ALL=(ALL:ALL) ALL
+              {% endfor %}
+          when: proxmox_lxc_network_sudo_users_non_root | length > 0
+
+        - name: Remove managed sudoers file when no detected non-root login-capable users exist
+          file:
+            path: /etc/sudoers.d/90-proxmox-lxc-network.users
+            state: absent
+          when: proxmox_lxc_network_sudo_users_non_root | length == 0
+
+        - name: Ensure SSH access users exist for test_access profile
+          user:
+            name: "{{ item }}"
+            shell: /bin/bash
+            create_home: true
+          loop: "{{ proxmox_lxc_network_access_users }}"
+          when: proxmox_lxc_network_access_profile == 'test_access'
+
+        - name: Set deterministic passwords for test_access users
+          command:
+            argv:
+              - bash
+              - -lc
+              - "printf '%s:%s\\n' {{ item | quote }} {{ item | quote }} | chpasswd"
+          loop: "{{ proxmox_lxc_network_access_users }}"
+          changed_when: false
+          when: proxmox_lxc_network_access_profile == 'test_access'
+
+        - name: Clear password expiry for test_access users
+          command:
+            argv:
+              - chage
+              - -I
+              - "-1"
+              - -m
+              - "0"
+              - -M
+              - "99999"
+              - -E
+              - "-1"
+              - -d
+              - "{{ ansible_facts.date_time.date }}"
+              - "{{ item }}"
+          loop: "{{ proxmox_lxc_network_access_users }}"
+          changed_when: false
+          when: proxmox_lxc_network_access_profile == 'test_access'
+
+        - name: Detect existing SSH SFTP subsystem declaration
+          shell: |
+            set -eu
+            grep -hE "^[[:space:]]*Subsystem[[:space:]]+{{ proxmox_lxc_network_sftp_subsystem_name }}([[:space:]]|$)" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort -u || true
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_existing_sftp_subsystem
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Detect exact SSH SFTP subsystem declaration
+          shell: |
+            set -eu
+            grep -hE "^[[:space:]]*Subsystem[[:space:]]+{{ proxmox_lxc_network_sftp_subsystem_name }}[[:space:]]+{{ proxmox_lxc_network_sftp_subsystem_path }}([[:space:]]|$)" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort -u || true
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_existing_sftp_subsystem_match
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Normalize SFTP subsystem detection state
+          set_fact:
+            proxmox_lxc_network_sftp_subsystem_present: "{{ (proxmox_lxc_network_existing_sftp_subsystem.stdout_lines | default([], true) | length) > 0 }}"
+            proxmox_lxc_network_sftp_subsystem_exact_match: "{{ (proxmox_lxc_network_existing_sftp_subsystem_match.stdout_lines | default([], true) | length) > 0 }}"
+            proxmox_lxc_network_sftp_subsystem_conflict: "{{ (proxmox_lxc_network_existing_sftp_subsystem.stdout_lines | default([], true) | length > 0) and (not (proxmox_lxc_network_existing_sftp_subsystem_match.stdout_lines | default([], true) | length > 0)) }}"
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Require valid SSH SFTP subsystem declaration
+          assert:
+            that:
+              - not proxmox_lxc_network_sftp_subsystem_conflict
+            fail_msg: >-
+              A different "Subsystem {{ proxmox_lxc_network_sftp_subsystem_name }}" directive already exists.
+              Update it to match "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}",
+              or disable this conflict and rerun.
+          when:
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_require_subsystem | bool
+
+        - name: Validate SFTP subsystem binary exists
+          stat:
+            path: "{{ proxmox_lxc_network_sftp_subsystem_path }}"
+          register: proxmox_lxc_network_sftp_binary
+          changed_when: false
+          when:
+            - proxmox_lxc_network_enable_ssh | bool
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_validate_binary | bool
+
+        - name: Fail if required SFTP subsystem binary is missing
+          assert:
+            that:
+              - proxmox_lxc_network_sftp_binary.stat.exists
+            fail_msg: >-
+              SFTP subsystem binary {{ proxmox_lxc_network_sftp_subsystem_path }} is not present.
+              Install openssh-server or set a valid path.
+          when:
+            - proxmox_lxc_network_enable_ssh | bool
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_validate_binary | bool
+
+        - name: Ensure managed SFTP subsystem declaration exists
+          register: proxmox_lxc_network_managed_sftp_subsystem
+          copy:
+            dest: /etc/ssh/sshd_config.d/90-proxmox-lxc-network.sftp.conf
+            mode: "0644"
+            content: "Subsystem {{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}\n"
+          when:
+            - proxmox_lxc_network_enable_ssh | bool
+            - proxmox_lxc_network_sftp_enabled | bool
+            - proxmox_lxc_network_sftp_require_subsystem | bool
+            - not proxmox_lxc_network_sftp_subsystem_exact_match
+
+        - name: Normalize managed SFTP subsystem presence state
+          set_fact:
+            proxmox_lxc_network_sftp_subsystem_present: >-
+              {{
+                proxmox_lxc_network_sftp_subsystem_exact_match
+                or (proxmox_lxc_network_managed_sftp_subsystem.changed | default(false))
+              }}
+          when: proxmox_lxc_network_enable_ssh | bool and proxmox_lxc_network_sftp_enabled | bool
+
+        - name: Ensure /etc/ssh/sshd_config includes managed include directory
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            line: "Include /etc/ssh/sshd_config.d/*.conf"
+            insertafter: EOF
+            create: true
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Ensure SSH include directory exists
+          file:
+            path: /etc/ssh/sshd_config.d
+            state: directory
+            mode: "0755"
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Write managed SSH policy include
+          copy:
+            dest: "{{ proxmox_lxc_network_include_path }}"
+            mode: "0644"
+            content: |
+              Port {{ proxmox_lxc_network_ssh_port }}
+              PermitRootLogin {{ proxmox_lxc_network_defaults_effective.ssh.permit_root_login }}
+              PasswordAuthentication {{ proxmox_lxc_network_defaults_effective.ssh.password_authentication }}
+              KbdInteractiveAuthentication {{ proxmox_lxc_network_defaults_effective.ssh.kbd_interactive_authentication }}
+              UsePAM {{ proxmox_lxc_network_defaults_effective.ssh.use_pam }}
+              X11Forwarding {{ proxmox_lxc_network_defaults_effective.ssh.x11_forwarding }}
+              AllowUsers {{ proxmox_lxc_network_access_users | join(' ') }}
+              {% if proxmox_lxc_network_defaults_effective.ssh.pubkey_authentication is not none %}
+              PubkeyAuthentication {{ proxmox_lxc_network_defaults_effective.ssh.pubkey_authentication }}
+              {% endif %}
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Ensure SSH host keys exist
+          command:
+            argv:
+              - ssh-keygen
+              - -A
+          changed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Validate SSH configuration
+          shell: |
+            set -eu
+            if command -v sshd >/dev/null 2>&1; then
+              sshd -t
+            else
+              /usr/sbin/sshd -t
+            fi
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_sshd_test
+          changed_when: false
+          failed_when: proxmox_lxc_network_sshd_test.rc != 0
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Resolve SSH service name
+          command:
+            argv:
+              - sh
+              - -c
+              - |
+                if systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service'; then
+                  echo ssh
+                elif systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service'; then
+                  echo sshd
+                else
+                  echo ssh
+                fi
+          register: proxmox_lxc_network_ssh_service_name
+          changed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Enable and restart SSH service
+          service:
+            name: "{{ proxmox_lxc_network_ssh_service_name.stdout | trim }}"
+            enabled: true
+            state: restarted
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Capture SSH service active state
+          command:
+            argv:
+              - systemctl
+              - is-active
+              - --quiet
+              - "{{ proxmox_lxc_network_ssh_service_name.stdout | trim }}"
+          register: proxmox_lxc_network_ssh_service_active
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Capture SSH listener state
+          shell: |
+            ss -lnt | awk 'NR == 1 || /:{{ proxmox_lxc_network_ssh_port }}([[:space:]]|$)/ {print}'
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_ssh_listener_state
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool
+
+        - name: Configure UFW local-subnet SSH allow rules
+          command:
+            argv:
+              - ufw
+              - allow
+              - from
+              - "{{ item }}"
+              - to
+              - any
+              - port
+              - "{{ proxmox_lxc_network_ssh_port }}"
+              - proto
+              - tcp
+          loop: "{{ proxmox_lxc_network_allow_subnets }}"
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Configure UFW default incoming policy
+          command:
+            argv:
+              - ufw
+              - default
+              - deny
+              - incoming
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Configure UFW default outgoing policy
+          command:
+            argv:
+              - ufw
+              - default
+              - allow
+              - outgoing
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Disable IPv6 in UFW defaults when enabled
+          lineinfile:
+            path: /etc/default/ufw
+            regexp: '^IPV6='
+            line: 'IPV6=no'
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Enable UFW
+          command:
+            argv:
+              - ufw
+              - --force
+              - enable
+          changed_when: false
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Reload UFW
+          command:
+            argv:
+              - ufw
+              - reload
+          changed_when: false
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Capture UFW SSH allow rule summary
+          shell: |
+            set -eu
+            ufw status | awk '/ALLOW/ {count++} END {print count+0}'
+          args:
+            executable: /bin/bash
+          register: proxmox_lxc_network_ufw_rule_count
+          changed_when: false
+          failed_when: false
+          when: proxmox_lxc_network_enable_ufw | bool
+
+        - name: Ensure /etc/fuse.conf allows unprivileged file ownership overrides
+          lineinfile:
+            path: /etc/fuse.conf
+            regexp: '^user_allow_other$'
+            line: user_allow_other
+            insertafter: EOF
+            create: true
+          when: proxmox_lxc_network_enable_fuse_client | bool
+
+        - name: Validate FUSE device for container client tooling
+          stat:
+            path: /dev/fuse
+          register: proxmox_lxc_network_fuse_device
+          when: proxmox_lxc_network_enable_fuse_client | bool
+
+        - name: Fail if /dev/fuse is unavailable
+          assert:
+            that:
+              - proxmox_lxc_network_fuse_device.stat.exists
+            fail_msg: >-
+              /dev/fuse is required for container-side file client tooling.
+              Recreate this container with `fuse=1` (or the equivalent Proxmox LXC fuse flag).
+          when: proxmox_lxc_network_enable_fuse_client | bool
+
+        - name: Probe outbound connectivity after apply
+          block:
+            - name: Probe DNS resolution after apply
+              command:
+                argv:
+                  - getent
+                  - hosts
+                  - debian.org
+              register: proxmox_lxc_network_dns_probe_apply
+              changed_when: false
+              failed_when: false
+
+            - name: Probe internet IPv4 after apply
+              command:
+                argv:
+                  - ping
+                  - -c
+                  - "1"
+                  - -W
+                  - "2"
+                  - "{{ proxmox_lxc_network_internet_probe_ipv4 }}"
+              register: proxmox_lxc_network_internet_probe_apply
+              changed_when: false
+              failed_when: false
+          when: proxmox_lxc_network_enable_ssh | bool or proxmox_lxc_network_enable_ufw | bool or proxmox_lxc_network_enable_fuse_client | bool
+
+        - name: Persist LXC network runtime facts
+          copy:
+            dest: "{{ proxmox_lxc_network_runtime_facts_path }}"
+            mode: "0644"
+            content: |
+              ---
+              proxmox_lxc_network_runtime:
+                hostname: "{{ ansible_facts.hostname }}"
+                mode: "{{ proxmox_lxc_network_effective_mode }}"
+                access_profile: "{{ proxmox_lxc_network_access_profile }}"
+                enable_ssh: {{ proxmox_lxc_network_enable_ssh | bool | lower }}
+                sftp_enabled: {{ proxmox_lxc_network_sftp_enabled | bool | lower }}
+                enable_ufw: {{ proxmox_lxc_network_enable_ufw | bool | lower }}
+                enable_fuse_client: {{ proxmox_lxc_network_enable_fuse_client | bool | lower }}
+                enable_avahi: {{ proxmox_lxc_network_enable_avahi | bool | lower }}
+                ssh_service_active: {{ (proxmox_lxc_network_ssh_service_active.rc | default(1)) == 0 | bool | lower }}
+                sshd_config_valid: {{ (proxmox_lxc_network_sshd_test.rc | default(1)) == 0 | bool | lower }}
+                access_users:
+                  {{ proxmox_lxc_network_access_users | to_nice_yaml(indent=4) | indent(2, true) }}
+                sudo_users:
+                  {{ proxmox_lxc_network_sudo_users_non_root | to_nice_yaml(indent=4) | indent(2, true) }}
+                ssh_port: "{{ proxmox_lxc_network_ssh_port }}"
+                sftp_subsystem_name: "{{ proxmox_lxc_network_sftp_subsystem_name }}"
+                sftp_subsystem_path: "{{ proxmox_lxc_network_sftp_subsystem_path }}"
+                sftp_subsystem_present: {{ proxmox_lxc_network_sftp_subsystem_present | default(false) | bool | lower }}
+                sftp_binary_exists: {{ proxmox_lxc_network_sftp_binary.stat.exists | default(false) | bool | lower }}
+                allow_subnets:
+                  {{ proxmox_lxc_network_allow_subnets | to_nice_yaml(indent=4) | indent(2, true) }}
+                expected_dns: "{{ proxmox_lxc_network_expected_dns }}"
+                expected_dns_present: {{ (proxmox_lxc_network_nameservers.stdout_lines | default([]) | select('equalto', proxmox_lxc_network_expected_dns) | list | length) > 0 }}
+                ipv4:
+                  {{ proxmox_lxc_network_ipv4.stdout_lines | to_nice_yaml(indent=4) | indent(2, true) }}
+                default_route:
+                  {{ proxmox_lxc_network_default_route.stdout_lines | to_nice_yaml(indent=4) | indent(2, true) }}
+                nameservers:
+                  {{ proxmox_lxc_network_nameservers.stdout_lines | to_nice_yaml(indent=4) | indent(2, true) }}
+                internet_probe_ipv4: "{{ proxmox_lxc_network_internet_probe_ipv4 }}"
+                internet_probe_ok: {{ (proxmox_lxc_network_internet_probe_apply.rc | default(1)) == 0 }}
+                dns_probe_ok: {{ (proxmox_lxc_network_dns_probe_apply.rc | default(1)) == 0 }}
+                package_count: {{ proxmox_lxc_network_packages_effective | length }}
+                package_list:
+                  {{ proxmox_lxc_network_packages_effective | to_nice_yaml(indent=4) | indent(2, true) }}
+                fuse_available: {{ proxmox_lxc_network_fuse_device.stat.exists | default(false) | bool | lower }}
+                ufw_rule_count: "{{ proxmox_lxc_network_ufw_rule_count.stdout | default(0) }}"
+
+    - name: Report apply summary
+      debug:
+        msg:
+          mode: "{{ proxmox_lxc_network_effective_mode }}"
+          profile: "{{ proxmox_lxc_network_access_profile }}"
+          enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
+          sftp_enabled: "{{ proxmox_lxc_network_sftp_enabled }}"
+          sftp_subsystem: "{{ proxmox_lxc_network_sftp_subsystem_name }} {{ proxmox_lxc_network_sftp_subsystem_path }}"
+          enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
+          enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
+          enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"
+          access_users: "{{ proxmox_lxc_network_access_users }}"
+          allow_subnets: "{{ proxmox_lxc_network_allow_subnets }}"
+          ssh_listener: "{{ proxmox_lxc_network_ssh_listener_state.stdout_lines | default([]) }}"
+          internet_probe_ok: "{{ (proxmox_lxc_network_internet_probe_apply.rc | default(1)) == 0 }}"
+          dns_probe_ok: "{{ (proxmox_lxc_network_dns_probe_apply.rc | default(1)) == 0 }}"
+
+    - name: Report preflight summary
+      debug:
+        msg:
+          mode: "{{ proxmox_lxc_network_effective_mode }}"
+          profile: "{{ proxmox_lxc_network_access_profile }}"
+          planned_enable_ssh: "{{ proxmox_lxc_network_enable_ssh }}"
+          planned_enable_sftp: "{{ proxmox_lxc_network_sftp_enabled }}"
+          planned_enable_ufw: "{{ proxmox_lxc_network_enable_ufw }}"
+          planned_enable_fuse_client: "{{ proxmox_lxc_network_enable_fuse_client }}"
+          planned_enable_avahi: "{{ proxmox_lxc_network_enable_avahi }}"
+          package_count: "{{ proxmox_lxc_network_packages_effective | length }}"
+          packages: "{{ proxmox_lxc_network_packages_effective }}"
+          access_users: "{{ proxmox_lxc_network_access_users }}"
+          existing_ipv4: "{{ proxmox_lxc_network_ipv4.stdout_lines | default([]) }}"
+          existing_default_route: "{{ proxmox_lxc_network_default_route.stdout_lines | default([]) }}"
+          nameservers: "{{ proxmox_lxc_network_nameservers.stdout_lines | default([]) }}"
+          internet_probe_ok: "{{ (proxmox_lxc_network_internet_probe.rc | default(1)) == 0 }}"
+          dns_probe_ok: "{{ (proxmox_lxc_network_dns_probe.rc | default(1)) == 0 }}"
+      when: proxmox_lxc_network_effective_mode == 'preflight'

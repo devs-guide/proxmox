@@ -1,0 +1,150 @@
+---
+- name: "[proxmox]: apply guest high-speed data NIC plan"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../group_vars/proxmox.yml"
+    proxmox_network_facts_dir: "/etc/ansible/proxmox/facts"
+    proxmox_network_intent_path: "{{ proxmox_network_intent_path | default(proxmox_network_facts_dir + '/network.intent.yml') }}"
+    proxmox_network_plan_path: "{{ proxmox_network_plan_path | default(proxmox_network_facts_dir + '/network.plan.tsv') }}"
+    proxmox_network_update_runtime_facts_path: "{{ proxmox_network_update_runtime_facts_path | default(proxmox_network_facts_dir + '/network.update.runtime.yml') }}"
+    proxmox_network_update_mode: "{{ proxmox_network_update_mode | default('check') }}"
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults when available
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+      ignore_errors: true
+
+    - name: Stat update intent file
+      stat:
+        path: "{{ proxmox_network_intent_path }}"
+      register: proxmox_network_intent_stat
+
+    - name: Load update intent file when present
+      include_vars:
+        file: "{{ proxmox_network_intent_path }}"
+      when: proxmox_network_intent_stat.stat.exists
+
+    - name: Resolve effective update mode
+      set_fact:
+        proxmox_network_update_mode_effective: >-
+          {{
+            proxmox_network_update_mode
+            if (proxmox_network_update_mode | default('') | length > 0)
+            else
+            (
+              proxmox_network_update.mode
+              if (proxmox_network_update is defined and proxmox_network_update.mode is defined)
+              else 'check'
+            )
+          }}
+
+    - name: Assert effective update mode is valid
+      assert:
+        that:
+          - proxmox_network_update_mode_effective in ['check', 'apply']
+        fail_msg: "Unsupported proxmox_network_update_mode_effective={{ proxmox_network_update_mode_effective }}"
+
+    - name: Stat update plan TSV
+      stat:
+        path: "{{ proxmox_network_plan_path }}"
+      register: proxmox_network_plan_stat
+
+    - name: Assert update plan TSV exists
+      assert:
+        that:
+          - proxmox_network_plan_stat.stat.exists
+          - not proxmox_network_plan_stat.stat.isdir
+        fail_msg: "Missing update plan TSV: {{ proxmox_network_plan_path }}"
+
+  tasks:
+    - name: Execute guest network update plan
+      shell: |
+        set -euo pipefail
+        mode="{{ proxmox_network_update_mode_effective }}"
+        plan="{{ proxmox_network_plan_path }}"
+        tab="$(printf '\t')"
+        changed=0
+        errors=0
+
+        while IFS="${tab}" read -r guest_type guest_id guest_name net_slot desired_value reason; do
+          [ "${guest_type}" = "guest_type" ] && continue
+          if [ -z "${guest_type}" ] || [ -z "${guest_id}" ] || [ -z "${net_slot}" ] || [ -z "${desired_value}" ]; then
+            echo "ERROR\tinvalid_row\t${guest_type}\t${guest_id}\t${guest_name}\t${net_slot}\t${reason}"
+            errors=$((errors + 1))
+            continue
+          fi
+
+          if [ "${guest_type}" = "lxc" ]; then
+            current_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            if [ "${current_value}" = "${desired_value}" ]; then
+              echo "NOOP\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
+              continue
+            fi
+
+            if [ "${mode}" = "apply" ]; then
+              pct set "${guest_id}" "-${net_slot}" "${desired_value}"
+              echo "APPLY\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
+            else
+              echo "CHECK\tpct set ${guest_id} -${net_slot} ${desired_value}"
+            fi
+            changed=1
+            continue
+          fi
+
+          if [ "${guest_type}" = "vm" ]; then
+            current_value="$(qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            if [ "${current_value}" = "${desired_value}" ]; then
+              echo "NOOP\tvm\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
+              continue
+            fi
+
+            if [ "${mode}" = "apply" ]; then
+              qm set "${guest_id}" "-${net_slot}" "${desired_value}"
+              echo "APPLY\tvm\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
+            else
+              echo "CHECK\tqm set ${guest_id} -${net_slot} ${desired_value}"
+            fi
+            changed=1
+            continue
+          fi
+
+          echo "ERROR\tunsupported_guest_type\t${guest_type}\t${guest_id}\t${guest_name}\t${net_slot}\t${reason}"
+          errors=$((errors + 1))
+        done < "${plan}"
+
+        echo "__CHANGED__=${changed}"
+        echo "__ERRORS__=${errors}"
+        [ "${errors}" -eq 0 ]
+      args:
+        executable: /bin/bash
+      register: proxmox_network_update_exec
+      changed_when: "'__CHANGED__=1' in proxmox_network_update_exec.stdout"
+
+    - name: Persist network update runtime facts
+      copy:
+        dest: "{{ proxmox_network_update_runtime_facts_path }}"
+        mode: "0644"
+        content: |
+          ---
+          proxmox_network_update_runtime:
+            mode: "{{ proxmox_network_update_mode_effective }}"
+            changed: {{ ('__CHANGED__=1' in proxmox_network_update_exec.stdout) | ternary('true', 'false') }}
+            errors: "{{ proxmox_network_update_exec.stdout | regex_search('__ERRORS__=[0-9]+') | default('__ERRORS__=0') }}"
+            stdout_lines:
+          {% for line in proxmox_network_update_exec.stdout_lines | default([]) %}
+              - {{ line | to_json }}
+          {% endfor %}
+            stderr_lines:
+          {% for line in proxmox_network_update_exec.stderr_lines | default([]) %}
+              - {{ line | to_json }}
+          {% endfor %}
+
+    - name: Show network update command summary
+      debug:
+        var: proxmox_network_update_exec.stdout_lines
