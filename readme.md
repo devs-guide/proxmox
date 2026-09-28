@@ -1,5 +1,29 @@
 # devs-guide/proxmox
 
+## Current Release
+
+Release `0.0.5` covers the managed Proxmox runtime, host networking, expanded
+Debian LXC workflows, and recoverable VM restore tooling. It supports the
+published Proxmox VE 6.4/Buster and Proxmox VE 9.1/Trixie lanes.
+
+```bash
+# Proxmox VE 6.4 / Debian Buster
+wget -qO- https://devs-guide.github.io/proxmox/6.4.sh | bash
+
+# Proxmox VE 9.1 / Debian Trixie
+wget -qO- https://devs-guide.github.io/proxmox/9.1.sh | bash
+```
+
+The shared examples are LAN-oriented and operator-managed. Baseline account
+passwords default to their account names (`app`, `agent`, `proxmox`, and
+`root`), the default allowed subnet is `10.0.0.0/24`, and the PVE 9.1 lane uses
+the Proxmox no-subscription repository. Update these values for the target
+environment before treating the setup as final.
+
+See [the 0.0.5 release notes](RELEASE_NOTES.md) for the complete scope and
+acceptance requirements. Whole-GPU passthrough remains the separate `0.0.6`
+candidate and is not part of the `0.0.5` tag.
+
 ## Feature Runner Naming
 
 - Proxmox-native feature runners keep their existing `setup/...` layout such as `setup/vlan.sh` and publish aliases such as `setup.vlan.sh`.
