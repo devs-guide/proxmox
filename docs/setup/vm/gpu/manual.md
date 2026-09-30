@@ -384,6 +384,30 @@ Do not edit or delete state while an attachment exists. On a failed operation,
 retain the result JSON, transaction directory, state files, `qm config`, boot
 files, and logs for review.
 
+## Commissioning and rollback checklist
+
+Use this checklist for the final manual acceptance pass on each supported PVE
+lane. A successful host or VM mutation does not replace the remaining rollback
+and evidence gates.
+
+1. Run `inventory` and have an operator select an exact display-function BDF.
+2. Run both hardware-only and VM-aware `preflight` checks.
+3. Preview every proposed mutation with `--dry-run --output json` and retain the
+   result before applying it.
+4. Apply the matching [PVE 6.4](pve-6.4.md) or [PVE 9.1](pve-9.1.md) flow.
+5. Confirm the complete same-slot function set in the VM configuration and in
+   the guest.
+6. Perform one controlled guest shutdown and a second start, then inspect the
+   kernel and QEMU logs for reset, BAR, VFIO, or IOMMU failures.
+7. Preview and apply `--remove`, then confirm exact restoration of every
+   feature-managed VM field.
+8. Preview any vendor-blacklist selection and verify `effective_vendors`
+   versus `exact_bind_only_vendors`; do not accept collateral host-driver loss.
+9. If host preparation was applied, preview and apply `unprepare`, reboot, and
+   verify the original files and host-driver ownership.
+10. Preserve the result JSON, managed state, `qm config`, kernel and QEMU logs,
+    checksums, exact feature SHA, workflow URLs, and rollback evidence.
+
 ## References
 
 - [Current Proxmox PCI(e) passthrough guide](https://pve.proxmox.com/pve-docs/chapter-qm.html#qm_pci_passthrough)

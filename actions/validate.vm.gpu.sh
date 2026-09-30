@@ -790,6 +790,17 @@ for marker in \
 done
 grep -Fq 'examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario' "${MANUAL_DOC}" \
   || fail "GPU manual does not link the primary-GPU replacement acceptance scenario"
+for marker in \
+  '## Commissioning and rollback checklist' \
+  'hardware-only and VM-aware `preflight`' \
+  '`--dry-run --output json`' \
+  'complete same-slot function set' \
+  '`effective_vendors`' \
+  '`exact_bind_only_vendors`' \
+  'exact feature SHA, workflow URLs, and rollback evidence'; do
+  grep -Fq -- "${marker}" "${MANUAL_DOC}" \
+    || fail "GPU manual commissioning checklist is missing: ${marker}"
+done
 grep -Fq 'docs/setup/vm/gpu/examples.md' "${ROOT}/readme.md" \
   || fail "repository documentation index does not link GPU acceptance examples"
 for release_doc in "${PVE64_DOC}" "${PVE91_DOC}"; do

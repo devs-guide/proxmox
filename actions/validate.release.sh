@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASE_REF="${RELEASE_BASE_REF:-0.0.4}"
+BASE_REF="${RELEASE_BASE_REF:-0.0.5}"
 
 fail() {
   printf '[validate.release][error] %s\n' "$*" >&2
