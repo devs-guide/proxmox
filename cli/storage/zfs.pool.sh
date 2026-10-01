@@ -6,6 +6,9 @@ ZFS_FEATURE_VERSION="0.0.6"
 ZFS_DEFAULT_SIZE_TOLERANCE_PERCENT="1"
 ZFS_DEFAULT_HEALTH_POLICY="advisory"
 ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS="30"
+ZFS_DEFAULT_POOL="zfspool"
+ZFS_DEFAULT_DATASET_LEAF="archive"
+ZFS_DEFAULT_REVIEW_FORMAT="pretty-json"
 ZFS_DEFAULT_STATE_ROOT="${PROXMOX_ZFS_STATE_ROOT:-/var/lib/proxmox-zfs-feature}"
 
 zfs.log() { printf '[setup.storage.zfs] %s\n' "$*" >&2; }
@@ -515,7 +518,7 @@ Usage:
 Discovers local disks, confirms selections, and writes an editable zpool.config.
 
 Options:
-  --pool NAME                         Pool name (default: archive)
+  --pool NAME                         Pool name (default: zfspool)
   --vdev-type TYPE                   mirror, raidz1, raidz2, or raidz3
   --vdev-count NUMBER                Number of equal-width data vdevs
   --drives-per-vdev NUMBER           Devices in each data vdev
@@ -534,8 +537,9 @@ Options:
   --max-health-evidence-age-days N   Evidence freshness limit (default: 30)
   --all-matches                      Select every eligible filtered candidate
   --non-interactive                  Require deterministic selection/topology flags
-  --dataset POOL/DATASET             Dataset (default: <pool>/data)
-  --mountpoint PATH                  Dataset mountpoint (default: /media/<pool>)
+  --review-format FORMAT             pretty-json (default) or table
+  --dataset POOL/DATASET             Dataset (default: <pool>/archive)
+  --mountpoint PATH                  Dataset mountpoint (default: /media/<dataset>)
   --allow-signature-wipe             Permit a separate reviewed wipe plan
   --config PATH                      Output path (default: ./zpool.config)
   --replace                          Back up and replace an existing config
@@ -640,16 +644,147 @@ zfs.config.validate.topology.args() {
   ((vdev_count * per_vdev == selected_count)) || zfs.die "Selected ${selected_count} devices, but topology requires $((vdev_count * per_vdev))"
 }
 
+zfs.config.review.json() {
+  local inventory="$1" candidates="$2" transport="$3" media="$4"
+  local size_filter="$5" models="$6" avoided="$7"
+  jq -n -S \
+    --argjson inventory "${inventory}" --argjson candidates "${candidates}" \
+    --arg transport "${transport}" --arg media "${media}" \
+    --argjson size_filter "${size_filter}" --argjson models "${models}" --argjson avoided "${avoided}" '
+    def disk_record($disk; $index): {
+      index:$index,
+      path:$disk.path,
+      stable_path:$disk.stable_path,
+      serial:$disk.serial,
+      wwn:$disk.wwn,
+      model:$disk.model,
+      transport:$disk.transport,
+      media:($disk.media // (if $disk.rotational then "hdd" else "ssd" end)),
+      size_bytes:$disk.size_bytes,
+      logical_sector_bytes:$disk.logical_sector_bytes,
+      physical_sector_bytes:$disk.physical_sector_bytes,
+      smart_health:($disk.smart_health // "unknown"),
+      effective_health:($disk.effective_health // "advisory"),
+      health_evidence_status:($disk.health_evidence.status // "not-supplied"),
+      fault_domain:($disk.fault_domain // "unknown"),
+      signatures:($disk.signatures // []),
+      eligible:$disk.eligible,
+      reasons:($disk.reasons // []),
+      warnings:($disk.warnings // [])
+    };
+    ($candidates | map(.stable_path)) as $candidate_paths |
+    ($inventory.disks | map(. as $disk | select(($candidate_paths | index($disk.stable_path)) == null))) as $excluded |
+    {
+      schema_version:1,
+      review_kind:"zfs-device-selection",
+      filters:{
+        transport:(if $transport == "any" then null else $transport end),
+        media:(if $media == "any" then null else $media end),
+        size_bytes:$size_filter,
+        models:$models,
+        avoided:$avoided
+      },
+      summary:{
+        discovered_count:($inventory.disks | length),
+        candidate_count:($candidates | length),
+        excluded_count:($excluded | length),
+        ineligible_count:([$excluded[] | select(.eligible != true)] | length),
+        filtered_count:([$excluded[] | select(.eligible == true)] | length)
+      },
+      candidates:[
+        $candidates | to_entries[] |
+        disk_record(.value; (.key + 1)) + {selection_status:"candidate"}
+      ],
+      excluded:[
+        $excluded | to_entries[] |
+        .value as $disk |
+        disk_record($disk; (.key + 1)) + {
+          selection_status:(if $disk.eligible == true then "filtered-out" else "ineligible" end),
+          selection_reasons:((if $disk.eligible == true then ["filtered-out"] else [] end) + ($disk.reasons // []) + ($disk.warnings // []))
+        }
+      ]
+    }'
+}
+
+zfs.config.review.print() {
+  local inventory="$1" candidates="$2" transport="$3" media="$4"
+  local size_filter="$5" models="$6" avoided="$7" review_format="$8" tmp
+  case "${review_format}" in
+    pretty-json)
+      zfs.config.review.json "${inventory}" "${candidates}" "${transport}" "${media}" \
+        "${size_filter}" "${models}" "${avoided}"
+      ;;
+    table)
+      tmp="$(mktemp)"
+      printf '%s\n' "${inventory}" > "${tmp}"
+      zfs.inventory.print.table "${tmp}"
+      rm -f "${tmp}"
+      ;;
+    *) zfs.die "Review format must be pretty-json or table" ;;
+  esac
+}
+
+zfs.config.candidate.review.json() {
+  local item="$1" index="$2" total="$3"
+  jq -n -S --argjson device "${item}" --argjson index "${index}" --argjson total "${total}" '
+    {
+      review_kind:"zfs-device-candidate",
+      candidate_index:$index,
+      candidate_count:$total,
+      device:{
+        path:$device.path,
+        stable_path:$device.stable_path,
+        serial:$device.serial,
+        wwn:$device.wwn,
+        model:$device.model,
+        transport:$device.transport,
+        media:($device.media // (if $device.rotational then "hdd" else "ssd" end)),
+        size_bytes:$device.size_bytes,
+        logical_sector_bytes:$device.logical_sector_bytes,
+        physical_sector_bytes:$device.physical_sector_bytes,
+        smart_health:($device.smart_health // "unknown"),
+        effective_health:($device.effective_health // "advisory"),
+        health_evidence_status:($device.health_evidence.status // "not-supplied"),
+        fault_domain:($device.fault_domain // "unknown"),
+        signatures:($device.signatures // []),
+        eligible:$device.eligible,
+        reasons:($device.reasons // []),
+        warnings:($device.warnings // [])
+      }
+    }'
+}
+
+zfs.config.selected.order.review.json() {
+  local selected="$1"
+  jq -n -S --argjson selected "${selected}" '
+    {
+      review_kind:"zfs-selected-device-order",
+      selected_count:($selected | length),
+      devices:[
+        $selected | to_entries[] | {
+          order:(.key + 1),
+          stable_path:.value.stable_path,
+          serial:.value.serial,
+          wwn:.value.wwn,
+          fault_domain:(.value.fault_domain // "unknown")
+        }
+      ]
+    }'
+}
+
 zfs.config.choose.interactive() {
-  local candidates="$1" selected='[]' item answer include_rest=0 exclude_rest=0
+  local candidates="$1" selected='[]' item answer include_rest=0 exclude_rest=0 index=0 total
+  total="$(jq 'length' <<< "${candidates}")"
   while IFS= read -r item; do
+    index="$((index + 1))"
     if ((exclude_rest == 1)); then continue; fi
     if ((include_rest == 1)); then
       selected="$(jq -c --argjson item "${item}" '. + [$item]' <<< "${selected}")"
       continue
     fi
+    zfs.config.candidate.review.json "${item}" "${index}" "${total}" >&2
     while true; do
-      answer="$(zfs.prompt "Include $(jq -r '.stable_path' <<< "${item}") serial=$(jq -r '.serial' <<< "${item}") bytes=$(jq -r '.size_bytes' <<< "${item}")? [y/n/all/none]" "n")"
+      answer="$(zfs.prompt "Include candidate ${index}/${total}? [y/n/all/none]" "n")"
       case "$(tr '[:upper:]' '[:lower:]' <<< "${answer}")" in
         y|yes) selected="$(jq -c --argjson item "${item}" '. + [$item]' <<< "${selected}")"; break ;;
         n|no) break ;;
@@ -662,32 +797,38 @@ zfs.config.choose.interactive() {
   printf '%s\n' "${selected}"
 }
 
-zfs.config.reorder.interactive() {
-  local selected="$1" response item index reordered='[]' duplicate_count
-  printf '\nSelected device order:\n' >/dev/tty
-  jq -r 'to_entries[] | "\(.key+1)) \(.value.stable_path) serial=\(.value.serial) domain=\(.value.fault_domain // \"unknown\")"' <<< "${selected}" >/dev/tty
-  response="$(zfs.prompt "Ordered indexes as CSV (Enter keeps this order)" "")"
-  [[ -n "${response}" ]] || { printf '%s\n' "${selected}"; return; }
+zfs.config.reorder.by.indexes() {
+  local selected="$1" response="$2" item index reordered='[]' seen='[]'
+  local -a selected_indexes=()
   IFS=',' read -r -a selected_indexes <<< "${response}"
   [[ "${#selected_indexes[@]}" -eq "$(jq 'length' <<< "${selected}")" ]] || zfs.die "Reordering must include every selected index exactly once"
   for index in "${selected_indexes[@]}"; do
     index="${index//[[:space:]]/}"
     [[ "${index}" =~ ^[1-9][0-9]*$ ]] || zfs.die "Invalid reorder index: ${index}"
+    jq -e --argjson index "${index}" 'index($index) == null' <<< "${seen}" >/dev/null || zfs.die "Reordering contains duplicate indexes"
     item="$(jq -c --argjson index "$((index - 1))" '.[$index] // empty' <<< "${selected}")"
     [[ -n "${item}" ]] || zfs.die "Reorder index is out of range: ${index}"
     reordered="$(jq -c --argjson item "${item}" '. + [$item]' <<< "${reordered}")"
+    seen="$(jq -c --argjson index "${index}" '. + [$index]' <<< "${seen}")"
   done
-  duplicate_count="$(jq '([.[].stable_path]|length)-([.[].stable_path]|unique|length)' <<< "${reordered}")"
-  [[ "${duplicate_count}" -eq 0 ]] || zfs.die "Reordering contains duplicate indexes"
   printf '%s\n' "${reordered}"
 }
 
+zfs.config.reorder.interactive() {
+  local selected="$1" response
+  printf '\n' >&2
+  zfs.config.selected.order.review.json "${selected}" >&2
+  response="$(zfs.prompt "Ordered indexes as CSV (Enter keeps this order)" "")"
+  [[ -n "${response}" ]] || { printf '%s\n' "${selected}"; return; }
+  zfs.config.reorder.by.indexes "${selected}" "${response}"
+}
+
 zfs.config.build() {
-  local pool="archive" vdev_type="" vdev_count="" per_vdev="" transport="any" media="any"
+  local pool="${ZFS_DEFAULT_POOL}" vdev_type="" vdev_count="" per_vdev="" transport="any" media="any"
   local requested_size="" tolerance="${ZFS_DEFAULT_SIZE_TOLERANCE_PERCENT}"
   local health_policy="${ZFS_DEFAULT_HEALTH_POLICY}" health_evidence="" health_evidence_root="" evidence_server=""
   local max_health_evidence_age_days="${ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS}"
-  local dataset="" mountpoint="" all_matches=0 non_interactive=0 allow_signature_wipe=0
+  local dataset="" mountpoint="" review_format="${ZFS_DEFAULT_REVIEW_FORMAT}" all_matches=0 non_interactive=0 allow_signature_wipe=0
   local replace=0 inventory_file="" inventory candidates selected requested_bytes=0
   local lower_requested=0 upper_requested=0 candidate_count output="$(pwd -P)/zpool.config" tmp canonical
   local identifier matches match match_count response config_json grouped_json duplicate_count signature_count parsed_serials
@@ -729,6 +870,7 @@ zfs.config.build() {
       --max-health-evidence-age-days) max_health_evidence_age_days="${2:?missing evidence age value}"; shift 2 ;;
       --all-matches|--auto-select) all_matches=1; shift ;;
       --non-interactive) non_interactive=1; shift ;;
+      --review-format) review_format="${2:?missing --review-format value}"; shift 2 ;;
       --dataset) dataset="${2:?missing --dataset value}"; shift 2 ;;
       --mountpoint) mountpoint="${2:?missing --mountpoint value}"; shift 2 ;;
       --allow-signature-wipe) allow_signature_wipe=1; shift ;;
@@ -751,8 +893,9 @@ zfs.config.build() {
   ((${#device_identifiers[@]} == 0 || ${#serial_identifiers[@]} == 0)) || zfs.die "Use either --device or --serial, not both"
   case "${transport}" in sas|sata|scsi|nvme|usb|any) ;; *) zfs.die "Unsupported transport filter: ${transport}" ;; esac
   case "${media}" in hdd|ssd|any) ;; *) zfs.die "Unsupported media filter: ${media}" ;; esac
-  dataset="${dataset:-${pool}/data}"
-  mountpoint="${mountpoint:-/media/${pool}}"
+  case "${review_format}" in pretty-json|table) ;; *) zfs.die "Review format must be pretty-json or table" ;; esac
+  dataset="${dataset:-${pool}/${ZFS_DEFAULT_DATASET_LEAF}}"
+  mountpoint="${mountpoint:-/media/${dataset}}"
   [[ "${dataset}" == "${pool}/"* ]] || zfs.die "Dataset must be a child of pool ${pool}"
   [[ "${mountpoint}" == /* && "${mountpoint}" != "/" ]] || zfs.die "Mountpoint must be an absolute non-root path"
   [[ "${pool}" =~ ^[A-Za-z][A-Za-z0-9_.:-]*$ ]] || zfs.die "Invalid ZFS pool name: ${pool}"
@@ -774,10 +917,6 @@ zfs.config.build() {
     inventory="$(cat "${tmp}")"
     rm -f "${tmp}"
   fi
-  tmp="$(mktemp)"; printf '%s\n' "${inventory}" > "${tmp}"
-  zfs.inventory.print.table "${tmp}"
-  rm -f "${tmp}"
-
   if [[ -n "${requested_size}" ]]; then
     requested_bytes="$(zfs.size.to.bytes "${requested_size}")"
     lower_requested="$(awk -v value="${requested_bytes}" -v tolerance="${tolerance}" 'BEGIN { printf "%.0f", value * (1 - tolerance/100) }')"
@@ -816,6 +955,9 @@ zfs.config.build() {
         select(($models|length)==0 or ([ $models[] | norm_model ] | index(($disk.model|norm_model))) != null) |
         select(([$avoided[] as $a | (.path == $a or .stable_path == $a or .wwn == $a or .serial == $a or .kernel == $a)] | any) | not)
       ] | sort_by(.stable_path)' <<< "${inventory}")"
+
+  zfs.config.review.print "${inventory}" "${candidates}" "${transport}" "${media}" \
+    "${filter_size_json}" "${model_json}" "${avoid_json}" "${review_format}"
 
   if [[ -n "${device_identifiers[*]-}" ]]; then
     device_count="${#device_identifiers[@]}"
@@ -928,13 +1070,15 @@ zfs.config.build() {
     }')"
 
   zfs.warn "Logical vdev grouping is not physical fault-domain isolation. Review HBAs, expanders, backplanes, and power domains."
-  printf '%s\n' "${config_json}" | jq -r '
-    "Pool: \(.pool.name)",
-    (.vdevs[] | "\(.name) \(.type):", (.devices[] | "  \(.path) serial=\(.expected_serial) domain=\(.observed_fault_domain)")),
-    (.datasets[] | "Dataset: \(.name) -> \(.mountpoint)")' >&2
   if ((interactive == 1)); then
+    printf '%s\n' "${config_json}" | jq . >&2
     response="$(zfs.prompt "Type WRITE to save this editable configuration" "")"
     [[ "${response}" == "WRITE" ]] || zfs.die "Configuration write was not confirmed"
+  else
+    printf '%s\n' "${config_json}" | jq -r '
+      "Pool: \(.pool.name)",
+      "Layout: \(.vdevs|length) x \(.vdevs[0].devices|length) \(.vdevs[0].type)",
+      (.datasets[] | "Dataset: \(.name) -> \(.mountpoint)")' >&2
   fi
 
   tmp="$(mktemp)"; canonical="$(mktemp)"
@@ -944,7 +1088,7 @@ zfs.config.build() {
   zfs.write.atomic "${output}" 0600 "${canonical}"
   rm -f "${tmp}" "${canonical}"
   zfs.log "Wrote ${output}"
-  zfs.config.print.topology "${output}"
+  zfs.config.print.topology "${output}" >&2
 }
 
 zfs.config.print.topology() {

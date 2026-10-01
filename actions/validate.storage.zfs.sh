@@ -105,6 +105,31 @@ jq -n '{schema_version:1,disks:[range(1;13) as $i | {
   signatures:[],reasons:[],warnings:[],eligible:true
 }]}' > "${TMP}/inventory.json"
 
+jq -n '{schema_version:1,disks:[range(1;21) as $i |
+  if $i<=18 then {
+    kernel:("sd"+($i|tostring)),path:("/dev/sd"+($i|tostring)),
+    stable_path:("/dev/disk/by-id/wwn-0x5000"+(200000000000+$i|tostring)),
+    wwn:("0x5000"+(200000000000+$i|tostring)),serial:("ARCHIVE"+($i|tostring)),
+    model:"ST6000NM0034",vendor:"SEAGATE",transport:"sas",media:"hdd",
+    size_bytes:6001175126016,rotational:true,
+    logical_sector_bytes:512,physical_sector_bytes:4096,smart_health:"passed",effective_health:"passed",
+    health_evidence:{status:"not-supplied"},hba:"host0",enclosure:("target0:0:"+($i|tostring)),slot:($i|tostring),
+    fault_domain:("host0:target0:0:"+($i|tostring)),whole_disk:true,
+    signatures:[],reasons:[],warnings:[],eligible:true
+  } else {
+    kernel:("ssd"+($i|tostring)),path:("/dev/ssd"+($i|tostring)),
+    stable_path:("/dev/disk/by-id/wwn-0x500a"+(300000000000+$i|tostring)),
+    wwn:("0x500a"+(300000000000+$i|tostring)),serial:("SYSTEM"+($i|tostring)),
+    model:"MTFDDAV240TDU",vendor:"ATA",transport:"sata",media:"ssd",
+    size_bytes:240057409536,rotational:false,
+    logical_sector_bytes:512,physical_sector_bytes:4096,smart_health:"passed",effective_health:"passed",
+    health_evidence:{status:"not-supplied"},hba:("host"+($i|tostring)),enclosure:"system",slot:($i|tostring),
+    fault_domain:("system:"+($i|tostring)),whole_disk:true,
+    signatures:["PMBR","gpt","zfs_member"],
+    reasons:["contains-partitions-or-children"],warnings:["signatures-present"],eligible:false
+  } end
+]}' > "${TMP}/large-mixed-inventory.json"
+
 export PROXMOX_ZFS_TEST_MODE=1
 export ZFS_TEST_COMMAND_LOG="${TMP}/commands.log"
 export PROXMOX_ZFS_LOCK_ROOT="${TMP}/locks"
@@ -126,25 +151,81 @@ smart_unknown="$(bash -c 'source "$1"; zfs.health.smart.normalize "$2"' _ "${HEL
 ok "SMART health is normalized to exactly one value"
 
 INTERACTIVE_CANDIDATES="$(jq -c '.disks[0:4]' "${TMP}/inventory.json")"
+selection_review="$(bash -c '
+  source "$1"
+  inventory="$(cat "$2")"
+  candidates="$(jq -c ".disks[0:18]" "$2")"
+  zfs.config.review.json "${inventory}" "${candidates}" sas hdd "$3" "$4" "[]"
+' _ "${HELPER}" "${TMP}/large-mixed-inventory.json" \
+  '{"minimum_bytes":5940000000000,"maximum_bytes":6060000000000}' '["ST6000NM0034"]')"
+jq -e '
+  .review_kind=="zfs-device-selection" and
+  .filters.transport=="sas" and .filters.media=="hdd" and
+  .summary=={candidate_count:18,discovered_count:20,excluded_count:2,filtered_count:0,ineligible_count:2} and
+  (.candidates|length)==18 and all(.candidates[];.selection_status=="candidate" and .eligible==true) and
+  (.excluded|length)==2 and all(.excluded[];.selection_status=="ineligible" and (.signatures|index("zfs_member")!=null))
+' <<< "${selection_review}" >/dev/null || fail "pretty JSON selection review"
+[[ "$(wc -l <<< "${selection_review}" | tr -d ' ')" -gt 20 ]] || fail "selection review is not pretty printed"
+candidate_review="$(bash -c '
+  source "$1"
+  zfs.config.candidate.review.json "$(jq -c ".disks[0]" "$2")" 1 18
+' _ "${HELPER}" "${TMP}/large-mixed-inventory.json")"
+jq -e '.review_kind=="zfs-device-candidate" and .candidate_index==1 and .candidate_count==18 and .device.serial=="ARCHIVE1"' \
+  <<< "${candidate_review}" >/dev/null || fail "pretty JSON candidate review"
+ok "selection and per-candidate reviews are valid pretty JSON"
+
 interactive_selection="$(CANDIDATES="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
   source "${HELPER}"
   zfs.prompt() {
     case "$1" in
-      *serial=SER1*) printf "y\n" ;;
-      *serial=SER2*) printf "n\n" ;;
+      *"candidate 1/4"*) printf "y\n" ;;
+      *"candidate 2/4"*) printf "n\n" ;;
       *) printf "all\n" ;;
     esac
   }
-  zfs.config.choose.interactive "${CANDIDATES}"
+  zfs.config.choose.interactive "${CANDIDATES}" 2>/dev/null
 ')"
 [[ "$(jq 'length' <<< "${interactive_selection}")" -eq 3 ]] || fail "y/n/all prompt semantics"
+yes_yes_all_selection="$(CANDIDATES="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.prompt() {
+    case "$1" in
+      *"candidate 1/4"*|*"candidate 2/4"*) printf "y\n" ;;
+      *) printf "all\n" ;;
+    esac
+  }
+  zfs.config.choose.interactive "${CANDIDATES}" 2>/dev/null
+')"
+[[ "$(jq -r '[.[].serial]|join(",")' <<< "${yes_yes_all_selection}")" == "SER1,SER2,SER3,SER4" ]] || fail "y/y/all prompt semantics"
 none_selection="$(CANDIDATES="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
   source "${HELPER}"
   zfs.prompt() { printf "none\n"; }
-  zfs.config.choose.interactive "${CANDIDATES}"
+  zfs.config.choose.interactive "${CANDIDATES}" 2>/dev/null
 ')"
 [[ "$(jq 'length' <<< "${none_selection}")" -eq 0 ]] || fail "none prompt semantics"
 ok "interactive y/n/all/none selection"
+
+selected_order_review="$(SELECTED="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.config.selected.order.review.json "${SELECTED}"
+')"
+jq -e '.review_kind=="zfs-selected-device-order" and .selected_count==4 and .devices[0].order==1 and .devices[0].serial=="SER1"' \
+  <<< "${selected_order_review}" >/dev/null || fail "selected order JSON rendering"
+reordered="$(SELECTED="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.config.reorder.by.indexes "${SELECTED}" "4, 2, 1, 3"
+')"
+[[ "$(jq -r '[.[].serial]|join(",")' <<< "${reordered}")" == "SER4,SER2,SER1,SER3" ]] || fail "selected order reordering"
+unchanged_order="$(SELECTED="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.prompt() { printf "\n"; }
+  zfs.config.reorder.interactive "${SELECTED}" 2>/dev/null
+')"
+[[ "$(jq -r '[.[].serial]|join(",")' <<< "${unchanged_order}")" == "SER1,SER2,SER3,SER4" ]] || fail "interactive selected order rendering"
+expect_failure bash -c 'source "$1"; zfs.config.reorder.by.indexes "$2" "1,1,3,4"' _ "${HELPER}" "${INTERACTIVE_CANDIDATES}"
+expect_failure bash -c 'source "$1"; zfs.config.reorder.by.indexes "$2" "1,2,3"' _ "${HELPER}" "${INTERACTIVE_CANDIDATES}"
+expect_failure bash -c 'source "$1"; zfs.config.reorder.by.indexes "$2" "1,2,3,5"' _ "${HELPER}" "${INTERACTIVE_CANDIDATES}"
+ok "selected order JSON and CSV reordering reject duplicates, omissions, and out-of-range indexes"
 
 jq '.disks=.disks[0:4]' "${TMP}/inventory.json" > "${TMP}/four-sas.json"
 
@@ -216,6 +297,7 @@ CONFIG="${TMP}/work/zpool.config"
 )
 [[ "$(stat -c '%a' "${CONFIG}" 2>/dev/null || stat -f '%Lp' "${CONFIG}")" == 600 ]] || fail "zpool.config mode is not 0600"
 jq -e '
+  .pool.name=="zfspool" and .datasets[0].name=="zfspool/archive" and
   .selection.filters.size_bytes=={minimum_bytes:5940000000000,maximum_bytes:6060000000000} and
   .selection.health.policy=="advisory" and .selection.health.evidence.supplied==false and
   (.vdevs|length)==1 and .vdevs[0].type=="raidz2" and (.vdevs[0].devices|length)==4 and
@@ -223,6 +305,64 @@ jq -e '
 ' "${CONFIG}" >/dev/null || fail "general configuration contract"
 "${RUNNER}" validate-config --config "${CONFIG}" >/dev/null
 ok "flag-first configure writes editable dynamic topology"
+
+mkdir -p "${TMP}/default-config"
+default_review="$(
+  cd "${TMP}/default-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/four-sas.json" --type sas --all-matches \
+    --non-interactive --vdev-type raidz2 --vdev-count 1
+)"
+jq -e '.review_kind=="zfs-device-selection" and .summary.candidate_count==4 and (.candidates|length)==4' \
+  <<< "${default_review}" >/dev/null || fail "configure did not emit a valid default JSON review"
+DEFAULT_CONFIG="${TMP}/default-config/zpool.config"
+jq -e '
+  .pool.name=="zfspool" and
+  .pool.filesystem_properties.mountpoint=="none" and .pool.filesystem_properties.canmount=="off" and
+  .datasets==[{mountpoint:"/media/zfspool/archive",name:"zfspool/archive",properties:{canmount:"on",dedup:"off",recordsize:"1M"}}]
+' "${DEFAULT_CONFIG}" >/dev/null || fail "default pool, dataset, and mountpoint hierarchy"
+"${RUNNER}" validate-config --config "${DEFAULT_CONFIG}" >/dev/null
+
+mkdir -p "${TMP}/nested-dataset-config"
+(
+  cd "${TMP}/nested-dataset-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/four-sas.json" --type sas --all-matches \
+    --non-interactive --vdev-type raidz2 --vdev-count 1 \
+    --pool tank --dataset tank/archive/deep >/dev/null
+)
+jq -e '.pool.name=="tank" and .datasets[0].name=="tank/archive/deep" and .datasets[0].mountpoint=="/media/tank/archive/deep"' \
+  "${TMP}/nested-dataset-config/zpool.config" >/dev/null || fail "dataset-derived mountpoint"
+
+mkdir -p "${TMP}/legacy-names-config"
+(
+  cd "${TMP}/legacy-names-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/four-sas.json" --type sas --all-matches \
+    --non-interactive --vdev-type raidz2 --vdev-count 1 \
+    --pool archive --dataset archive/samba --mountpoint /media/archive >/dev/null
+)
+LEGACY_NAMES_CONFIG="${TMP}/legacy-names-config/zpool.config"
+jq -e '.pool.name=="archive" and .datasets[0].name=="archive/samba" and .datasets[0].mountpoint=="/media/archive"' \
+  "${LEGACY_NAMES_CONFIG}" >/dev/null || fail "explicit legacy naming"
+"${RUNNER}" validate-config --config "${LEGACY_NAMES_CONFIG}" >/dev/null
+expect_failure bash -c 'cd "$1" && "$2" --inventory-file "$3" --type sas --all-matches --non-interactive --vdev-type raidz2 --vdev-count 1 --review-format yaml' \
+  _ "${TMP}" "${CONFIG_RUNNER}" "${TMP}/four-sas.json"
+ok "new storage hierarchy and nested mountpoint derivation preserve explicit legacy names"
+
+mkdir -p "${TMP}/large-mixed-config"
+(
+  cd "${TMP}/large-mixed-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/large-mixed-inventory.json" \
+    --type sas --media hdd --size 6TB --model ST6000NM0034 --all-matches \
+    --non-interactive --vdev-type raidz2 --vdev-count 2 >/dev/null
+)
+LARGE_MIXED_CONFIG="${TMP}/large-mixed-config/zpool.config"
+jq -e '
+  (.vdevs|length)==2 and all(.vdevs[];.type=="raidz2" and (.devices|length)==9) and
+  ([.vdevs[].devices[]]|length)==18 and
+  all(.vdevs[].devices[];.expected_transport=="sas" and .expected_size_bytes==6001175126016) and
+  ([.vdevs[].devices[].expected_serial]|unique|length)==18
+' "${LARGE_MIXED_CONFIG}" >/dev/null || fail "large mixed inventory topology"
+"${RUNNER}" validate-config --config "${LARGE_MIXED_CONFIG}" >/dev/null
+ok "large mixed inventory produces two equal nine-member RAIDZ2 vdevs without selecting system SSDs"
 
 mkdir -p "${TMP}/bht-config"
 (
@@ -417,8 +557,8 @@ for mutation in serial size transport sector ineligible; do
 done
 ok "identity, size, transport, sector, and active-use drift are refused"
 
-PROXMOX_ZFS_EXISTING_POOLS=archive expect_failure "${RUNNER}" preflight --config "${CONFIG}"
-PROXMOX_ZFS_IMPORTABLE_POOLS=archive expect_failure "${RUNNER}" preflight --config "${CONFIG}"
+PROXMOX_ZFS_EXISTING_POOLS=zfspool expect_failure "${RUNNER}" preflight --config "${CONFIG}"
+PROXMOX_ZFS_IMPORTABLE_POOLS=zfspool expect_failure "${RUNNER}" preflight --config "${CONFIG}"
 ok "existing and importable pool names are refused"
 
 jq '.disks[0].signatures=["zfs_member"]|.disks[0].warnings=["signatures-present"]' "${TMP}/four-sas.json" > "${TMP}/signed.json"
@@ -432,7 +572,7 @@ expect_failure bash -c 'cd "$1" && "$2" --inventory-file "$3" --type sas --all-m
 SIGNED_CONFIG="${TMP}/signed-config/zpool.config"
 PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/signed.json" "${RUNNER}" plan --config "${SIGNED_CONFIG}" --plan-file "${TMP}/wipe.plan" >/dev/null
 jq -e '.plan_kind=="signature-wipe" and .requires_signature_wipe==true and (.commands.signature_wipes|length)==1' "${TMP}/wipe.plan" >/dev/null || fail "signature wipe plan contract"
-expect_failure "${RUNNER}" apply --plan-file "${TMP}/wipe.plan" --plan-id "$(jq -r .plan_id "${TMP}/wipe.plan")" --mode create --confirm-create archive --yes
+expect_failure "${RUNNER}" apply --plan-file "${TMP}/wipe.plan" --plan-id "$(jq -r .plan_id "${TMP}/wipe.plan")" --mode create --confirm-create zfspool --yes
 ok "signature detection, opt-in planning, and create separation"
 
 expect_failure bash -c 'cd "$1" && "$2" --inventory-file "$3" --type sas --all-matches --non-interactive --vdev-type raidz2' _ "${TMP}" "${CONFIG_RUNNER}" "${TMP}/inventory.json"
@@ -445,6 +585,8 @@ ok "review and mutation actions require a downloaded regular entrypoint"
 grep -RInE 'dragonfruit|10[.]0[.]0[.]|exactly 18|18-disk|two-by-nine|2:9:9|nine-disk' "${RUNNER}" "${CONFIG_RUNNER}" "${HELPER}" && fail "feature contains host or fixed-disk coupling"
 grep -Fq -- '--mode create' <("${RUNNER}" --help) || fail "help omits explicit creation mode"
 grep -Fq 'y/n/all/none' <("${CONFIG_RUNNER}" --help) || fail "help omits prompt behavior"
+grep -Fq -- '--review-format FORMAT' <("${CONFIG_RUNNER}" --help) || fail "help omits review format"
+grep -Fq -- 'default: zfspool' <("${CONFIG_RUNNER}" --help) || fail "help omits storage-specific pool default"
 ok "public help and implementation remain generic and local"
 
 printf '[validate.storage.zfs] all contracts passed\n'
