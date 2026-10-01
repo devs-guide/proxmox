@@ -9,6 +9,7 @@ ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS="30"
 ZFS_DEFAULT_POOL="zfspool"
 ZFS_DEFAULT_DATASET_LEAF="archive"
 ZFS_DEFAULT_REVIEW_FORMAT="pretty-json"
+ZFS_DEFAULT_DEVICE_ORDER="auto"
 ZFS_DEFAULT_STATE_ROOT="${PROXMOX_ZFS_STATE_ROOT:-/var/lib/proxmox-zfs-feature}"
 
 zfs.log() { printf '[setup.storage.zfs] %s\n' "$*" >&2; }
@@ -171,6 +172,27 @@ zfs.inventory.apply.health() {
     def smart_state:
       (.smart_health // "unknown") as $health |
       if ($health == "passed" or $health == "failed" or $health == "unknown") then $health else "unknown" end;
+    def normalized_hctl:
+      if ((.observed_hctl // "") | type)=="string" and ((.observed_hctl // "") | test("^[0-9]+:[0-9]+:[0-9]+:[0-9]+$")) then .observed_hctl
+      elif ((.slot // "") | type)=="string" and ((.slot // "") | test("^[0-9]+:[0-9]+:[0-9]+:[0-9]+$")) then .slot
+      else "" end;
+    def normalized_slot_index:
+      if ((.observed_slot_index // null) | type)=="number" then .observed_slot_index
+      elif ((.slot // null) | type)=="number" then .slot
+      elif ((.slot // "") | type)=="string" and ((.slot // "") | test("^[0-9]+$")) then (.slot | tonumber)
+      elif (normalized_hctl | length)>0 then (normalized_hctl | split(":")[2] | tonumber)
+      else null end;
+    def normalized_slot_source:
+      if ((.observed_slot_source // "") | length)>0 then .observed_slot_source
+      elif (normalized_hctl | length)>0 then "scsi-hctl-target"
+      elif normalized_slot_index != null then "inventory-slot"
+      else "" end;
+    def normalized_slot_scope:
+      if ((.observed_slot_scope // "") | length)>0 then .observed_slot_scope
+      elif (normalized_hctl | length)>0 then
+        (normalized_hctl | split(":")) as $parts | "host"+$parts[0]+":channel"+$parts[1]
+      elif normalized_slot_index != null then (.hba // "unknown")+":"+(.enclosure // "unknown")
+      else "" end;
     def bht_matches($disk):
       [$evidence[0].drives[] |
         select(($evidence_server == "" or .server == $evidence_server) and .serial == $disk.serial and ((.model|norm_model) == ($disk.model|norm_model)))];
@@ -211,6 +233,10 @@ zfs.inventory.apply.health() {
     .health_policy=$policy |
     .health_evidence={supplied:($evidence_hash != ""),file_sha256:(if $evidence_hash=="" then null else $evidence_hash end),server:(if $evidence_server=="" then null else $evidence_server end),max_age_days:$max_age_days,package_checks_requested:$package_checks_requested} |
     .disks |= map(
+      .observed_hctl=normalized_hctl |
+      .observed_slot_index=normalized_slot_index |
+      .observed_slot_source=normalized_slot_source |
+      .observed_slot_scope=normalized_slot_scope |
       .health_policy=$policy |
       .smart_health=smart_state |
       .health_evidence=evidence_record(.) |
@@ -318,12 +344,36 @@ zfs.device.in.command.output() {
   return 1
 }
 
+zfs.device.enclosure.slot() {
+  local kernel="$1" root="${PROXMOX_ZFS_SYS_ENCLOSURE_ROOT:-/sys/class/enclosure}"
+  local candidate slot_dir enclosure_dir slot_value slot_index
+  [[ -d "${root}" ]] || return 1
+  for candidate in "${root}"/*/*/device/block/"${kernel}"; do
+    [[ -e "${candidate}" || -L "${candidate}" ]] || continue
+    slot_dir="$(dirname "$(dirname "$(dirname "${candidate}")")")"
+    enclosure_dir="$(dirname "${slot_dir}")"
+    slot_value=""
+    if [[ -r "${slot_dir}/slot" ]]; then
+      slot_value="$(sed -n '1p' "${slot_dir}/slot" 2>/dev/null || true)"
+    fi
+    [[ -n "${slot_value}" ]] || slot_value="$(basename "${slot_dir}")"
+    if [[ "${slot_value}" =~ ([0-9]+)$ ]]; then
+      slot_index="$((10#${BASH_REMATCH[1]}))"
+      printf '%s\t%s\n' "enclosure:$(basename "${enclosure_dir}")" "${slot_index}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 zfs.inventory.collect.live() {
   local lsblk_json row path kernel stable_path smart_json smart_text smart_health smart_parse_quality smartctl_exit_status
   local transport smart_transport signatures_json reasons_json warnings_json
   local descendants mounts holders lvm_output md_output zpool_output ceph_output
   local tmp_rows entry type size rota media model vendor serial wwn ro rm log_sec phy_sec
   local hctl sysfs_path hba enclosure slot fault_domain command_name
+  local hctl_host hctl_channel hctl_target hctl_lun slot_metadata
+  local observed_slot_index observed_slot_source observed_slot_scope
 
   for command_name in lsblk findmnt readlink smartctl wipefs blkid swapon pvs mdadm; do
     zfs.require.command "${command_name}"
@@ -359,11 +409,26 @@ zfs.inventory.collect.live() {
     stable_path="$(zfs.resolve.stable.path "${path}" 2>/dev/null || true)"
     if [[ "${rota}" == "true" || "${rota}" == "1" ]]; then media="hdd"; else media="ssd"; fi
     sysfs_path="$(readlink -f "/sys/class/block/${kernel}/device" 2>/dev/null || true)"
-    hba=""
-    if [[ "${hctl}" =~ ^([0-9]+): ]]; then hba="host${BASH_REMATCH[1]}"; fi
+    hba=""; hctl_host=""; hctl_channel=""; hctl_target=""; hctl_lun=""
+    if [[ "${hctl}" =~ ^([0-9]+):([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+      hctl_host="${BASH_REMATCH[1]}"; hctl_channel="${BASH_REMATCH[2]}"
+      hctl_target="${BASH_REMATCH[3]}"; hctl_lun="${BASH_REMATCH[4]}"
+      hba="host${hctl_host}"
+    fi
     enclosure=""
     if [[ -n "${sysfs_path}" ]]; then enclosure="$(basename "$(dirname "${sysfs_path}")")"; fi
     slot="${hctl}"
+    observed_slot_index="null"; observed_slot_source=""; observed_slot_scope=""
+    slot_metadata="$(zfs.device.enclosure.slot "${kernel}" 2>/dev/null || true)"
+    if [[ -n "${slot_metadata}" ]]; then
+      observed_slot_scope="${slot_metadata%%$'\t'*}"
+      observed_slot_index="${slot_metadata#*$'\t'}"
+      observed_slot_source="sysfs-enclosure-slot"
+    elif [[ -n "${hctl_target}" ]]; then
+      observed_slot_index="$((10#${hctl_target}))"
+      observed_slot_source="scsi-hctl-target"
+      observed_slot_scope="host${hctl_host}:channel${hctl_channel}"
+    fi
     fault_domain="${hba:-unknown}:${enclosure:-unknown}:${slot:-unknown}"
 
     smartctl_exit_status=0
@@ -424,16 +489,18 @@ zfs.inventory.collect.live() {
       --arg kernel "${kernel}" --arg path "${path}" --arg stable_path "${stable_path}" \
       --arg wwn "${wwn}" --arg serial "${serial}" --arg model "${model}" --arg vendor "${vendor}" \
       --arg transport "${transport}" --arg media "${media}" --arg smart_health "${smart_health}" --arg smart_parse_quality "${smart_parse_quality}" \
-      --arg hba "${hba}" --arg enclosure "${enclosure}" --arg slot "${slot}" \
+      --arg hba "${hba}" --arg enclosure "${enclosure}" --arg slot "${slot}" --arg observed_hctl "${hctl}" \
+      --arg observed_slot_source "${observed_slot_source}" --arg observed_slot_scope "${observed_slot_scope}" \
       --arg sysfs_path "${sysfs_path}" --arg fault_domain "${fault_domain}" \
       --argjson size_bytes "${size}" --argjson rotational "${rota}" --argjson smartctl_exit_status "${smartctl_exit_status}" \
       --argjson logical_sector_bytes "${log_sec}" --argjson physical_sector_bytes "${phy_sec}" \
+      --argjson observed_slot_index "${observed_slot_index}" \
       --argjson signatures "${signatures_json}" --argjson reasons "${reasons_json}" --argjson warnings "${warnings_json}" \
-      '{kernel:$kernel,path:$path,stable_path:$stable_path,wwn:$wwn,serial:$serial,model:$model,vendor:$vendor,transport:$transport,media:$media,size_bytes:$size_bytes,rotational:$rotational,logical_sector_bytes:$logical_sector_bytes,physical_sector_bytes:$physical_sector_bytes,smart_health:$smart_health,smart_parse_quality:$smart_parse_quality,smartctl_exit_status:$smartctl_exit_status,hba:$hba,enclosure:$enclosure,slot:$slot,sysfs_path:$sysfs_path,fault_domain:$fault_domain,whole_disk:true,signatures:$signatures,reasons:$reasons,warnings:$warnings,eligible:($reasons|length==0)}')"
+      '{kernel:$kernel,path:$path,stable_path:$stable_path,wwn:$wwn,serial:$serial,model:$model,vendor:$vendor,transport:$transport,media:$media,size_bytes:$size_bytes,rotational:$rotational,logical_sector_bytes:$logical_sector_bytes,physical_sector_bytes:$physical_sector_bytes,smart_health:$smart_health,smart_parse_quality:$smart_parse_quality,smartctl_exit_status:$smartctl_exit_status,hba:$hba,enclosure:$enclosure,slot:$slot,observed_hctl:$observed_hctl,observed_slot_index:$observed_slot_index,observed_slot_source:$observed_slot_source,observed_slot_scope:$observed_slot_scope,sysfs_path:$sysfs_path,fault_domain:$fault_domain,whole_disk:true,signatures:$signatures,reasons:$reasons,warnings:$warnings,eligible:($reasons|length==0)}')"
     printf '%s\n' "${entry}" >> "${tmp_rows}"
   done < <(jq -c '.blockdevices[]?' <<< "${lsblk_json}")
 
-  jq -s '{schema_version:1,disks:sort_by(.stable_path,.kernel)}' "${tmp_rows}"
+  jq -s '{schema_version:1,disks:sort_by(if .observed_slot_index==null then 1 else 0 end,.observed_slot_scope,.observed_slot_index,.stable_path,.kernel)}' "${tmp_rows}"
   rm -f "${tmp_rows}"
 }
 
@@ -458,20 +525,22 @@ zfs.inventory.print.table() {
   if command -v column >/dev/null 2>&1; then
     jq -r '
     def human: if .>=1099511627776 then (((./1099511627776)*100|round)/100|tostring)+"TiB" elif .>=1073741824 then (((./1073741824)*100|round)/100|tostring)+"GiB" else (tostring)+"B" end;
-    ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SMART","HEALTH","BHT","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
+    ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SLOT","SLOT_SOURCE","SMART","HEALTH","BHT","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
     (.disks | to_entries[] | [
       (.key+1), .value.path, (.value.stable_path // "-"), (.value.serial // "-"),
       (.value.model // "-"), (.value.transport // "-"), (.value.media // (if .value.rotational then "hdd" else "ssd" end)), (.value.size_bytes|human), .value.size_bytes,
+      (.value.observed_slot_index // "-"), (.value.observed_slot_source // "-"),
       (.value.smart_health // "unknown"), (.value.effective_health // "advisory"), (.value.health_evidence.status // "not-supplied"), (.value.fault_domain // "unknown"), (.value.signatures|join(",")),
       .value.eligible, ((.value.reasons + .value.warnings)|join(","))
     ]) | @tsv' "${inventory}" | column -t -s $'\t'
   else
     jq -r '
       def human: if .>=1099511627776 then (((./1099511627776)*100|round)/100|tostring)+"TiB" elif .>=1073741824 then (((./1073741824)*100|round)/100|tostring)+"GiB" else (tostring)+"B" end;
-      ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SMART","HEALTH","BHT","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
+      ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SLOT","SLOT_SOURCE","SMART","HEALTH","BHT","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
       (.disks | to_entries[] | [
         (.key+1), .value.path, (.value.stable_path // "-"), (.value.serial // "-"),
         (.value.model // "-"), (.value.transport // "-"), (.value.media // (if .value.rotational then "hdd" else "ssd" end)), (.value.size_bytes|human), .value.size_bytes,
+        (.value.observed_slot_index // "-"), (.value.observed_slot_source // "-"),
         (.value.smart_health // "unknown"), (.value.effective_health // "advisory"), (.value.health_evidence.status // "not-supplied"), (.value.fault_domain // "unknown"), (.value.signatures|join(",")),
         .value.eligible, ((.value.reasons + .value.warnings)|join(","))
       ]) | @tsv' "${inventory}"
@@ -530,6 +599,7 @@ Options:
   --serial SOURCE                    Ordered serial, [SERIAL,...], or one-per-line file
   --device IDENTIFIER                Select an exact disk (repeatable)
   --avoid IDENTIFIER                 Exclude exact path/by-id/WWN/serial (repeatable)
+  --device-order MODE                auto (default), slot, selection, or stable-path
   --health-policy POLICY             advisory (default), smart-required, or bht-required
   --health-evidence FILE             Optional BHT offline drive reference JSON
   --health-evidence-root DIRECTORY   Optionally verify referenced evidence packages
@@ -548,7 +618,7 @@ Options:
 
 Interactive selection asks y/n/all/none for each eligible candidate. The size
 filter is stored as explicit byte bounds; each disk's expected_size_bytes,
-WWN, serial, transport, and sector sizes remain authoritative.
+WWN, serial, transport, slot evidence, and sector sizes remain authoritative.
 EOF
 }
 
@@ -666,6 +736,10 @@ zfs.config.review.json() {
       smart_health:($disk.smart_health // "unknown"),
       effective_health:($disk.effective_health // "advisory"),
       health_evidence_status:($disk.health_evidence.status // "not-supplied"),
+      observed_hctl:($disk.observed_hctl // ""),
+      observed_slot_index:($disk.observed_slot_index // null),
+      observed_slot_source:($disk.observed_slot_source // ""),
+      observed_slot_scope:($disk.observed_slot_scope // ""),
       fault_domain:($disk.fault_domain // "unknown"),
       signatures:($disk.signatures // []),
       eligible:$disk.eligible,
@@ -745,6 +819,10 @@ zfs.config.candidate.review.json() {
         smart_health:($device.smart_health // "unknown"),
         effective_health:($device.effective_health // "advisory"),
         health_evidence_status:($device.health_evidence.status // "not-supplied"),
+        observed_hctl:($device.observed_hctl // ""),
+        observed_slot_index:($device.observed_slot_index // null),
+        observed_slot_source:($device.observed_slot_source // ""),
+        observed_slot_scope:($device.observed_slot_scope // ""),
         fault_domain:($device.fault_domain // "unknown"),
         signatures:($device.signatures // []),
         eligible:$device.eligible,
@@ -766,6 +844,10 @@ zfs.config.selected.order.review.json() {
           stable_path:.value.stable_path,
           serial:.value.serial,
           wwn:.value.wwn,
+          observed_slot_index:(.value.observed_slot_index // null),
+          observed_slot_source:(.value.observed_slot_source // ""),
+          observed_slot_scope:(.value.observed_slot_scope // ""),
+          observed_hctl:(.value.observed_hctl // ""),
           fault_domain:(.value.fault_domain // "unknown")
         }
       ]
@@ -815,16 +897,76 @@ zfs.config.reorder.by.indexes() {
 }
 
 zfs.config.reorder.interactive() {
-  local selected="$1" response
+  local selected="$1" require_override="${2:-0}" response reordered
   printf '\n' >&2
   zfs.config.selected.order.review.json "${selected}" >&2
   response="$(zfs.prompt "Ordered indexes as CSV (Enter keeps this order)" "")"
-  [[ -n "${response}" ]] || { printf '%s\n' "${selected}"; return; }
-  zfs.config.reorder.by.indexes "${selected}" "${response}"
+  if [[ -z "${response}" ]]; then
+    ((require_override == 0)) || zfs.die "Automatic slot ordering is ambiguous; enter a complete CSV order or rerun with an explicit --device-order mode"
+    jq -n -c --argjson devices "${selected}" '{devices:$devices,overridden:false}'
+    return
+  fi
+  reordered="$(zfs.config.reorder.by.indexes "${selected}" "${response}")"
+  jq -n -c --argjson devices "${reordered}" '{devices:$devices,overridden:true}'
+}
+
+zfs.config.slot.order.valid() {
+  local selected="$1"
+  jq -e '
+    length>0 and
+    all(.[];
+      (.observed_slot_index|type)=="number" and
+      (.observed_slot_index|floor)==.observed_slot_index and .observed_slot_index>=0 and
+      ((.observed_slot_source // "")|type)=="string" and ((.observed_slot_source // "")|length)>0 and
+      ((.observed_slot_scope // "")|type)=="string" and ((.observed_slot_scope // "")|length)>0
+    ) and
+    ([.[].observed_slot_index]|length)==([.[].observed_slot_index]|unique|length) and
+    ([.[].observed_slot_source]|unique|length)==1 and
+    ([.[].observed_slot_scope]|unique|length)==1
+  ' <<< "${selected}" >/dev/null
+}
+
+zfs.config.order.resolve() {
+  local selected="$1" requested="$2" explicit_selection="$3" ordered source
+  case "${requested}" in
+    selection)
+      jq -n -c --arg requested "${requested}" --argjson devices "${selected}" \
+        '{devices:$devices,requested:$requested,effective:"selection",source:"operator-selection",requires_manual:false}'
+      ;;
+    stable-path)
+      ordered="$(jq -c 'sort_by(.stable_path,.kernel)' <<< "${selected}")"
+      jq -n -c --arg requested "${requested}" --argjson devices "${ordered}" \
+        '{devices:$devices,requested:$requested,effective:"stable-path",source:"stable-path",requires_manual:false}'
+      ;;
+    slot)
+      zfs.config.slot.order.valid "${selected}" || zfs.die "Slot ordering requires one unambiguous scope/source and a unique non-negative numeric slot for every selected disk"
+      ordered="$(jq -c 'sort_by(.observed_slot_index,.stable_path)' <<< "${selected}")"
+      source="$(jq -r '.[0].observed_slot_source' <<< "${ordered}")"
+      jq -n -c --arg requested "${requested}" --arg source "${source}" --argjson devices "${ordered}" \
+        '{devices:$devices,requested:$requested,effective:"slot",source:$source,requires_manual:false}'
+      ;;
+    auto)
+      if ((explicit_selection == 1)); then
+        jq -n -c --arg requested "${requested}" --argjson devices "${selected}" \
+          '{devices:$devices,requested:$requested,effective:"selection",source:"explicit-identifiers",requires_manual:false}'
+      elif zfs.config.slot.order.valid "${selected}"; then
+        ordered="$(jq -c 'sort_by(.observed_slot_index,.stable_path)' <<< "${selected}")"
+        source="$(jq -r '.[0].observed_slot_source' <<< "${ordered}")"
+        jq -n -c --arg requested "${requested}" --arg source "${source}" --argjson devices "${ordered}" \
+          '{devices:$devices,requested:$requested,effective:"slot",source:$source,requires_manual:false}'
+      else
+        zfs.warn "Automatic slot ordering is ambiguous; a complete interactive CSV order or explicit --device-order mode is required"
+        jq -n -c --arg requested "${requested}" --argjson devices "${selected}" \
+          '{devices:$devices,requested:$requested,effective:"manual-required",source:"ambiguous-slot-metadata",requires_manual:true}'
+      fi
+      ;;
+    *) zfs.die "Device order must be auto, slot, selection, or stable-path" ;;
+  esac
 }
 
 zfs.config.build() {
   local pool="${ZFS_DEFAULT_POOL}" vdev_type="" vdev_count="" per_vdev="" transport="any" media="any"
+  local device_order="${ZFS_DEFAULT_DEVICE_ORDER}" order_requested order_effective order_source order_requires_manual
   local requested_size="" tolerance="${ZFS_DEFAULT_SIZE_TOLERANCE_PERCENT}"
   local health_policy="${ZFS_DEFAULT_HEALTH_POLICY}" health_evidence="" health_evidence_root="" evidence_server=""
   local max_health_evidence_age_days="${ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS}"
@@ -832,7 +974,8 @@ zfs.config.build() {
   local replace=0 inventory_file="" inventory candidates selected requested_bytes=0
   local lower_requested=0 upper_requested=0 candidate_count output="$(pwd -P)/zpool.config" tmp canonical
   local identifier matches match match_count response config_json grouped_json duplicate_count signature_count parsed_serials
-  local avoid_json='[]' serial_json='[]' model_json='[]' device_count=0 serial_count=0 selected_count interactive=0 filter_size_json='null'
+  local order_result reorder_result
+  local avoid_json='[]' serial_json='[]' model_json='[]' device_count=0 serial_count=0 selected_count interactive=0 explicit_selection=0 filter_size_json='null'
   local health_json topology_advisories_json observed_hbas_json
   local -a avoid_identifiers device_identifiers serial_identifiers model_filters
   avoid_identifiers=()
@@ -863,6 +1006,7 @@ zfs.config.build() {
         ;;
       --device) device_identifiers+=("${2:?missing --device value}"); shift 2 ;;
       --avoid) avoid_identifiers+=("${2:?missing --avoid value}"); shift 2 ;;
+      --device-order) device_order="$(tr '[:upper:]' '[:lower:]' <<< "${2:?missing --device-order value}")"; shift 2 ;;
       --health-policy) health_policy="${2:?missing --health-policy value}"; shift 2 ;;
       --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
       --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
@@ -894,6 +1038,7 @@ zfs.config.build() {
   case "${transport}" in sas|sata|scsi|nvme|usb|any) ;; *) zfs.die "Unsupported transport filter: ${transport}" ;; esac
   case "${media}" in hdd|ssd|any) ;; *) zfs.die "Unsupported media filter: ${media}" ;; esac
   case "${review_format}" in pretty-json|table) ;; *) zfs.die "Review format must be pretty-json or table" ;; esac
+  case "${device_order}" in auto|slot|selection|stable-path) ;; *) zfs.die "Device order must be auto, slot, selection, or stable-path" ;; esac
   dataset="${dataset:-${pool}/${ZFS_DEFAULT_DATASET_LEAF}}"
   mountpoint="${mountpoint:-/media/${dataset}}"
   [[ "${dataset}" == "${pool}/"* ]] || zfs.die "Dataset must be a child of pool ${pool}"
@@ -954,7 +1099,7 @@ zfs.config.build() {
         select(($use_size|not) or (.size_bytes >= $minimum and .size_bytes <= $maximum)) |
         select(($models|length)==0 or ([ $models[] | norm_model ] | index(($disk.model|norm_model))) != null) |
         select(([$avoided[] as $a | (.path == $a or .stable_path == $a or .wwn == $a or .serial == $a or .kernel == $a)] | any) | not)
-      ] | sort_by(.stable_path)' <<< "${inventory}")"
+      ] | sort_by(if .observed_slot_index==null then 1 else 0 end,.observed_slot_scope,.observed_slot_index,.stable_path)' <<< "${inventory}")"
 
   zfs.config.review.print "${inventory}" "${candidates}" "${transport}" "${media}" \
     "${filter_size_json}" "${model_json}" "${avoid_json}" "${review_format}"
@@ -966,6 +1111,7 @@ zfs.config.build() {
     serial_count="${#serial_identifiers[@]}"
   fi
   if ((device_count > 0 || serial_count > 0)); then
+    explicit_selection=1
     selected='[]'
     if ((serial_count > 0)); then
       device_identifiers=("${serial_identifiers[@]}")
@@ -1005,9 +1151,22 @@ zfs.config.build() {
     zfs.die "Selected devices contain signatures; rerun with explicit --allow-signature-wipe only after review"
   fi
 
+  order_result="$(zfs.config.order.resolve "${selected}" "${device_order}" "${explicit_selection}")"
+  selected="$(jq -c '.devices' <<< "${order_result}")"
+  order_requested="$(jq -r '.requested' <<< "${order_result}")"
+  order_effective="$(jq -r '.effective' <<< "${order_result}")"
+  order_source="$(jq -r '.source' <<< "${order_result}")"
+  order_requires_manual="$(jq -r '.requires_manual' <<< "${order_result}")"
+
   if ((non_interactive == 0)) && [[ -r /dev/tty && -w /dev/tty ]]; then
     interactive=1
-    selected="$(zfs.config.reorder.interactive "${selected}")"
+    reorder_result="$(zfs.config.reorder.interactive "${selected}" "$( [[ "${order_requires_manual}" == true ]] && printf 1 || printf 0 )")"
+    selected="$(jq -c '.devices' <<< "${reorder_result}")"
+    if [[ "$(jq -r '.overridden' <<< "${reorder_result}")" == true ]]; then
+      order_effective="selection"
+      order_source="operator-csv"
+      order_requires_manual=false
+    fi
     vdev_type="${vdev_type:-$(zfs.prompt "Data vdev type: mirror, raidz1, raidz2, or raidz3" "raidz2")}"
     vdev_count="${vdev_count:-$(zfs.prompt "Number of equal-width data vdevs" "1")}"
     if [[ "${vdev_count}" =~ ^[1-9][0-9]*$ ]] && ((selected_count % vdev_count == 0)); then
@@ -1016,6 +1175,7 @@ zfs.config.build() {
       per_vdev="${per_vdev:-$(zfs.prompt "Devices per vdev" "")}"
     fi
   else
+    [[ "${order_requires_manual}" != true ]] || zfs.die "Non-interactive generation requires --device-order slot|selection|stable-path or an ordered --serial/--device selection when automatic slot ordering is ambiguous"
     [[ -n "${vdev_type}" ]] || zfs.die "Non-interactive generation requires --vdev-type"
     [[ -n "${vdev_count}" || -n "${per_vdev}" ]] || zfs.die "Non-interactive generation requires --vdev-count or --drives-per-vdev"
     if [[ -z "${vdev_count}" ]]; then
@@ -1034,6 +1194,10 @@ zfs.config.build() {
       path:.stable_path, expected_wwn:.wwn, expected_serial:.serial,
       expected_size_bytes:.size_bytes, expected_transport:.transport,
       logical_sector_bytes:.logical_sector_bytes, physical_sector_bytes:.physical_sector_bytes,
+      observed_slot_index:(.observed_slot_index // null),
+      observed_slot_source:(.observed_slot_source // ""),
+      observed_slot_scope:(.observed_slot_scope // ""),
+      observed_hctl:(.observed_hctl // ""),
       observed_fault_domain:(.fault_domain // "unknown"),
       expected_health:{policy:.health_policy,effective:.effective_health,evidence_source_digest:(.health_evidence.source_digest // null)}
     };
@@ -1050,6 +1214,7 @@ zfs.config.build() {
     --arg transport "${transport}" --arg media "${media}" --argjson allow_wipe "${allow_signature_wipe}" \
     --argjson size_filter "${filter_size_json}" --argjson avoided "${avoid_json}" --argjson models "${model_json}" --argjson serials "${serial_json}" \
     --argjson tolerance "${tolerance}" --argjson vdevs "${grouped_json}" --argjson health "${health_json}" \
+    --arg order_requested "${order_requested}" --arg order_effective "${order_effective}" --arg order_source "${order_source}" \
     --argjson observed_hbas "${observed_hbas_json}" --argjson topology_advisories "${topology_advisories_json}" '
     {
       schema_version:1,
@@ -1062,9 +1227,10 @@ zfs.config.build() {
       selection:{
         filters:{transport:(if $transport=="any" then [] else [$transport] end),media:$media,size_bytes:$size_filter,avoided:$avoided,models:$models,serials:$serials},
         health:$health,
+        ordering:{requested:$order_requested,effective:$order_effective,source:$order_source},
         expected_size_tolerance_percent:$tolerance
       },
-      topology:{observed_hbas:$observed_hbas,advisories:$topology_advisories},
+      topology:{grouping:"contiguous",observed_hbas:$observed_hbas,advisories:$topology_advisories},
       vdevs:$vdevs,
       datasets:[{name:$dataset,mountpoint:$mountpoint,properties:{canmount:"on",recordsize:"1M",dedup:"off"}}]
     }')"
@@ -1097,9 +1263,10 @@ zfs.config.print.topology() {
     "Pool: \(.pool.name)",
     "Layout: \(.vdevs|length) x \(.vdevs[0].devices|length) \(.vdevs[0].type)",
     "Health policy: \(.selection.health.policy)",
+    (if .selection.ordering then "Device order: requested=\(.selection.ordering.requested) effective=\(.selection.ordering.effective) source=\(.selection.ordering.source)" else "Device order: legacy-unrecorded" end),
     "Observed HBAs: \(.topology.observed_hbas|join(","))",
     (if (.topology.advisories|length)>0 then "Topology advisories: \(.topology.advisories|join(","))" else empty end),
-    (.vdevs[] | "\(.name) \(.type):", (.devices[] | "  \(.label)  \(.path)  serial=\(.expected_serial) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain) health=\(.expected_health.effective)")),
+    (.vdevs[] | "\(.name) \(.type):", (.devices[] | "  \(.label)  slot=\(.observed_slot_index // "unknown") source=\(.observed_slot_source // "unknown") hctl=\(.observed_hctl // "unknown")  \(.path)  serial=\(.expected_serial) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain) health=\(.expected_health.effective)")),
     (.datasets[] | "Dataset: \(.name) -> \(.mountpoint)")' "${config}"
 }
 
@@ -1153,6 +1320,12 @@ zfs.config.validate.structure() {
     (.selection.health.evidence.server == null or (.selection.health.evidence.server|type=="string" and length>0)) and
     (.selection.health.evidence.max_age_days | type=="number" and floor==. and .>0) and
     (.selection.health.evidence.package_checks_requested | type=="boolean") and
+    (.selection.ordering == null or (
+      (.selection.ordering.requested | .=="auto" or .=="slot" or .=="selection" or .=="stable-path") and
+      (.selection.ordering.effective | .=="slot" or .=="selection" or .=="stable-path") and
+      (.selection.ordering.source | type=="string" and length>0)
+    )) and
+    (.topology.grouping == null or .topology.grouping == "contiguous") and
     (.topology.observed_hbas | type=="array" and length>0 and all(.[];type=="string" and length>0)) and
     (.topology.advisories | type=="array" and all(.[];.=="single-hba")) and
     (.vdevs | type == "array" and length > 0) and
@@ -1173,6 +1346,10 @@ zfs.config.validate.structure() {
       (.expected_transport | .=="sas" or .=="sata" or .=="scsi" or .=="nvme" or .=="usb") and
       (.logical_sector_bytes | type=="number" and floor==. and .>0) and
       (.physical_sector_bytes | type=="number" and floor==. and .>0) and
+      (.observed_slot_index == null or (.observed_slot_index|type=="number" and floor==. and .>=0)) and
+      (.observed_slot_source == null or (.observed_slot_source|type=="string")) and
+      (.observed_slot_scope == null or (.observed_slot_scope|type=="string")) and
+      (.observed_hctl == null or (.observed_hctl|type=="string")) and
       (.expected_health.policy == $root.selection.health.policy) and
       (.expected_health.effective | .=="passed" or .=="blocked" or .=="advisory") and
       (.expected_health.evidence_source_digest == null or (.expected_health.evidence_source_digest|type=="string" and test("^[0-9a-f]{64}$")))
@@ -1181,6 +1358,13 @@ zfs.config.validate.structure() {
     ([.vdevs[].devices[].expected_wwn] | length == (unique|length)) and
     ([.vdevs[].devices[].expected_serial] | length == (unique|length)) and
     ([.vdevs[].devices[].label] | length == (unique|length)) and
+    (if .selection.ordering.effective == "slot" then
+      ([.vdevs[].devices[].observed_slot_index] | all(.[];type=="number")) and
+      ([.vdevs[].devices[].observed_slot_index] | length == (unique|length)) and
+      ([.vdevs[].devices[].observed_slot_index] == ([.vdevs[].devices[].observed_slot_index] | sort)) and
+      ([.vdevs[].devices[].observed_slot_source] | unique | length)==1 and
+      ([.vdevs[].devices[].observed_slot_scope] | unique | length)==1
+    else true end) and
     (.datasets | type == "array") and
     (all(.datasets[];
       (.name | type=="string" and startswith($root.pool.name+"/") and test("^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)+$")) and
@@ -1202,6 +1386,9 @@ zfs.config.validate.structure() {
   esac
   tolerance="$(jq -r '.selection.expected_size_tolerance_percent' "${config}")"
   [[ "${tolerance}" =~ ^[0-9]+([.][0-9]+)?$ ]] || zfs.die "Size tolerance must be numeric"
+  if ! jq -e '.selection.ordering and .topology.grouping' "${config}" >/dev/null 2>&1; then
+    zfs.warn "Configuration predates recorded device ordering; regenerate it before slot-sensitive acceptance"
+  fi
 }
 
 zfs.pool.exists.or.importable() {
@@ -1254,6 +1441,10 @@ zfs.preflight.validate.devices() {
     elif ((.actual.transport // "")|ascii_downcase) != .expected.expected_transport then "\(.expected.label): transport mismatch"
     elif .actual.logical_sector_bytes != .expected.logical_sector_bytes then "\(.expected.label): logical sector size mismatch"
     elif .actual.physical_sector_bytes != .expected.physical_sector_bytes then "\(.expected.label): physical sector size mismatch"
+    elif (.expected.observed_slot_index != null and .actual.observed_slot_index != .expected.observed_slot_index) then "\(.expected.label): observed slot index drift"
+    elif ((.expected.observed_slot_source // "") != "" and .actual.observed_slot_source != .expected.observed_slot_source) then "\(.expected.label): observed slot source drift"
+    elif ((.expected.observed_slot_scope // "") != "" and .actual.observed_slot_scope != .expected.observed_slot_scope) then "\(.expected.label): observed slot scope drift"
+    elif ((.expected.observed_hctl // "") != "" and .actual.observed_hctl != .expected.observed_hctl) then "\(.expected.label): observed HCTL drift"
     elif .actual.health_policy != $policy then "\(.expected.label): health policy mismatch"
     elif ($policy=="smart-required" and .actual.smart_health!="passed") then "\(.expected.label): required SMART health did not pass"
     elif ($policy=="bht-required" and (.actual.health_evidence.accepted|not)) then "\(.expected.label): required BHT evidence was not accepted"
@@ -1320,7 +1511,8 @@ zfs.inventory.review.hash() {
       matches:.matches,
       actual:(.actual | {
         stable_path,wwn,serial,model,transport,size_bytes,logical_sector_bytes,physical_sector_bytes,
-        whole_disk,signatures,reasons,eligible,hba,enclosure,slot,fault_domain
+        whole_disk,signatures,reasons,eligible,hba,enclosure,slot,observed_hctl,
+        observed_slot_index,observed_slot_source,observed_slot_scope,fault_domain
       } + (if $policy=="advisory" then {} else {
         smart_health,effective_health,health_policy,health_evidence
       } end))

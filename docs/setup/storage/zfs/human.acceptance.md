@@ -26,6 +26,13 @@ chmod 0700 ./zfs.sh
 Planning and destructive actions require this downloaded regular file. Do not
 stream those actions into Bash.
 
+If an earlier candidate generated a configuration ordered by WWN rather than
+slot, preserve it only as evidence and do not plan or create from it:
+
+```bash
+mv ./zpool.config ./zpool.config.pre-slot-order
+```
+
 ## 2. Collect and review inventory
 
 No health-policy or evidence options are needed for the normal workflow:
@@ -51,6 +58,8 @@ Confirm all of the following:
 - SMART warnings are reviewed as advisory information alongside the
   operator's prior burn-in records.
 - The reported HBA, enclosure, slot, and fault-domain information is plausible.
+- `observed_slot_index`, `observed_slot_source`, `observed_slot_scope`, and
+  `observed_hctl` agree with the controller or enclosure inventory.
 
 Stop if identity, current usage, or signature results are unexpected.
 
@@ -65,6 +74,7 @@ Use model and hardware filters to obtain a short candidate list, then answer
   --media hdd \
   --size 6TB \
   --model ST6000NM0034 \
+  --device-order slot \
   --pool zfspool \
   --vdev-type raidz2 \
   --vdev-count 2 \
@@ -81,9 +91,18 @@ three naming flags may be omitted when this hierarchy is desired.
 
 The default review is pretty-printed JSON. It shows active filters, candidate
 and exclusion counts, every candidate's stable identity and health context,
-and excluded disks with their reasons. Before each `y/n/all/none` prompt, the
-current candidate is shown as a smaller JSON object with its index and total.
-Use `--review-format table` only when the legacy inventory table is preferred.
+normalized slot index/source/scope, and excluded disks with their reasons.
+Before each `y/n/all/none` prompt, the current candidate is shown as a smaller
+JSON object with its index and total. Use `--review-format table` only when the
+legacy inventory table is preferred.
+
+`--device-order slot` is deliberately strict for this acceptance run. It
+requires one unambiguous controller/enclosure scope and a unique numeric slot
+for every selected disk. The normal `auto` default preserves ordered serial or
+device input and otherwise makes the same slot choice when it is unambiguous.
+It refuses non-interactive generation when slot evidence is ambiguous. The
+explicit alternatives are `selection` and `stable-path`; neither should be
+used merely to bypass unexpected slot data.
 
 At the prompts:
 
@@ -92,8 +111,9 @@ At the prompts:
 - Use `all` only after every remaining displayed disk has been positively
   identified.
 - Review the selected-device-order JSON before typing `WRITE`. Press Enter to
-  keep that order, or enter every displayed index once as comma-separated
-  values to reorder it.
+  keep the verified numeric slot order, or enter every displayed index once as
+  comma-separated values to create an explicitly reviewed manual order.
+- Confirm that contiguous vdev grouping matches the intended slot ranges.
 
 For a deterministic, already-reviewed selection, pass one ordered serial array:
 
@@ -143,7 +163,7 @@ jq -r '
   .vdevs[] |
   "\(.name) \(.type)",
   (.devices[] |
-    "  \(.label) \(.path) serial=\(.expected_serial) wwn=\(.expected_wwn) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain)")
+    "  \(.label) slot=\(.observed_slot_index) source=\(.observed_slot_source) hctl=\(.observed_hctl) \(.path) serial=\(.expected_serial) wwn=\(.expected_wwn) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain)")
 ' ./zpool.config
 ```
 
@@ -152,6 +172,10 @@ Confirm:
 - Pool, dataset, mountpoint, vdev type, vdev count, and vdev width are correct.
 - Every stable path, WWN, serial, byte size, transport, and sector size matches
   the approved inventory.
+- `selection.ordering` records the requested/effective mode and source, and
+  `topology.grouping` is `contiguous`.
+- Slot indexes are unique and numerically ordered across the complete vdev
+  sequence; each contiguous vdev slice matches the approved bay layout.
 - No device occurs twice.
 - `ashift=12`, `compression=lz4`, `atime=off`, `xattr=sa`,
   `acltype=posixacl`, `recordsize=1M`, and `dedup=off` are appropriate.
@@ -160,6 +184,8 @@ Confirm:
 - A `single-hba` advisory, if present, has been reviewed against the actual
   HBA, expander, backplane, enclosure, and power layout. Logical ordering is
   not fault-domain isolation.
+- HCTL/controller target numbering has been independently matched to the
+  physical chassis labels. The tooling cannot prove that mapping by itself.
 
 Edit the JSON before continuing if grouping or properties need adjustment.
 
@@ -172,9 +198,10 @@ Run these immediately before planning:
 ./zfs.sh preflight --config ./zpool.config
 ```
 
-Both must pass. Stop on identity, byte-size, sector-size, transport, active
-usage, signature, existing-pool, or importable-pool drift. An advisory SMART
-warning alone is not a preflight failure under the default policy.
+Both must pass. Stop on identity, byte-size, sector-size, transport, slot,
+slot-source, slot-scope, HCTL, active usage, signature, existing-pool, or
+importable-pool drift. An advisory SMART warning alone is not a preflight
+failure under the default policy.
 
 ## 6. Generate and review the immutable plan
 
@@ -189,9 +216,9 @@ sha256sum ./zpool.config ./zpool.plan
 ```
 
 Record and review the configuration checksum, plan ID, complete device list,
-topology, estimated capacity, and exact proposed `zpool create` and `zfs
-create` commands. Confirm that no unexpected property or vdev is present and
-that the create command does not contain `-f`.
+slot-to-vdev topology, estimated capacity, and exact proposed `zpool create`
+and `zfs create` commands. Confirm that no unexpected property or vdev is
+present and that the create command does not contain `-f`.
 
 Stop here for candidate testing. Reaching a reviewed create plan is sufficient
 to validate the published tooling without changing any disk.

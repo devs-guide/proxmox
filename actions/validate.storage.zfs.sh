@@ -100,35 +100,41 @@ jq -n '{schema_version:1,disks:[range(1;13) as $i | {
   model:"TEST",vendor:"TEST",transport:(if $i<=10 then "sas" else "sata" end),media:"hdd",
   size_bytes:(if $i==12 then 4000000000000 else 6000000000000 end),rotational:true,
   logical_sector_bytes:512,physical_sector_bytes:4096,smart_health:"passed",
-  hba:(if $i%2==0 then "host2" else "host1" end),enclosure:"enc0",slot:($i|tostring),
-  fault_domain:(if $i%2==0 then "host2:enc0" else "host1:enc0" end),whole_disk:true,
+  hba:"host0",enclosure:"enc0",slot:("0:0:"+($i|tostring)+":0"),observed_hctl:("0:0:"+($i|tostring)+":0"),
+  observed_slot_index:$i,observed_slot_source:"scsi-hctl-target",observed_slot_scope:"host0:channel0",
+  fault_domain:("host0:enc0:0:0:"+($i|tostring)+":0"),whole_disk:true,
   signatures:[],reasons:[],warnings:[],eligible:true
 }]}' > "${TMP}/inventory.json"
 
-jq -n '{schema_version:1,disks:[range(1;21) as $i |
-  if $i<=18 then {
-    kernel:("sd"+($i|tostring)),path:("/dev/sd"+($i|tostring)),
-    stable_path:("/dev/disk/by-id/wwn-0x5000"+(200000000000+$i|tostring)),
-    wwn:("0x5000"+(200000000000+$i|tostring)),serial:("ARCHIVE"+($i|tostring)),
+jq -n \
+  --argjson serials '["Z4D1H51W","Z4D1H3BJ","Z4D1EPDL","Z4D1H4YH","Z4D1H4LZ","Z4D1DEN1","Z4D1H3EL","Z4D1H3HF","Z4D1GFB8","Z4D1H5EH","Z4D1H4JB","Z4D1H4NZ","Z4D1CC4C","Z4D1GF2K","Z4D1GEV2","Z4D1C0N0","Z4D1GF92","Z4D1H50D"]' \
+  --argjson wwns '["0x5000c500833c107f","0x5000c500833cb1d3","0x5000c500638f5f43","0x5000c500833c1d67","0x5000c500833c3a83","0x5000c500833ca20b","0x5000c500833c8cf3","0x5000c500833ce3db","0x5000c500833bbfe3","0x5000c500833be943","0x5000c500833c402b","0x5000c500833c352f","0x5000c500833cb9db","0x5000c500833bf0f3","0x5000c500833c0a37","0x5000c500833c98a3","0x5000c500833bc1e7","0x5000c500833c165b"]' '
+{schema_version:1,disks:([range(0;18) as $slot | {
+    kernel:("sd"+($slot|tostring)),path:("/dev/sd"+($slot|tostring)),
+    stable_path:("/dev/disk/by-id/wwn-"+$wwns[$slot]),
+    wwn:$wwns[$slot],serial:$serials[$slot],
     model:"ST6000NM0034",vendor:"SEAGATE",transport:"sas",media:"hdd",
     size_bytes:6001175126016,rotational:true,
     logical_sector_bytes:512,physical_sector_bytes:4096,smart_health:"passed",effective_health:"passed",
-    health_evidence:{status:"not-supplied"},hba:"host0",enclosure:("target0:0:"+($i|tostring)),slot:($i|tostring),
-    fault_domain:("host0:target0:0:"+($i|tostring)),whole_disk:true,
+    health_evidence:{status:"not-supplied"},hba:"host0",enclosure:("target0:0:"+($slot|tostring)),slot:("0:0:"+($slot|tostring)+":0"),
+    observed_hctl:("0:0:"+($slot|tostring)+":0"),observed_slot_index:$slot,
+    observed_slot_source:"scsi-hctl-target",observed_slot_scope:"host0:channel0",
+    fault_domain:("host0:target0:0:"+($slot|tostring)+":0:0:"+($slot|tostring)+":0"),whole_disk:true,
     signatures:[],reasons:[],warnings:[],eligible:true
-  } else {
+  }] + [range(0;2) as $i | {
     kernel:("ssd"+($i|tostring)),path:("/dev/ssd"+($i|tostring)),
     stable_path:("/dev/disk/by-id/wwn-0x500a"+(300000000000+$i|tostring)),
     wwn:("0x500a"+(300000000000+$i|tostring)),serial:("SYSTEM"+($i|tostring)),
     model:"MTFDDAV240TDU",vendor:"ATA",transport:"sata",media:"ssd",
     size_bytes:240057409536,rotational:false,
     logical_sector_bytes:512,physical_sector_bytes:4096,smart_health:"passed",effective_health:"passed",
-    health_evidence:{status:"not-supplied"},hba:("host"+($i|tostring)),enclosure:"system",slot:($i|tostring),
+    health_evidence:{status:"not-supplied"},hba:("host"+(11+$i|tostring)),enclosure:"system",slot:((11+$i|tostring)+":0:0:0"),
+    observed_hctl:((11+$i|tostring)+":0:0:0"),observed_slot_index:0,
+    observed_slot_source:"scsi-hctl-target",observed_slot_scope:("host"+(11+$i|tostring)+":channel0"),
     fault_domain:("system:"+($i|tostring)),whole_disk:true,
     signatures:["PMBR","gpt","zfs_member"],
     reasons:["contains-partitions-or-children"],warnings:["signatures-present"],eligible:false
-  } end
-]}' > "${TMP}/large-mixed-inventory.json"
+  }])}' > "${TMP}/large-mixed-inventory.json"
 
 export PROXMOX_ZFS_TEST_MODE=1
 export ZFS_TEST_COMMAND_LOG="${TMP}/commands.log"
@@ -170,7 +176,7 @@ candidate_review="$(bash -c '
   source "$1"
   zfs.config.candidate.review.json "$(jq -c ".disks[0]" "$2")" 1 18
 ' _ "${HELPER}" "${TMP}/large-mixed-inventory.json")"
-jq -e '.review_kind=="zfs-device-candidate" and .candidate_index==1 and .candidate_count==18 and .device.serial=="ARCHIVE1"' \
+jq -e '.review_kind=="zfs-device-candidate" and .candidate_index==1 and .candidate_count==18 and .device.serial=="Z4D1H51W" and .device.observed_slot_index==0' \
   <<< "${candidate_review}" >/dev/null || fail "pretty JSON candidate review"
 ok "selection and per-candidate reviews are valid pretty JSON"
 
@@ -209,7 +215,7 @@ selected_order_review="$(SELECTED="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}"
   source "${HELPER}"
   zfs.config.selected.order.review.json "${SELECTED}"
 ')"
-jq -e '.review_kind=="zfs-selected-device-order" and .selected_count==4 and .devices[0].order==1 and .devices[0].serial=="SER1"' \
+jq -e '.review_kind=="zfs-selected-device-order" and .selected_count==4 and .devices[0].order==1 and .devices[0].serial=="SER1" and .devices[0].observed_slot_index==1' \
   <<< "${selected_order_review}" >/dev/null || fail "selected order JSON rendering"
 reordered="$(SELECTED="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
   source "${HELPER}"
@@ -221,11 +227,44 @@ unchanged_order="$(SELECTED="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash 
   zfs.prompt() { printf "\n"; }
   zfs.config.reorder.interactive "${SELECTED}" 2>/dev/null
 ')"
-[[ "$(jq -r '[.[].serial]|join(",")' <<< "${unchanged_order}")" == "SER1,SER2,SER3,SER4" ]] || fail "interactive selected order rendering"
+[[ "$(jq -r '[.devices[].serial]|join(",")' <<< "${unchanged_order}")" == "SER1,SER2,SER3,SER4" ]] || fail "interactive selected order rendering"
 expect_failure bash -c 'source "$1"; zfs.config.reorder.by.indexes "$2" "1,1,3,4"' _ "${HELPER}" "${INTERACTIVE_CANDIDATES}"
 expect_failure bash -c 'source "$1"; zfs.config.reorder.by.indexes "$2" "1,2,3"' _ "${HELPER}" "${INTERACTIVE_CANDIDATES}"
 expect_failure bash -c 'source "$1"; zfs.config.reorder.by.indexes "$2" "1,2,3,5"' _ "${HELPER}" "${INTERACTIVE_CANDIDATES}"
 ok "selected order JSON and CSV reordering reject duplicates, omissions, and out-of-range indexes"
+
+SLOT_CANDIDATES="$(jq -c '.disks[0:18] | sort_by(.stable_path)' "${TMP}/large-mixed-inventory.json")"
+slot_order="$(SELECTED="${SLOT_CANDIDATES}" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.config.order.resolve "${SELECTED}" slot 0
+')"
+jq -e '
+  .requested=="slot" and .effective=="slot" and .source=="scsi-hctl-target" and .requires_manual==false and
+  [.devices[].observed_slot_index]==[range(0;18)] and
+  [.devices[].serial]==["Z4D1H51W","Z4D1H3BJ","Z4D1EPDL","Z4D1H4YH","Z4D1H4LZ","Z4D1DEN1","Z4D1H3EL","Z4D1H3HF","Z4D1GFB8","Z4D1H5EH","Z4D1H4JB","Z4D1H4NZ","Z4D1CC4C","Z4D1GF2K","Z4D1GEV2","Z4D1C0N0","Z4D1GF92","Z4D1H50D"]
+' <<< "${slot_order}" >/dev/null || fail "numeric slot ordering"
+explicit_order="$(SELECTED="$(jq -c 'reverse' <<< "${INTERACTIVE_CANDIDATES}")" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.config.order.resolve "${SELECTED}" auto 1
+')"
+[[ "$(jq -r '[.devices[].serial]|join(",")' <<< "${explicit_order}")" == "SER4,SER3,SER2,SER1" ]] || fail "explicit identifier order was not preserved"
+ambiguous_slots="$(jq -c '.[1].observed_slot_index=.[0].observed_slot_index' <<< "${INTERACTIVE_CANDIDATES}")"
+ambiguous_order="$(SELECTED="${ambiguous_slots}" HELPER="${HELPER}" bash -c '
+  source "${HELPER}"
+  zfs.config.order.resolve "${SELECTED}" auto 0
+' 2>/dev/null)"
+jq -e '.effective=="manual-required" and .requires_manual==true' <<< "${ambiguous_order}" >/dev/null || fail "ambiguous auto order did not require manual review"
+expect_failure bash -c 'source "$1"; zfs.config.order.resolve "$2" slot 0' _ "${HELPER}" "${ambiguous_slots}"
+multi_scope="$(jq -c '.[1].observed_slot_scope="host1:channel0"' <<< "${INTERACTIVE_CANDIDATES}")"
+expect_failure bash -c 'source "$1"; zfs.config.order.resolve "$2" slot 0' _ "${HELPER}" "${multi_scope}"
+mkdir -p "${TMP}/sys-enclosure/enclosure0/Slot 07/device/block/sdz"
+printf '7\n' > "${TMP}/sys-enclosure/enclosure0/Slot 07/slot"
+enclosure_slot="$(PROXMOX_ZFS_SYS_ENCLOSURE_ROOT="${TMP}/sys-enclosure" bash -c '
+  source "$1"
+  zfs.device.enclosure.slot sdz
+' _ "${HELPER}")"
+[[ "${enclosure_slot}" == $'enclosure:enclosure0\t7' ]] || fail "native sysfs enclosure slot discovery"
+ok "slot order is numeric, explicit selection is authoritative, and ambiguous layouts do not fall back silently"
 
 jq '.disks=.disks[0:4]' "${TMP}/inventory.json" > "${TMP}/four-sas.json"
 
@@ -300,8 +339,10 @@ jq -e '
   .pool.name=="zfspool" and .datasets[0].name=="zfspool/archive" and
   .selection.filters.size_bytes=={minimum_bytes:5940000000000,maximum_bytes:6060000000000} and
   .selection.health.policy=="advisory" and .selection.health.evidence.supplied==false and
+  .selection.ordering=={effective:"slot",requested:"auto",source:"scsi-hctl-target"} and
+  .topology.grouping=="contiguous" and
   (.vdevs|length)==1 and .vdevs[0].type=="raidz2" and (.vdevs[0].devices|length)==4 and
-  all(.vdevs[].devices[];.expected_transport=="sas" and .expected_size_bytes==6000000000000 and .logical_sector_bytes==512 and .physical_sector_bytes==4096)
+  all(.vdevs[].devices[];.expected_transport=="sas" and .expected_size_bytes==6000000000000 and .logical_sector_bytes==512 and .physical_sector_bytes==4096 and (.observed_slot_index|type)=="number")
 ' "${CONFIG}" >/dev/null || fail "general configuration contract"
 "${RUNNER}" validate-config --config "${CONFIG}" >/dev/null
 ok "flag-first configure writes editable dynamic topology"
@@ -352,17 +393,35 @@ mkdir -p "${TMP}/large-mixed-config"
   cd "${TMP}/large-mixed-config"
   "${CONFIG_RUNNER}" --inventory-file "${TMP}/large-mixed-inventory.json" \
     --type sas --media hdd --size 6TB --model ST6000NM0034 --all-matches \
-    --non-interactive --vdev-type raidz2 --vdev-count 2 >/dev/null
+    --device-order slot --non-interactive --vdev-type raidz2 --vdev-count 2 >/dev/null
 )
 LARGE_MIXED_CONFIG="${TMP}/large-mixed-config/zpool.config"
 jq -e '
   (.vdevs|length)==2 and all(.vdevs[];.type=="raidz2" and (.devices|length)==9) and
   ([.vdevs[].devices[]]|length)==18 and
+  .selection.ordering=={effective:"slot",requested:"slot",source:"scsi-hctl-target"} and .topology.grouping=="contiguous" and
+  [.vdevs[0].devices[].observed_slot_index]==[0,1,2,3,4,5,6,7,8] and
+  [.vdevs[1].devices[].observed_slot_index]==[9,10,11,12,13,14,15,16,17] and
+  [.vdevs[0].devices[].expected_serial]==["Z4D1H51W","Z4D1H3BJ","Z4D1EPDL","Z4D1H4YH","Z4D1H4LZ","Z4D1DEN1","Z4D1H3EL","Z4D1H3HF","Z4D1GFB8"] and
+  [.vdevs[1].devices[].expected_serial]==["Z4D1H5EH","Z4D1H4JB","Z4D1H4NZ","Z4D1CC4C","Z4D1GF2K","Z4D1GEV2","Z4D1C0N0","Z4D1GF92","Z4D1H50D"] and
   all(.vdevs[].devices[];.expected_transport=="sas" and .expected_size_bytes==6001175126016) and
   ([.vdevs[].devices[].expected_serial]|unique|length)==18
 ' "${LARGE_MIXED_CONFIG}" >/dev/null || fail "large mixed inventory topology"
 "${RUNNER}" validate-config --config "${LARGE_MIXED_CONFIG}" >/dev/null
 ok "large mixed inventory produces two equal nine-member RAIDZ2 vdevs without selecting system SSDs"
+
+jq '.disks[1].observed_slot_scope="host1:channel0"' "${TMP}/four-sas.json" > "${TMP}/ambiguous-scope.json"
+mkdir -p "${TMP}/ambiguous-order-config" "${TMP}/stable-order-config"
+expect_failure bash -c 'cd "$1" && "$2" --inventory-file "$3" --type sas --all-matches --non-interactive --vdev-type raidz2 --vdev-count 1' \
+  _ "${TMP}/ambiguous-order-config" "${CONFIG_RUNNER}" "${TMP}/ambiguous-scope.json"
+(
+  cd "${TMP}/stable-order-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/ambiguous-scope.json" --type sas --all-matches \
+    --device-order stable-path --non-interactive --vdev-type raidz2 --vdev-count 1 >/dev/null
+)
+jq -e '.selection.ordering=={effective:"stable-path",requested:"stable-path",source:"stable-path"}' \
+  "${TMP}/stable-order-config/zpool.config" >/dev/null || fail "explicit stable-path compatibility order"
+ok "ambiguous controller scopes require an explicit order and stable-path remains opt-in"
 
 mkdir -p "${TMP}/bht-config"
 (
@@ -391,6 +450,7 @@ mkdir -p "${TMP}/serial-config"
 )
 jq -e '
   [.vdevs[].devices[].expected_serial]==["SER4","SER2","SER1","SER3"] and
+  .selection.ordering=={effective:"selection",requested:"auto",source:"explicit-identifiers"} and
   .selection.filters.models==[" test "] and
   .selection.filters.serials==["SER4","SER2","SER1","SER3"]
 ' "${TMP}/serial-config/zpool.config" >/dev/null || fail "serial/model selection"
@@ -545,17 +605,18 @@ jq '.vdevs[0].type="stripe"' "${CONFIG}" > "${TMP}/invalid.json"
 expect_failure "${RUNNER}" validate-config --config "${TMP}/invalid.json"
 ok "invalid widths, duplicate identities, and unsupported stripes are refused"
 
-for mutation in serial size transport sector ineligible; do
+for mutation in serial size transport sector slot ineligible; do
   case "${mutation}" in
     serial) jq '.disks[0].serial="DIFFERENT"' "${TMP}/four-sas.json" > "${TMP}/mutated.json" ;;
     size) jq '.disks[0].size_bytes=5500000000000' "${TMP}/four-sas.json" > "${TMP}/mutated.json" ;;
     transport) jq '.disks[0].transport="sata"' "${TMP}/four-sas.json" > "${TMP}/mutated.json" ;;
     sector) jq '.disks[0].physical_sector_bytes=512' "${TMP}/four-sas.json" > "${TMP}/mutated.json" ;;
+    slot) jq '.disks[0].observed_slot_index=99|.disks[0].observed_hctl="0:0:99:0"' "${TMP}/four-sas.json" > "${TMP}/mutated.json" ;;
     ineligible) jq '.disks[0].eligible=false|.disks[0].reasons=["active-ceph"]' "${TMP}/four-sas.json" > "${TMP}/mutated.json" ;;
   esac
   PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/mutated.json" expect_failure "${RUNNER}" preflight --config "${CONFIG}"
 done
-ok "identity, size, transport, sector, and active-use drift are refused"
+ok "identity, size, transport, sector, slot, and active-use drift are refused"
 
 PROXMOX_ZFS_EXISTING_POOLS=zfspool expect_failure "${RUNNER}" preflight --config "${CONFIG}"
 PROXMOX_ZFS_IMPORTABLE_POOLS=zfspool expect_failure "${RUNNER}" preflight --config "${CONFIG}"
@@ -586,6 +647,7 @@ grep -RInE 'dragonfruit|10[.]0[.]0[.]|exactly 18|18-disk|two-by-nine|2:9:9|nine-
 grep -Fq -- '--mode create' <("${RUNNER}" --help) || fail "help omits explicit creation mode"
 grep -Fq 'y/n/all/none' <("${CONFIG_RUNNER}" --help) || fail "help omits prompt behavior"
 grep -Fq -- '--review-format FORMAT' <("${CONFIG_RUNNER}" --help) || fail "help omits review format"
+grep -Fq -- '--device-order MODE' <("${CONFIG_RUNNER}" --help) || fail "help omits device ordering policy"
 grep -Fq -- 'default: zfspool' <("${CONFIG_RUNNER}" --help) || fail "help omits storage-specific pool default"
 ok "public help and implementation remain generic and local"
 

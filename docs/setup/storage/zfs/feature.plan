@@ -34,6 +34,27 @@ position in the candidate set. The selected order is also rendered as valid
 JSON before the operator optionally supplies a complete CSV index ordering.
 The operator then confirms the vdev type and equal-width vdev count.
 
+Inventory records a normalized numeric slot index, its discovery source, its
+controller/enclosure scope, and the raw SCSI HCTL address. Native sysfs
+enclosure slots are preferred when available; directly exposed SCSI/SAS disks
+fall back to the numeric target in `host:channel:target:lun`. This provides the
+same numeric-controller-target ordering used by the earlier drive-inventory
+workflow without depending on another project at runtime.
+
+`--device-order auto|slot|selection|stable-path` controls topology ordering.
+`auto` is the default: ordered `--serial`/`--device` input remains authoritative,
+while discovered candidates use ascending numeric slots only when every disk
+has a unique slot in one unambiguous scope. `slot` makes those requirements
+strict. `selection` preserves the reviewed operator order, and `stable-path`
+is an explicit compatibility mode. Missing, duplicate, or multi-scope slot
+evidence never silently falls back to WWN ordering. Interactive use requires a
+complete CSV order when automatic ordering is ambiguous; non-interactive use
+fails until an explicit order is supplied.
+
+The ordered list is divided contiguously into equal-width vdevs. Generated
+configuration records requested/effective ordering, evidence source,
+`topology.grouping: contiguous`, and each member's observed slot metadata.
+
 The naming defaults separate storage from its eventual consumers: the pool is
 `zfspool`, the mounted dataset is `zfspool/archive`, and its mountpoint is
 `/media/zfspool/archive`. The pool root remains unmounted with
@@ -88,9 +109,11 @@ chmod 0700 zfs.sh
 
 Validation enforces supported equal-width topology, unique stable by-id paths,
 whole disks, matching identities and sizes, safe property allow-lists, and
-valid datasets. Live preflight additionally rejects mounted filesystems, swap,
-LVM, mdraid, Ceph, imported ZFS members, device holders, identity drift, and an
-existing or importable pool with the requested name.
+valid datasets. Slot-ordered configurations must remain numerically ordered,
+unique, and scoped to one controller/enclosure namespace. Live preflight also
+rejects slot, slot-source, slot-scope, or HCTL drift in addition to mounted
+filesystems, swap, LVM, mdraid, Ceph, imported ZFS members, device holders,
+identity drift, and an existing or importable pool with the requested name.
 
 Planning prints the topology, conservative capacity estimates, exact commands,
 and a physical fault-domain warning. It runs `zpool create -n`, then writes a
@@ -98,9 +121,10 @@ canonical `zpool.plan` and SHA-256 plan ID. Editing the configuration or changin
 resolved hardware invalidates that plan.
 
 The generated configuration records observed HBAs and emits a `single-hba`
-advisory when applicable. That advisory requires human review of expanders,
-backplanes, enclosure slots, and power domains but does not guess or impose a
-physical layout.
+advisory when applicable. Numeric slot order improves serviceability, but an
+HCTL target is still controller-derived evidence rather than proof of a
+chassis label. Human review must confirm expanders, backplanes, enclosure
+slots, and power domains; contiguous ordering is not fault-domain isolation.
 
 ## Explicit destructive actions
 
