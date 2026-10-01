@@ -210,15 +210,77 @@ failure under the default policy.
   --config ./zpool.config \
   --plan-file ./zpool.plan
 
-jq . ./zpool.plan | less
-jq -r '.plan_id' ./zpool.plan
+jq '{
+  plan_id,
+  plan_kind,
+  requires_signature_wipe,
+  capacity,
+  zpool_create: .commands.zpool_create,
+  dataset_creates: .commands.dataset_creates
+}' ./zpool.plan
+
+jq -e '
+  .plan_kind == "create" and
+  .requires_signature_wipe == false
+' ./zpool.plan
+
+jq -e '
+  (.commands.zpool_create | index("-f")) == null
+' ./zpool.plan
+
+jq -r '
+  .configuration.vdevs[] |
+  .name + " " + .type,
+  (.devices[] |
+    "  slot=\(.observed_slot_index) label=\(.label) path=\(.path) serial=\(.expected_serial)")
+' ./zpool.plan
+
+jq -r '
+  .commands.zpool_create |
+  map(@sh) |
+  join(" ")
+' ./zpool.plan
+
 sha256sum ./zpool.config ./zpool.plan
 ```
 
 Record and review the configuration checksum, plan ID, complete device list,
 slot-to-vdev topology, estimated capacity, and exact proposed `zpool create`
 and `zfs create` commands. Confirm that no unexpected property or vdev is
-present and that the create command does not contain `-f`.
+present, both Boolean checks return `true`, and the create command does not
+contain `-f`. Every member path must be a stable whole-disk
+`/dev/disk/by-id/...` path without a `-partN` suffix.
+
+### Whole-disk/GPT acceptance record
+
+The approved best-practice input is each complete stable disk, not a manually
+created partition. OpenZFS recommends whole disks and, on Linux, creates its
+standard GPT and aligned ZFS partition layout automatically. When the physical
+sector size is 4096 bytes, `ashift=12` preserves the required alignment.
+
+Record these operational distinctions with the acceptance evidence:
+
+- Inventory, configuration, validation, preflight, and planning have not
+  modified or erased a disk. Planning uses `zpool create -n`.
+- `apply` is the destructive boundary. The reviewed `zpool create` writes a
+  fresh GPT and ZFS labels/layout to every selected whole disk.
+- Creation replaces the prior usable disk layout, but it is not a full-capacity
+  overwrite or secure erase.
+- `zpool initialize` is a separate OpenZFS operation that writes unallocated
+  regions; this feature does not invoke it.
+- Do not run `sgdisk`, `parted`, `wipefs`, or manually create partitions after
+  planning. A changed disk requires new inventory, preflight, and planning.
+- More than one OpenZFS-managed GPT entry, including a small reserved entry,
+  may be visible after creation. Do not replace it with a manually forced
+  single-partition layout.
+
+References:
+
+- [OpenZFS pool concepts](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolconcepts.7.html)
+- [OpenZFS performance guidance](https://openzfs.github.io/openzfs-docs/Project%20and%20Community/FAQ.html)
+- [OpenZFS whole disks versus partitions](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Workload%20Tuning.html#whole-disks-versus-partitions)
+- [OpenZFS `zpool initialize`](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-initialize.8.html)
+- [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf)
 
 Stop here for candidate testing. Reaching a reviewed create plan is sufficient
 to validate the published tooling without changing any disk.
@@ -267,14 +329,22 @@ Pool creation likewise requires explicit human authorization that records the
 exact plan ID, topology, and stable paths. Only then may the operator run:
 
 ```bash
+CREATE_ZFS_PLAN_ID="$(jq -er '.plan_id' ./zpool.plan)"
+printf 'Creating zfspool with plan: %s\n' "${CREATE_ZFS_PLAN_ID}"
+
 ./zfs.sh apply \
   --plan-file ./zpool.plan \
-  --plan-id EXACT_PLAN_ID \
+  --plan-id "${CREATE_ZFS_PLAN_ID}" \
   --mode create \
   --confirm-create zfspool
 ```
 
-Do not add `--yes` during human acceptance.
+Do not add `--yes` during human acceptance. Read the final prompt and type
+`yes` manually only after matching its pool name and plan ID to the signed
+authorization. Parse the ID directly from the reviewed plan; do not hard-code
+the hash or place a command substitution or hash on a line by itself. OpenZFS
+then creates its GPT/ZFS layout from the reviewed whole-disk paths; no
+preliminary manual partitioning is required.
 
 ## 9. Post-creation verification
 
@@ -284,10 +354,22 @@ After an independently authorized creation:
 ./zfs.sh status --pool zfspool --output text
 ./zfs.sh verify --config ./zpool.config
 zpool status -P zfspool
-zpool list zfspool
-zfs list -r zfspool
+zpool list -v zfspool
+zfs list -r -o name,used,available,recordsize,mountpoint zfspool
 findmnt /media/zfspool/archive
+
+while IFS= read -r disk; do
+  resolved="$(readlink -f "${disk}")"
+  printf '\n%s -> %s\n' "${disk}" "${resolved}"
+  lsblk -o NAME,PATH,TYPE,SIZE,PTTYPE,PARTTYPE,FSTYPE "${resolved}"
+done < <(
+  jq -r '.configuration.vdevs[].devices[].path' ./zpool.plan
+)
 ```
+
+Confirm that the pool is `ONLINE`, both RAIDZ2 vdevs have the approved width
+and members, the dataset is mounted at its declared mountpoint, and every
+member now has the expected OpenZFS-managed GPT/ZFS layout.
 
 Preserve `inventory.json`, `zpool.config`, `zpool.plan`, checksums, plan ID, and
 verification output as private acceptance evidence. Samba and LXC setup begin

@@ -120,6 +120,37 @@ and a physical fault-domain warning. It runs `zpool create -n`, then writes a
 canonical `zpool.plan` and SHA-256 plan ID. Editing the configuration or changing
 resolved hardware invalidates that plan.
 
+### Whole-disk and GPT behavior
+
+The preferred input is each complete disk through a stable
+`/dev/disk/by-id/...` path, without a `-partN` suffix. OpenZFS recommends whole
+disks and, on Linux, automatically creates its standard GPT and aligned ZFS
+partition layout when a whole disk is supplied. Operators must not manually
+create one partition per disk. `ashift=12` is the appropriate minimum for disks
+that report 4096-byte physical sectors.
+
+Configuration, validation, preflight, and `zpool create -n` planning do not
+modify disks. `apply` is the destructive boundary: its reviewed `zpool create`
+writes the GPT and ZFS labels/layout to every selected whole disk. This replaces
+the prior usable layout, but it is not a full-device overwrite or secure erase.
+OpenZFS provides the separate `zpool initialize` operation for writing all
+unallocated regions; this feature does not invoke it.
+
+After planning, do not run `sgdisk`, `parted`, `wipefs`, or manually create
+partitions. Any such change invalidates the reviewed hardware state and requires
+fresh inventory, preflight, and planning. After creation, Linux tools may show
+more than one OpenZFS-managed GPT entry, including a small reserved entry; this
+is expected and should not be replaced with a manually forced single-partition
+layout.
+
+Authoritative references:
+
+- [OpenZFS pool concepts](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolconcepts.7.html)
+- [OpenZFS performance guidance](https://openzfs.github.io/openzfs-docs/Project%20and%20Community/FAQ.html)
+- [OpenZFS whole disks versus partitions](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Workload%20Tuning.html#whole-disks-versus-partitions)
+- [OpenZFS `zpool initialize`](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-initialize.8.html)
+- [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf)
+
 The generated configuration records observed HBAs and emits a `single-hba`
 advisory when applicable. Numeric slot order improves serviceability, but an
 HCTL target is still controller-derived evidence rather than proof of a

@@ -1670,6 +1670,7 @@ zfs.state.write() {
 
 zfs.lock.acquire() {
   local pool="$1"
+  if zfs.is.true "${PROXMOX_ZFS_TEST_MODE:-0}"; then return; fi
   zfs.require.command flock
   mkdir -p "${PROXMOX_ZFS_LOCK_ROOT:-/run/lock}"
   exec {ZFS_FEATURE_LOCK_FD}>"${PROXMOX_ZFS_LOCK_ROOT:-/run/lock}/proxmox-zfs-${pool}.lock"
@@ -1705,7 +1706,7 @@ zfs.signatures.wipe() {
 }
 
 zfs.pool.apply() {
-  local plan_file="$1" plan_id="$2" confirm_pool="$3" mode="$4" confirmed="$5" evidence="${6:-}" evidence_root="${7:-}" evidence_server="${8:-}" max_age_days="${9:-}" pool state_dir command_json response
+  local plan_file="$1" plan_id="$2" confirm_pool="$3" mode="$4" confirmed="$5" evidence="${6:-}" evidence_root="${7:-}" evidence_server="${8:-}" max_age_days="${9:-}" pool state_dir command_json response accepted_config_source accepted_config
   zfs.require.regular.entrypoint
   zfs.require.root
   [[ "${mode}" == "create" ]] || zfs.die "Creation requires the explicit option --mode create"
@@ -1724,6 +1725,11 @@ zfs.pool.apply() {
   state_dir="${ZFS_DEFAULT_STATE_ROOT}/${pool}"
   mkdir -p "${state_dir}"; chmod 0700 "${state_dir}"
   cp "${plan_file}" "${state_dir}/accepted-plan.json"; chmod 0600 "${state_dir}/accepted-plan.json"
+  accepted_config_source="$(mktemp)"
+  accepted_config="${state_dir}/accepted-config.json"
+  jq -S '.configuration' "${plan_file}" > "${accepted_config_source}"
+  zfs.write.atomic "${accepted_config}" 0600 "${accepted_config_source}"
+  rm -f "${accepted_config_source}"
   zfs.state.write "${state_dir}" "pool-create-started" "${plan_id}"
   command_json="$(jq -c '.commands.zpool_create' "${plan_file}")"
   if jq -e 'index("-f") != null' <<< "${command_json}" >/dev/null; then
@@ -1737,7 +1743,7 @@ zfs.pool.apply() {
     zfs.json.command.run "${command_json}"
   done < <(jq -c '.commands.dataset_creates[]' "${plan_file}")
   zfs.state.write "${state_dir}" "datasets-created" "${plan_id}"
-  zfs.verify.config <(jq -S '.configuration' "${plan_file}")
+  zfs.verify.config "${accepted_config}"
   zfs.state.write "${state_dir}" "verified" "${plan_id}"
   zfs.log "Pool ${pool} created and verified"
 }

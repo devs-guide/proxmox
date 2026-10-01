@@ -91,6 +91,7 @@ cat > "${TMP}/bin/wipefs" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${ZFS_TEST_COMMAND_LOG}"
 EOF
+
 chmod 0755 "${TMP}/bin/zpool" "${TMP}/bin/zfs" "${TMP}/bin/wipefs"
 
 jq -n '{schema_version:1,disks:[range(1;13) as $i | {
@@ -531,6 +532,25 @@ expect_failure bash -c 'source "$1"; zfs.plan.revalidate "$2"' _ "${HELPER}" "${
 mv "${TMP}/config.saved" "${CONFIG}"
 "${RUNNER}" verify --config "${CONFIG}" >/dev/null
 ok "dynamic planning, advisory-health tolerance, config invalidation, capacity estimate, dry-run, and verification"
+
+PLAN_ID="$(jq -r '.plan_id' "${PLAN}")"
+"${RUNNER}" apply \
+  --plan-file "${PLAN}" \
+  --plan-id "${PLAN_ID}" \
+  --mode create \
+  --confirm-create zfspool \
+  --yes >/dev/null
+ACCEPTED_STATE_DIR="${TMP}/state/zfspool"
+[[ -f "${ACCEPTED_STATE_DIR}/accepted-plan.json" ]] || fail "apply did not preserve accepted plan"
+[[ -f "${ACCEPTED_STATE_DIR}/accepted-config.json" ]] || fail "apply did not preserve accepted configuration"
+cmp "${CONFIG}" "${ACCEPTED_STATE_DIR}/accepted-config.json" >/dev/null || fail "accepted configuration differs from reviewed configuration"
+[[ "$(stat -c '%a' "${ACCEPTED_STATE_DIR}/accepted-plan.json" 2>/dev/null || stat -f '%Lp' "${ACCEPTED_STATE_DIR}/accepted-plan.json")" == 600 ]] || fail "accepted plan mode is not 0600"
+[[ "$(stat -c '%a' "${ACCEPTED_STATE_DIR}/accepted-config.json" 2>/dev/null || stat -f '%Lp' "${ACCEPTED_STATE_DIR}/accepted-config.json")" == 600 ]] || fail "accepted configuration mode is not 0600"
+jq -e --arg plan_id "${PLAN_ID}" '.stage=="verified" and .plan_id==$plan_id' \
+  "${ACCEPTED_STATE_DIR}/state.json" >/dev/null || fail "apply did not reach verified state"
+grep -Fq 'create -o ashift=12' "${TMP}/commands.log" || fail "apply did not execute reviewed pool creation"
+grep -Fq 'create -o mountpoint=' "${TMP}/commands.log" || fail "apply did not execute reviewed dataset creation"
+ok "apply persists regular accepted inputs and reaches post-create verification"
 
 for spec in 'mirror:6:3:2' 'raidz1:3:1:3' 'raidz3:5:1:5' 'raidz2:8:2:4'; do
   IFS=: read -r type count vdevs width <<< "${spec}"
