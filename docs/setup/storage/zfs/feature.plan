@@ -21,11 +21,27 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh \
   | bash -s -- --type sas --size 6TB
 ```
 
-The inventory table contains kernel and stable paths, model, serial, WWN,
-transport, media type, exact byte size, SMART state, signatures, eligibility,
-and discoverable controller/enclosure evidence. Eligible candidates are
-confirmed with `y`, `n`, `all`, or `none`. The operator then confirms the vdev
-type, equal-width vdev count, device order, dataset, and mountpoint.
+The default selection review is pretty-printed JSON containing the active
+filters, summary counts, candidate disks, and excluded disks with their
+reasons. Each record includes kernel and stable paths, model, serial, WWN,
+transport, media type, exact byte size, SMART/effective health, signatures,
+eligibility, and discoverable controller/enclosure evidence. A legacy table is
+available with `--review-format table`.
+
+Eligible candidates are confirmed with `y`, `n`, `all`, or `none`. Before each
+prompt, the current candidate is rendered as a small JSON object with its
+position in the candidate set. The selected order is also rendered as valid
+JSON before the operator optionally supplies a complete CSV index ordering.
+The operator then confirms the vdev type and equal-width vdev count.
+
+The naming defaults separate storage from its eventual consumers: the pool is
+`zfspool`, the mounted dataset is `zfspool/archive`, and its mountpoint is
+`/media/zfspool/archive`. The pool root remains unmounted with
+`mountpoint=none` and `canmount=off`. If the operator supplies another dataset
+but omits `--mountpoint`, the filesystem path is derived by prefixing the full
+dataset hierarchy with `/media/` (for example, `tank/archive` becomes
+`/media/tank/archive`). Explicit legacy names remain valid because the schema
+has not changed.
 
 SMART health is normalized to exactly one value: `passed`, `failed`, or
 `unknown`. It is advisory by default and does not override the hard safety

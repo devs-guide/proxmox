@@ -28,6 +28,10 @@ candidate; whole-GPU passthrough remains targeted for `0.0.7`.
 
 The 0.0.6 candidate discovers local disks and writes an editable
 `./zpool.config`. It does not create a pool during discovery or configuration.
+Its storage-oriented defaults are pool `zfspool`, dataset `zfspool/archive`,
+and mountpoint `/media/zfspool/archive`; Samba and LXC remain later consumers
+of that dataset rather than part of its name. Interactive disk review is
+pretty-printed JSON by default.
 
 ```bash
 mkdir -p /root/zfs-setup

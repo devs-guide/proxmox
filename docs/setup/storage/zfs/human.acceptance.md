@@ -65,12 +65,25 @@ Use model and hardware filters to obtain a short candidate list, then answer
   --media hdd \
   --size 6TB \
   --model ST6000NM0034 \
-  --pool archive \
+  --pool zfspool \
   --vdev-type raidz2 \
   --vdev-count 2 \
-  --dataset archive/samba \
-  --mountpoint /media/archive
+  --dataset zfspool/archive \
+  --mountpoint /media/zfspool/archive
 ```
+
+These storage names are deliberately independent of Samba. `zfspool` is the
+unmounted ZFS storage root; `zfspool/archive` is the mounted data-bearing
+dataset; `/media/zfspool/archive` mirrors that hierarchy in the host
+filesystem. A later Samba or LXC task may consume the mounted dataset without
+making the pool itself Samba-specific. These are also the defaults, so the
+three naming flags may be omitted when this hierarchy is desired.
+
+The default review is pretty-printed JSON. It shows active filters, candidate
+and exclusion counts, every candidate's stable identity and health context,
+and excluded disks with their reasons. Before each `y/n/all/none` prompt, the
+current candidate is shown as a smaller JSON object with its index and total.
+Use `--review-format table` only when the legacy inventory table is preferred.
 
 At the prompts:
 
@@ -78,7 +91,9 @@ At the prompts:
 - Use `none` to stop selection.
 - Use `all` only after every remaining displayed disk has been positively
   identified.
-- Review the device order before typing `WRITE`.
+- Review the selected-device-order JSON before typing `WRITE`. Press Enter to
+  keep that order, or enter every displayed index once as comma-separated
+  values to reorder it.
 
 For a deterministic, already-reviewed selection, pass one ordered serial array:
 
@@ -90,11 +105,11 @@ For a deterministic, already-reviewed selection, pass one ordered serial array:
   --model ST6000NM0034 \
   --serial='[SERIAL_01,SERIAL_02,SERIAL_03,SERIAL_04]' \
   --non-interactive \
-  --pool archive \
+  --pool zfspool \
   --vdev-type raidz2 \
   --vdev-count 1 \
-  --dataset archive/samba \
-  --mountpoint /media/archive
+  --dataset zfspool/archive \
+  --mountpoint /media/zfspool/archive
 ```
 
 For a longer list, put one serial on each line in the desired order (blank
@@ -106,11 +121,11 @@ lines and lines beginning with `#` are ignored), then use:
   --model ST6000NM0034 \
   --serial ./archive.serials.txt \
   --non-interactive \
-  --pool archive \
+  --pool zfspool \
   --vdev-type raidz2 \
   --vdev-count 2 \
-  --dataset archive/samba \
-  --mountpoint /media/archive
+  --dataset zfspool/archive \
+  --mountpoint /media/zfspool/archive
 ```
 
 Set the requested vdev count for the real topology. Do not use `--all-matches`
@@ -229,7 +244,7 @@ exact plan ID, topology, and stable paths. Only then may the operator run:
   --plan-file ./zpool.plan \
   --plan-id EXACT_PLAN_ID \
   --mode create \
-  --confirm-create archive
+  --confirm-create zfspool
 ```
 
 Do not add `--yes` during human acceptance.
@@ -239,12 +254,12 @@ Do not add `--yes` during human acceptance.
 After an independently authorized creation:
 
 ```bash
-./zfs.sh status --pool archive --output text
+./zfs.sh status --pool zfspool --output text
 ./zfs.sh verify --config ./zpool.config
-zpool status -P archive
-zpool list archive
-zfs list -r archive
-findmnt /media/archive
+zpool status -P zfspool
+zpool list zfspool
+zfs list -r zfspool
+findmnt /media/zfspool/archive
 ```
 
 Preserve `inventory.json`, `zpool.config`, `zpool.plan`, checksums, plan ID, and
