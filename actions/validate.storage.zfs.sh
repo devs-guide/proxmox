@@ -156,6 +156,28 @@ jq -e '
 "${RUNNER}" validate-config --config "${CONFIG}" >/dev/null
 ok "flag-first configure writes editable dynamic topology"
 
+mkdir -p "${TMP}/standalone" "${TMP}/standalone-bin"
+cp "${RUNNER}" "${TMP}/standalone/zfs.sh"
+cat > "${TMP}/standalone-bin/wget" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "-qO" && -n "${2:-}" && -n "${3:-}" ]]
+cp "${ZFS_TEST_HELPER_SOURCE}" "${2}"
+EOF
+chmod 0755 "${TMP}/standalone/zfs.sh" "${TMP}/standalone-bin/wget"
+ZFS_TEST_HELPER_SOURCE="${HELPER}" \
+PROXMOX_ZFS_TEST_MODE=0 \
+PROXMOX_ZFS_TMP_DIR="${TMP}/standalone-cache" \
+PATH="${TMP}/standalone-bin:${PATH}" \
+  "${TMP}/standalone/zfs.sh" validate-config --config "${CONFIG}" >/dev/null
+expect_failure env \
+  ZFS_TEST_HELPER_SOURCE="${HELPER}" \
+  PROXMOX_ZFS_TEST_MODE=0 \
+  PROXMOX_ZFS_TMP_DIR="${TMP}/stream-cache" \
+  PATH="${TMP}/standalone-bin:${PATH}" \
+  bash -s -- validate-config --config "${CONFIG}" < "${TMP}/standalone/zfs.sh"
+ok "downloaded standalone runner preserves provenance while streamed mutation stays blocked"
+
 export PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/four-sas.json"
 export ZFS_TEST_CONFIG="${CONFIG}"
 "${RUNNER}" preflight --config "${CONFIG}" >/dev/null

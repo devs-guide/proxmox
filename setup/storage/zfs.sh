@@ -11,12 +11,13 @@ FEATURE_CLI_FILES=(
 
 load_zfs_helper() {
   local script_dir="" repo_root="" helper=""
+  PROXMOX_ZFS_ENTRYPOINT_FILE=""
   if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    PROXMOX_ZFS_ENTRYPOINT_FILE="${BASH_SOURCE[0]}"
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "${script_dir}/../.." && pwd)"
     helper="${repo_root}/cli/${FEATURE_CLI_FILES[0]}"
     if [[ -r "${helper}" ]]; then
-      PROXMOX_ZFS_ENTRYPOINT_FILE="${BASH_SOURCE[0]}"
       export PROXMOX_ZFS_ENTRYPOINT_FILE
       # shellcheck source=../../cli/storage/zfs.pool.sh
       source "${helper}"
@@ -31,7 +32,6 @@ load_zfs_helper() {
     printf '[setup.storage.zfs][error] failed to fetch ZFS helper\n' >&2
     exit 1
   }
-  PROXMOX_ZFS_ENTRYPOINT_FILE=""
   export PROXMOX_ZFS_ENTRYPOINT_FILE
   # shellcheck source=/tmp/pve-feature-zfs/cli/storage/zfs.pool.sh
   source "${helper}"
