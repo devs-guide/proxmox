@@ -118,6 +118,13 @@ size_binary="$(bash -c 'source "$1"; zfs.size.to.bytes 5.5TiB' _ "${HELPER}")"
 expect_failure bash -c 'source "$1"; zfs.size.to.bytes 5.5T' _ "${HELPER}"
 ok "explicit decimal and binary size parsing"
 
+smart_passed="$(bash -c 'source "$1"; zfs.health.smart.normalize '\''{"smart_status":{"passed":true}}'\''' _ "${HELPER}")"
+smart_failed="$(bash -c 'source "$1"; zfs.health.smart.normalize '\''{"smart_status":{"passed":false}}'\''' _ "${HELPER}")"
+smart_unknown="$(bash -c 'source "$1"; zfs.health.smart.normalize "$2"' _ "${HELPER}" $'{"smart_status":{"passed":true}}\nunknown')"
+[[ "${smart_passed}" == passed && "${smart_failed}" == failed && "${smart_unknown}" == unknown ]] || fail "SMART normalization"
+[[ "$(printf '%s\n' "${smart_unknown}" | wc -l | tr -d ' ')" == 1 ]] || fail "SMART normalization emitted multiple values"
+ok "SMART health is normalized to exactly one value"
+
 INTERACTIVE_CANDIDATES="$(jq -c '.disks[0:4]' "${TMP}/inventory.json")"
 interactive_selection="$(CANDIDATES="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash -c '
   source "${HELPER}"
@@ -140,6 +147,66 @@ none_selection="$(CANDIDATES="${INTERACTIVE_CANDIDATES}" HELPER="${HELPER}" bash
 ok "interactive y/n/all/none selection"
 
 jq '.disks=.disks[0:4]' "${TMP}/inventory.json" > "${TMP}/four-sas.json"
+
+jq '
+  .disks[0].smart_health="unknown" |
+  .disks[1].smart_health="failed" |
+  .disks[2].reasons=["active-ceph"] |
+  .disks[2].eligible=false
+' "${TMP}/four-sas.json" > "${TMP}/health-policy.json"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/health-policy.json" \
+  bash -c 'source "$1"; zfs.inventory.collect advisory' _ "${HELPER}" > "${TMP}/health-advisory.json"
+jq -e '
+  .health_policy=="advisory" and
+  .disks[0].eligible==true and .disks[0].effective_health=="advisory" and (.disks[0].warnings|index("smart-unknown-advisory")!=null) and
+  .disks[1].eligible==true and .disks[1].effective_health=="advisory" and (.disks[1].warnings|index("smart-failed-advisory")!=null) and
+  .disks[2].eligible==false and (.disks[2].reasons|index("active-ceph")!=null)
+' "${TMP}/health-advisory.json" >/dev/null || fail "advisory health policy"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/health-policy.json" \
+  bash -c 'source "$1"; zfs.inventory.collect smart-required' _ "${HELPER}" > "${TMP}/health-smart-required.json"
+jq -e '
+  .health_policy=="smart-required" and
+  .disks[0].eligible==false and (.disks[0].reasons|index("smart-required-unknown")!=null) and
+  .disks[1].eligible==false and (.disks[1].reasons|index("smart-required-failed")!=null) and
+  .disks[3].eligible==true
+' "${TMP}/health-smart-required.json" >/dev/null || fail "smart-required health policy"
+ok "SMART is advisory by default, opt-in when required, and never clears hard hazards"
+
+jq '{
+  schema_version:1,
+  kind:"bht_offline_drive_reference",
+  generated_at:"2026-09-25T00:00:00Z",
+  drives:[.disks[] | {
+    serial,model,server:"fixture",run_id:"run-1",
+    bht_completed_at:"2026-09-24T00:00:00Z",bht_status:"complete",bht_progress_percent:100,
+    bht_errors:[],bht_patterns:["0xaa","0x55","0xff","0x00"],smart_passed:true,
+    grade:"A",confidence:"partial",disposition:"passed_monitor",
+    production_readiness:"ready_sustained_writes_and_casual_reads",
+    evidence_source_digest:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",evidence_package:("fixture/"+.serial)
+  }]
+}' "${TMP}/four-sas.json" > "${TMP}/bht-reference.json"
+export PROXMOX_ZFS_HEALTH_NOW_EPOCH
+PROXMOX_ZFS_HEALTH_NOW_EPOCH="$(jq -nr '"2026-09-25T00:00:00Z"|fromdateiso8601')"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/four-sas.json" \
+  bash -c 'source "$1"; zfs.inventory.collect bht-required "$2" "" fixture 30' \
+  _ "${HELPER}" "${TMP}/bht-reference.json" > "${TMP}/health-bht-required.json"
+jq -e '
+  .health_policy=="bht-required" and
+  all(.disks[];.eligible==true and .effective_health=="passed" and .health_evidence.status=="accepted" and .health_evidence.package_verification=="not-requested")
+' "${TMP}/health-bht-required.json" >/dev/null || fail "accepted BHT policy"
+jq '.drives[0].grade="B"' "${TMP}/bht-reference.json" > "${TMP}/bht-rejected.json"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/four-sas.json" \
+  bash -c 'source "$1"; zfs.inventory.collect bht-required "$2" "" fixture 30' \
+  _ "${HELPER}" "${TMP}/bht-rejected.json" > "${TMP}/health-bht-rejected.json"
+jq -e '.disks[0].eligible==false and .disks[0].health_evidence.status=="rejected" and (.disks[0].reasons|index("bht-required-rejected")!=null)' \
+  "${TMP}/health-bht-rejected.json" >/dev/null || fail "rejected BHT policy"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/four-sas.json" \
+  bash -c 'source "$1"; zfs.inventory.collect advisory "$2" "" fixture 30' \
+  _ "${HELPER}" "${TMP}/bht-rejected.json" > "${TMP}/health-bht-advisory.json"
+jq -e '.disks[0].eligible==true and .disks[0].health_evidence.status=="rejected" and (.disks[0].warnings|index("bht-evidence-rejected")!=null)' \
+  "${TMP}/health-bht-advisory.json" >/dev/null || fail "advisory BHT policy"
+ok "optional BHT evidence can be advisory or explicitly required"
+
 CONFIG="${TMP}/work/zpool.config"
 (
   cd "${TMP}/work"
@@ -150,11 +217,70 @@ CONFIG="${TMP}/work/zpool.config"
 [[ "$(stat -c '%a' "${CONFIG}" 2>/dev/null || stat -f '%Lp' "${CONFIG}")" == 600 ]] || fail "zpool.config mode is not 0600"
 jq -e '
   .selection.filters.size_bytes=={minimum_bytes:5940000000000,maximum_bytes:6060000000000} and
+  .selection.health.policy=="advisory" and .selection.health.evidence.supplied==false and
   (.vdevs|length)==1 and .vdevs[0].type=="raidz2" and (.vdevs[0].devices|length)==4 and
   all(.vdevs[].devices[];.expected_transport=="sas" and .expected_size_bytes==6000000000000 and .logical_sector_bytes==512 and .physical_sector_bytes==4096)
 ' "${CONFIG}" >/dev/null || fail "general configuration contract"
 "${RUNNER}" validate-config --config "${CONFIG}" >/dev/null
 ok "flag-first configure writes editable dynamic topology"
+
+mkdir -p "${TMP}/bht-config"
+(
+  cd "${TMP}/bht-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/four-sas.json" --type sas --all-matches \
+    --non-interactive --vdev-type raidz2 --vdev-count 1 \
+    --health-policy bht-required --health-evidence "${TMP}/bht-reference.json" --evidence-server fixture >/dev/null
+)
+BHT_CONFIG="${TMP}/bht-config/zpool.config"
+jq -e '
+  .selection.health.policy=="bht-required" and .selection.health.evidence.supplied==true and
+  all(.vdevs[].devices[];.expected_health.policy=="bht-required" and .expected_health.evidence_source_digest=="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+' "${BHT_CONFIG}" >/dev/null || fail "BHT configuration contract"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/four-sas.json" \
+  "${RUNNER}" preflight --config "${BHT_CONFIG}" --health-evidence "${TMP}/bht-reference.json" >/dev/null
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/four-sas.json" \
+  expect_failure "${RUNNER}" preflight --config "${BHT_CONFIG}"
+ok "required BHT evidence is pinned into configuration and revalidated"
+
+mkdir -p "${TMP}/serial-config"
+(
+  cd "${TMP}/serial-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/four-sas.json" --type sas --model ' test ' \
+    --serial='[SER4, SER2, SER1, SER3]' \
+    --non-interactive --vdev-type raidz2 --vdev-count 1 >/dev/null
+)
+jq -e '
+  [.vdevs[].devices[].expected_serial]==["SER4","SER2","SER1","SER3"] and
+  .selection.filters.models==[" test "] and
+  .selection.filters.serials==["SER4","SER2","SER1","SER3"]
+' "${TMP}/serial-config/zpool.config" >/dev/null || fail "serial/model selection"
+printf '# reviewed serials\nSER3\n\nSER1\n' > "${TMP}/serials.txt"
+mkdir -p "${TMP}/serial-file-config"
+(
+  cd "${TMP}/serial-file-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/four-sas.json" --serial "${TMP}/serials.txt" \
+    --non-interactive --vdev-type mirror --vdev-count 1 >/dev/null
+)
+jq -e '[.vdevs[].devices[].expected_serial]==["SER3","SER1"]' \
+  "${TMP}/serial-file-config/zpool.config" >/dev/null || fail "serial file selection"
+: > "${TMP}/empty-serials.txt"
+expect_failure bash -c 'source "$1"; zfs.serial.selection.read "$2"' _ "${HELPER}" "${TMP}/empty-serials.txt"
+expect_failure bash -c 'cd "$1" && "$2" --inventory-file "$3" --serial="[SER1,SER1]" --non-interactive --vdev-type mirror --vdev-count 1' \
+  _ "${TMP}" "${CONFIG_RUNNER}" "${TMP}/four-sas.json"
+expect_failure bash -c 'cd "$1" && "$2" --inventory-file "$3" --serial="[SER1,SER2]" --device SER2 --non-interactive --vdev-type mirror --vdev-count 1' \
+  _ "${TMP}" "${CONFIG_RUNNER}" "${TMP}/four-sas.json"
+ok "exact model filtering and ordered serial array/file selection"
+
+jq '.disks[].hba="host0"|.disks[].fault_domain="host0:shared"' "${TMP}/four-sas.json" > "${TMP}/single-hba.json"
+mkdir -p "${TMP}/single-hba-config"
+(
+  cd "${TMP}/single-hba-config"
+  "${CONFIG_RUNNER}" --inventory-file "${TMP}/single-hba.json" --type sas --all-matches \
+    --non-interactive --vdev-type raidz2 --vdev-count 1 >/dev/null
+)
+jq -e '.topology.observed_hbas==["host0"] and (.topology.advisories|index("single-hba")!=null)' \
+  "${TMP}/single-hba-config/zpool.config" >/dev/null || fail "single-HBA advisory"
+ok "single-HBA topology is recorded as a non-blocking advisory"
 
 mkdir -p "${TMP}/standalone" "${TMP}/standalone-bin"
 cp "${RUNNER}" "${TMP}/standalone/zfs.sh"
@@ -196,12 +322,15 @@ jq -e '
   .capacity.raw_bytes==24000000000000 and .capacity.estimated_usable_bytes==12000000000000
 ' "${PLAN}" >/dev/null || fail "dynamic RAIDZ2 plan contract"
 grep -Fq 'create -n' "${TMP}/commands.log" || fail "plan did not run zpool create -n"
+jq '.disks[0].smart_health="failed"|.disks[1].smart_health="unknown"' "${TMP}/four-sas.json" > "${TMP}/advisory-health-drift.json"
+PROXMOX_ZFS_INVENTORY_FIXTURE="${TMP}/advisory-health-drift.json" \
+  bash -c 'source "$1"; zfs.plan.revalidate "$2"' _ "${HELPER}" "${PLAN}"
 cp "${CONFIG}" "${TMP}/config.saved"
 printf '\n' >> "${CONFIG}"
 expect_failure bash -c 'source "$1"; zfs.plan.revalidate "$2"' _ "${HELPER}" "${PLAN}"
 mv "${TMP}/config.saved" "${CONFIG}"
 "${RUNNER}" verify --config "${CONFIG}" >/dev/null
-ok "dynamic planning, config invalidation, capacity estimate, dry-run, and verification"
+ok "dynamic planning, advisory-health tolerance, config invalidation, capacity estimate, dry-run, and verification"
 
 for spec in 'mirror:6:3:2' 'raidz1:3:1:3' 'raidz3:5:1:5' 'raidz2:8:2:4'; do
   IFS=: read -r type count vdevs width <<< "${spec}"

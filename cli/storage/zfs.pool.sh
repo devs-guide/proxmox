@@ -4,6 +4,8 @@
 
 ZFS_FEATURE_VERSION="0.0.6"
 ZFS_DEFAULT_SIZE_TOLERANCE_PERCENT="1"
+ZFS_DEFAULT_HEALTH_POLICY="advisory"
+ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS="30"
 ZFS_DEFAULT_STATE_ROOT="${PROXMOX_ZFS_STATE_ROOT:-/var/lib/proxmox-zfs-feature}"
 
 zfs.log() { printf '[setup.storage.zfs] %s\n' "$*" >&2; }
@@ -46,6 +48,185 @@ zfs.is.true() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+zfs.health.policy.validate() {
+  case "$1" in
+    advisory|smart-required|bht-required) ;;
+    *) zfs.die "Health policy must be advisory, smart-required, or bht-required" ;;
+  esac
+}
+
+zfs.health.smart.normalize() {
+  local smart_json="$1" health=""
+  [[ -n "${smart_json}" ]] || smart_json='{}'
+  if health="$(jq -esr '
+    if length != 1 or (.[0]|type)!="object" then "unknown"
+    elif .[0].smart_status.passed == true then "passed"
+    elif .[0].smart_status.passed == false then "failed"
+    else "unknown" end
+  ' <<< "${smart_json}" 2>/dev/null)"; then
+    case "${health}" in
+      passed|failed|unknown) printf '%s\n' "${health}" ;;
+      *) printf 'unknown\n' ;;
+    esac
+  else
+    printf 'unknown\n'
+  fi
+}
+
+zfs.health.evidence.validate() {
+  local evidence="$1"
+  [[ -r "${evidence}" ]] || zfs.die "Health evidence is unreadable: ${evidence}"
+  jq -e '
+    .schema_version == 1 and
+    .kind == "bht_offline_drive_reference" and
+    (.generated_at | type == "string") and
+    (.drives | type == "array") and
+    all(.drives[];
+      (.serial | type == "string" and length > 0) and
+      (.model | type == "string" and length > 0) and
+      (.server | type == "string" and length > 0)
+    )
+  ' "${evidence}" >/dev/null || zfs.die "Unsupported or invalid BHT health evidence: ${evidence}"
+}
+
+zfs.health.evidence.hash() {
+  local evidence="$1" canonical
+  canonical="$(mktemp)"
+  jq -S . "${evidence}" > "${canonical}"
+  zfs.sha256 "${canonical}"
+  rm -f "${canonical}"
+}
+
+zfs.health.package.verify() {
+  local root="$1" relative="$2" canonical_root package
+  [[ -n "${root}" ]] || return 2
+  [[ -d "${root}" && ! -L "${root}" ]] || return 1
+  case "${relative}" in
+    ""|/*|*..*) return 1 ;;
+  esac
+  canonical_root="$(cd "${root}" && pwd -P)" || return 1
+  package="${canonical_root}/${relative}"
+  [[ -d "${package}" && ! -L "${package}" && -f "${package}/SHA256SUMS" ]] || return 1
+  case "$(cd "${package}" && pwd -P)" in
+    "${canonical_root}"/*) ;;
+    *) return 1 ;;
+  esac
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "${package}" && sha256sum -c SHA256SUMS >/dev/null 2>&1)
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "${package}" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1)
+  else
+    return 1
+  fi
+}
+
+zfs.health.package.verifications() {
+  local evidence="$1" root="$2" server="$3" output="$4" row serial model row_server relative verified
+  printf '[]\n' > "${output}"
+  [[ -n "${root}" ]] || return 0
+  while IFS= read -r row; do
+    serial="$(jq -r '.serial' <<< "${row}")"
+    model="$(jq -r '.model' <<< "${row}")"
+    row_server="$(jq -r '.server' <<< "${row}")"
+    relative="$(jq -r '.evidence_package // ""' <<< "${row}")"
+    verified=false
+    if zfs.health.package.verify "${root}" "${relative}"; then verified=true; fi
+    jq -c --arg serial "${serial}" --arg model "${model}" --arg server "${row_server}" \
+      --argjson verified "${verified}" '. + [{serial:$serial,model:$model,server:$server,verified:$verified}]' \
+      "${output}" > "${output}.next"
+    mv "${output}.next" "${output}"
+  done < <(jq -c --arg server "${server}" '.drives[] | select($server=="" or .server==$server)' "${evidence}")
+}
+
+zfs.inventory.apply.health() {
+  local inventory="$1" output="$2" policy="$3" evidence="$4" evidence_root="$5" evidence_server="$6" max_age_days="$7"
+  local evidence_file verifications evidence_hash="" now_epoch
+  zfs.health.policy.validate "${policy}"
+  [[ "${max_age_days}" =~ ^[0-9]+$ && "${max_age_days}" -gt 0 ]] || zfs.die "Health evidence age must be a positive whole number of days"
+  if [[ "${policy}" == "bht-required" && -z "${evidence}" ]]; then
+    zfs.die "bht-required requires --health-evidence"
+  fi
+  evidence_file="$(mktemp)"
+  verifications="$(mktemp)"
+  if [[ -n "${evidence}" ]]; then
+    zfs.health.evidence.validate "${evidence}"
+    jq -S . "${evidence}" > "${evidence_file}"
+    evidence_hash="$(zfs.sha256 "${evidence_file}")"
+    zfs.health.package.verifications "${evidence_file}" "${evidence_root}" "${evidence_server}" "${verifications}"
+  else
+    jq -n '{schema_version:1,kind:"bht_offline_drive_reference",generated_at:"",drives:[]}' > "${evidence_file}"
+    printf '[]\n' > "${verifications}"
+  fi
+  now_epoch="${PROXMOX_ZFS_HEALTH_NOW_EPOCH:-$(date -u +%s)}"
+  jq -S \
+    --arg policy "${policy}" --arg evidence_hash "${evidence_hash}" --arg evidence_server "${evidence_server}" \
+    --argjson max_age_days "${max_age_days}" --argjson now_epoch "${now_epoch}" --argjson package_checks_requested "$( [[ -n "${evidence_root}" ]] && printf true || printf false )" \
+    --slurpfile evidence "${evidence_file}" --slurpfile verifications "${verifications}" '
+    def norm_model: ascii_downcase | gsub("[[:space:]]+"; " ") | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+    def smart_state:
+      (.smart_health // "unknown") as $health |
+      if ($health == "passed" or $health == "failed" or $health == "unknown") then $health else "unknown" end;
+    def bht_matches($disk):
+      [$evidence[0].drives[] |
+        select(($evidence_server == "" or .server == $evidence_server) and .serial == $disk.serial and ((.model|norm_model) == ($disk.model|norm_model)))];
+    def package_verified($row):
+      [$verifications[0][] | select(.serial==$row.serial and .model==$row.model and .server==$row.server) | .verified] |
+      if length == 1 then .[0] else false end;
+    def evidence_record($disk):
+      (bht_matches($disk)) as $matches |
+      if ($evidence[0].drives|length) == 0 then
+        {status:"not-supplied",accepted:false,file_sha256:null,package_verification:"not-requested"}
+      elif ($matches|length) == 0 then
+        {status:"missing",accepted:false,file_sha256:$evidence_hash,package_verification:(if $package_checks_requested then "missing" else "not-requested" end)}
+      elif ($matches|length) > 1 then
+        {status:"ambiguous",accepted:false,file_sha256:$evidence_hash,package_verification:(if $package_checks_requested then "ambiguous" else "not-requested" end)}
+      else
+        ($matches[0]) as $row |
+        (try ($row.bht_completed_at|fromdateiso8601) catch null) as $completed_epoch |
+        (($row.bht_patterns // []) | map(ascii_downcase) | sort) as $patterns |
+        (package_verified($row)) as $package_ok |
+        (($row.bht_status == "complete") and
+         ($row.bht_progress_percent == 100) and
+         (($row.bht_errors // [])|length == 0) and
+         ($patterns == ["0x00","0x55","0xaa","0xff"]) and
+         ($row.smart_passed == true) and
+         ($row.grade == "A") and
+         ($row.disposition == "passed_monitor") and
+         ($row.production_readiness == "ready_sustained_writes_and_casual_reads") and
+         ($completed_epoch != null and $completed_epoch <= $now_epoch and (($now_epoch-$completed_epoch) <= ($max_age_days*86400))) and
+         (($package_checks_requested|not) or $package_ok)) as $accepted |
+        {
+          status:(if $accepted then "accepted" else "rejected" end),accepted:$accepted,
+          file_sha256:$evidence_hash,server:$row.server,run_id:$row.run_id,
+          completed_at:$row.bht_completed_at,grade:$row.grade,confidence:$row.confidence,
+          disposition:$row.disposition,source_digest:$row.evidence_source_digest,
+          package_verification:(if $package_checks_requested then (if $package_ok then "verified" else "failed" end) else "not-requested" end)
+        }
+      end;
+    .health_policy=$policy |
+    .health_evidence={supplied:($evidence_hash != ""),file_sha256:(if $evidence_hash=="" then null else $evidence_hash end),server:(if $evidence_server=="" then null else $evidence_server end),max_age_days:$max_age_days,package_checks_requested:$package_checks_requested} |
+    .disks |= map(
+      .health_policy=$policy |
+      .smart_health=smart_state |
+      .health_evidence=evidence_record(.) |
+      .effective_health=(
+        if $policy=="smart-required" then (if .smart_health=="passed" then "passed" else "blocked" end)
+        elif $policy=="bht-required" then (if .health_evidence.accepted then "passed" else "blocked" end)
+        elif (.smart_health=="passed" or .health_evidence.accepted) then "passed"
+        else "advisory" end
+      ) |
+      .warnings=((.warnings // []) +
+        (if .smart_health=="passed" then [] else ["smart-"+.smart_health+"-advisory"] end) +
+        (if (.health_evidence.status=="not-supplied" or .health_evidence.status=="accepted") then [] else ["bht-evidence-"+.health_evidence.status] end) | unique) |
+      .reasons=((.reasons // []) +
+        (if $policy=="smart-required" and .smart_health!="passed" then ["smart-required-"+.smart_health] else [] end) +
+        (if $policy=="bht-required" and (.health_evidence.accepted|not) then ["bht-required-"+.health_evidence.status] else [] end) | unique) |
+      .eligible=((.reasons|length)==0)
+    )
+  ' "${inventory}" > "${output}"
+  rm -f "${evidence_file}" "${verifications}"
 }
 
 zfs.require.root() {
@@ -135,7 +316,7 @@ zfs.device.in.command.output() {
 }
 
 zfs.inventory.collect.live() {
-  local lsblk_json row path kernel stable_path smart_json smart_text smart_health
+  local lsblk_json row path kernel stable_path smart_json smart_text smart_health smart_parse_quality smartctl_exit_status
   local transport smart_transport signatures_json reasons_json warnings_json
   local descendants mounts holders lvm_output md_output zpool_output ceph_output
   local tmp_rows entry type size rota media model vendor serial wwn ro rm log_sec phy_sec
@@ -182,11 +363,19 @@ zfs.inventory.collect.live() {
     slot="${hctl}"
     fault_domain="${hba:-unknown}:${enclosure:-unknown}:${slot:-unknown}"
 
-    smart_json="$(smartctl -i -H -j "${path}" 2>/dev/null || true)"
+    smartctl_exit_status=0
+    if smart_json="$(smartctl -i -H -j "${path}" 2>/dev/null)"; then
+      smartctl_exit_status=0
+    else
+      smartctl_exit_status=$?
+    fi
+    [[ -n "${smart_json}" ]] || smart_json='{}'
     smart_text="$(smartctl -i "${path}" 2>/dev/null || true)"
-    if [[ -z "${serial}" ]]; then serial="$(jq -r '.serial_number // ""' <<< "${smart_json:-{}}" 2>/dev/null || true)"; fi
+    if [[ -z "${serial}" ]]; then serial="$(jq -r '.serial_number // ""' <<< "${smart_json}" 2>/dev/null || true)"; fi
     if [[ -z "${wwn}" && "${stable_path}" == /dev/disk/by-id/wwn-* ]]; then wwn="${stable_path##*/wwn-}"; fi
-    smart_health="$(jq -r 'if .smart_status.passed == true then "passed" elif .smart_status.passed == false then "failed" else "unknown" end' <<< "${smart_json:-{}}" 2>/dev/null || printf unknown)"
+    smart_health="$(zfs.health.smart.normalize "${smart_json}")"
+    smart_parse_quality="invalid"
+    if jq -e -s 'length==1 and (.[0]|type=="object")' >/dev/null 2>&1 <<< "${smart_json}"; then smart_parse_quality="valid"; fi
     smart_transport=""
     if grep -Eqi 'Transport protocol:[[:space:]]*SAS|SAS transport' <<< "${smart_text}"; then
       smart_transport="sas"
@@ -220,7 +409,7 @@ zfs.inventory.collect.live() {
     if zfs.device.in.command.output "${path}" "${md_output}"; then reasons_json="$(jq -c '. + ["active-mdraid"]' <<< "${reasons_json}")"; fi
     if zfs.device.in.command.output "${path}" "${zpool_output}"; then reasons_json="$(jq -c '. + ["imported-zfs-member"]' <<< "${reasons_json}")"; fi
     if [[ -n "${ceph_output}" ]] && zfs.device.in.command.output "${path}" "${ceph_output}"; then reasons_json="$(jq -c '. + ["active-ceph"]' <<< "${reasons_json}")"; fi
-    [[ "${smart_health}" == "passed" ]] || reasons_json="$(jq -c --arg reason "smart-${smart_health}" '. + [$reason]' <<< "${reasons_json}")"
+    [[ "${smart_health}" == "passed" ]] || warnings_json="$(jq -c --arg warning "smart-${smart_health}-advisory" '. + [$warning]' <<< "${warnings_json}")"
     if [[ -n "${smart_transport}" && -n "${transport}" && "${transport}" != "${smart_transport}" ]]; then
       reasons_json="$(jq -c '. + ["transport-conflict"]' <<< "${reasons_json}")"
     fi
@@ -231,13 +420,13 @@ zfs.inventory.collect.live() {
     entry="$(jq -n -c \
       --arg kernel "${kernel}" --arg path "${path}" --arg stable_path "${stable_path}" \
       --arg wwn "${wwn}" --arg serial "${serial}" --arg model "${model}" --arg vendor "${vendor}" \
-      --arg transport "${transport}" --arg media "${media}" --arg smart_health "${smart_health}" \
+      --arg transport "${transport}" --arg media "${media}" --arg smart_health "${smart_health}" --arg smart_parse_quality "${smart_parse_quality}" \
       --arg hba "${hba}" --arg enclosure "${enclosure}" --arg slot "${slot}" \
       --arg sysfs_path "${sysfs_path}" --arg fault_domain "${fault_domain}" \
-      --argjson size_bytes "${size}" --argjson rotational "${rota}" \
+      --argjson size_bytes "${size}" --argjson rotational "${rota}" --argjson smartctl_exit_status "${smartctl_exit_status}" \
       --argjson logical_sector_bytes "${log_sec}" --argjson physical_sector_bytes "${phy_sec}" \
       --argjson signatures "${signatures_json}" --argjson reasons "${reasons_json}" --argjson warnings "${warnings_json}" \
-      '{kernel:$kernel,path:$path,stable_path:$stable_path,wwn:$wwn,serial:$serial,model:$model,vendor:$vendor,transport:$transport,media:$media,size_bytes:$size_bytes,rotational:$rotational,logical_sector_bytes:$logical_sector_bytes,physical_sector_bytes:$physical_sector_bytes,smart_health:$smart_health,hba:$hba,enclosure:$enclosure,slot:$slot,sysfs_path:$sysfs_path,fault_domain:$fault_domain,whole_disk:true,signatures:$signatures,reasons:$reasons,warnings:$warnings,eligible:($reasons|length==0)}')"
+      '{kernel:$kernel,path:$path,stable_path:$stable_path,wwn:$wwn,serial:$serial,model:$model,vendor:$vendor,transport:$transport,media:$media,size_bytes:$size_bytes,rotational:$rotational,logical_sector_bytes:$logical_sector_bytes,physical_sector_bytes:$physical_sector_bytes,smart_health:$smart_health,smart_parse_quality:$smart_parse_quality,smartctl_exit_status:$smartctl_exit_status,hba:$hba,enclosure:$enclosure,slot:$slot,sysfs_path:$sysfs_path,fault_domain:$fault_domain,whole_disk:true,signatures:$signatures,reasons:$reasons,warnings:$warnings,eligible:($reasons|length==0)}')"
     printf '%s\n' "${entry}" >> "${tmp_rows}"
   done < <(jq -c '.blockdevices[]?' <<< "${lsblk_json}")
 
@@ -246,13 +435,19 @@ zfs.inventory.collect.live() {
 }
 
 zfs.inventory.collect() {
+  local policy="${1:-${ZFS_DEFAULT_HEALTH_POLICY}}" evidence="${2:-}" evidence_root="${3:-}" evidence_server="${4:-}" max_age_days="${5:-${ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS}}" raw processed
   zfs.require.base.commands
+  raw="$(mktemp)"
+  processed="$(mktemp)"
   if [[ -n "${PROXMOX_ZFS_INVENTORY_FIXTURE:-}" ]]; then
     [[ -r "${PROXMOX_ZFS_INVENTORY_FIXTURE}" ]] || zfs.die "Inventory fixture is unreadable"
-    jq -S . "${PROXMOX_ZFS_INVENTORY_FIXTURE}"
-    return
+    jq -S . "${PROXMOX_ZFS_INVENTORY_FIXTURE}" > "${raw}"
+  else
+    zfs.inventory.collect.live > "${raw}"
   fi
-  zfs.inventory.collect.live
+  zfs.inventory.apply.health "${raw}" "${processed}" "${policy}" "${evidence}" "${evidence_root}" "${evidence_server}" "${max_age_days}"
+  cat "${processed}"
+  rm -f "${raw}" "${processed}"
 }
 
 zfs.inventory.print.table() {
@@ -260,21 +455,21 @@ zfs.inventory.print.table() {
   if command -v column >/dev/null 2>&1; then
     jq -r '
     def human: if .>=1099511627776 then (((./1099511627776)*100|round)/100|tostring)+"TiB" elif .>=1073741824 then (((./1073741824)*100|round)/100|tostring)+"GiB" else (tostring)+"B" end;
-    ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SMART","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
+    ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SMART","HEALTH","BHT","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
     (.disks | to_entries[] | [
       (.key+1), .value.path, (.value.stable_path // "-"), (.value.serial // "-"),
       (.value.model // "-"), (.value.transport // "-"), (.value.media // (if .value.rotational then "hdd" else "ssd" end)), (.value.size_bytes|human), .value.size_bytes,
-      (.value.smart_health // "unknown"), (.value.fault_domain // "unknown"), (.value.signatures|join(",")),
+      (.value.smart_health // "unknown"), (.value.effective_health // "advisory"), (.value.health_evidence.status // "not-supplied"), (.value.fault_domain // "unknown"), (.value.signatures|join(",")),
       .value.eligible, ((.value.reasons + .value.warnings)|join(","))
     ]) | @tsv' "${inventory}" | column -t -s $'\t'
   else
     jq -r '
       def human: if .>=1099511627776 then (((./1099511627776)*100|round)/100|tostring)+"TiB" elif .>=1073741824 then (((./1073741824)*100|round)/100|tostring)+"GiB" else (tostring)+"B" end;
-      ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SMART","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
+      ["INDEX","DEVICE","BY-ID","SERIAL","MODEL","TYPE","MEDIA","SIZE","SIZE_BYTES","SMART","HEALTH","BHT","DOMAIN","SIGNATURES","ELIGIBLE","REASON"],
       (.disks | to_entries[] | [
         (.key+1), .value.path, (.value.stable_path // "-"), (.value.serial // "-"),
         (.value.model // "-"), (.value.transport // "-"), (.value.media // (if .value.rotational then "hdd" else "ssd" end)), (.value.size_bytes|human), .value.size_bytes,
-        (.value.smart_health // "unknown"), (.value.fault_domain // "unknown"), (.value.signatures|join(",")),
+        (.value.smart_health // "unknown"), (.value.effective_health // "advisory"), (.value.health_evidence.status // "not-supplied"), (.value.fault_domain // "unknown"), (.value.signatures|join(",")),
         .value.eligible, ((.value.reasons + .value.warnings)|join(","))
       ]) | @tsv' "${inventory}"
   fi
@@ -328,8 +523,15 @@ Options:
   --media TYPE                       hdd, ssd, or any
   --size SIZE                        Exact-unit filter, e.g. 6TB or 5.5TiB
   --size-tolerance-percent NUMBER    Size range and identity tolerance (default: 1)
+  --model MODEL                      Filter by exact normalized model (repeatable)
+  --serial SOURCE                    Ordered serial, [SERIAL,...], or one-per-line file
   --device IDENTIFIER                Select an exact disk (repeatable)
   --avoid IDENTIFIER                 Exclude exact path/by-id/WWN/serial (repeatable)
+  --health-policy POLICY             advisory (default), smart-required, or bht-required
+  --health-evidence FILE             Optional BHT offline drive reference JSON
+  --health-evidence-root DIRECTORY   Optionally verify referenced evidence packages
+  --evidence-server NAME             Scope BHT evidence rows to a server
+  --max-health-evidence-age-days N   Evidence freshness limit (default: 30)
   --all-matches                      Select every eligible filtered candidate
   --non-interactive                  Require deterministic selection/topology flags
   --dataset POOL/DATASET             Dataset (default: <pool>/data)
@@ -378,6 +580,43 @@ zfs.identifier.filter() {
       .path == $identifier or .stable_path == $identifier or
       .wwn == $identifier or .serial == $identifier or .kernel == $identifier
     )]' "${inventory}"
+}
+
+zfs.serial.selection.read() {
+  local source="$1" parsed="" item=""
+  local -a serial_array=()
+  if [[ -f "${source}" ]]; then
+    [[ -r "${source}" ]] || zfs.die "Serial selection file is unreadable: ${source}"
+    if jq -e 'type=="array" and length>0 and all(.[];type=="string" and length>0)' "${source}" >/dev/null 2>&1; then
+      parsed="$(jq -r '.[]' "${source}")"
+    else
+      parsed="$(awk '
+        { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") }
+        length > 0 && substr($0,1,1) != "#" { print }
+      ' "${source}")"
+    fi
+    [[ -n "${parsed}" ]] || zfs.die "Serial selection file contains no serials: ${source}"
+    printf '%s\n' "${parsed}"
+    return
+  fi
+  if [[ "${source}" == \[*\] ]]; then
+    if parsed="$(jq -er 'if type=="array" and length>0 and all(.[];type=="string" and length>0) then .[] else error("invalid serial array") end' <<< "${source}" 2>/dev/null)"; then
+      printf '%s\n' "${parsed}"
+      return
+    fi
+    source="${source#\[}"
+    source="${source%\]}"
+    IFS=',' read -r -a serial_array <<< "${source}"
+    ((${#serial_array[@]} > 0)) || zfs.die "Serial array is empty"
+    for item in "${serial_array[@]}"; do
+      item="$(awk '{$1=$1; print}' <<< "${item}")"
+      [[ -n "${item}" && "${item}" != *'['* && "${item}" != *']'* ]] || zfs.die "Invalid serial array entry"
+      printf '%s\n' "${item}"
+    done
+    return
+  fi
+  [[ -n "${source}" ]] || zfs.die "Serial selection cannot be empty"
+  printf '%s\n' "${source}"
 }
 
 zfs.vdev.minimum.width() {
@@ -446,14 +685,19 @@ zfs.config.reorder.interactive() {
 zfs.config.build() {
   local pool="archive" vdev_type="" vdev_count="" per_vdev="" transport="any" media="any"
   local requested_size="" tolerance="${ZFS_DEFAULT_SIZE_TOLERANCE_PERCENT}"
+  local health_policy="${ZFS_DEFAULT_HEALTH_POLICY}" health_evidence="" health_evidence_root="" evidence_server=""
+  local max_health_evidence_age_days="${ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS}"
   local dataset="" mountpoint="" all_matches=0 non_interactive=0 allow_signature_wipe=0
   local replace=0 inventory_file="" inventory candidates selected requested_bytes=0
   local lower_requested=0 upper_requested=0 candidate_count output="$(pwd -P)/zpool.config" tmp canonical
-  local identifier matches match match_count response config_json grouped_json duplicate_count signature_count
-  local avoid_json='[]' device_count=0 selected_count interactive=0 filter_size_json='null'
-  local -a avoid_identifiers device_identifiers
+  local identifier matches match match_count response config_json grouped_json duplicate_count signature_count parsed_serials
+  local avoid_json='[]' serial_json='[]' model_json='[]' device_count=0 serial_count=0 selected_count interactive=0 filter_size_json='null'
+  local health_json topology_advisories_json observed_hbas_json
+  local -a avoid_identifiers device_identifiers serial_identifiers model_filters
   avoid_identifiers=()
   device_identifiers=()
+  serial_identifiers=()
+  model_filters=()
 
   while (($#)); do
     case "$1" in
@@ -465,8 +709,24 @@ zfs.config.build() {
       --media) media="$(tr '[:upper:]' '[:lower:]' <<< "${2:?missing --media value}")"; shift 2 ;;
       --size) requested_size="${2:?missing --size value}"; shift 2 ;;
       --size-tolerance-percent) tolerance="${2:?missing tolerance value}"; shift 2 ;;
+      --model) model_filters+=("${2:?missing --model value}"); shift 2 ;;
+      --serial)
+        parsed_serials="$(zfs.serial.selection.read "${2:?missing --serial value}")"
+        while IFS= read -r identifier; do [[ -z "${identifier}" ]] || serial_identifiers+=("${identifier}"); done <<< "${parsed_serials}"
+        shift 2
+        ;;
+      --serial=*)
+        parsed_serials="$(zfs.serial.selection.read "${1#*=}")"
+        while IFS= read -r identifier; do [[ -z "${identifier}" ]] || serial_identifiers+=("${identifier}"); done <<< "${parsed_serials}"
+        shift
+        ;;
       --device) device_identifiers+=("${2:?missing --device value}"); shift 2 ;;
       --avoid) avoid_identifiers+=("${2:?missing --avoid value}"); shift 2 ;;
+      --health-policy) health_policy="${2:?missing --health-policy value}"; shift 2 ;;
+      --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
+      --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
+      --evidence-server) evidence_server="${2:?missing --evidence-server value}"; shift 2 ;;
+      --max-health-evidence-age-days) max_health_evidence_age_days="${2:?missing evidence age value}"; shift 2 ;;
       --all-matches|--auto-select) all_matches=1; shift ;;
       --non-interactive) non_interactive=1; shift ;;
       --dataset) dataset="${2:?missing --dataset value}"; shift 2 ;;
@@ -483,6 +743,12 @@ zfs.config.build() {
 
   [[ "${tolerance}" =~ ^[0-9]+([.][0-9]+)?$ ]] || zfs.die "Size tolerance must be numeric"
   awk -v value="${tolerance}" 'BEGIN { exit !(value > 0 && value <= 5) }' || zfs.die "Size tolerance must be greater than 0 and no more than 5 percent"
+  zfs.health.policy.validate "${health_policy}"
+  [[ "${max_health_evidence_age_days}" =~ ^[0-9]+$ && "${max_health_evidence_age_days}" -gt 0 ]] || zfs.die "Health evidence age must be a positive whole number of days"
+  [[ -z "${health_evidence_root}" || -n "${health_evidence}" ]] || zfs.die "--health-evidence-root requires --health-evidence"
+  [[ -z "${evidence_server}" || -n "${health_evidence}" ]] || zfs.die "--evidence-server requires --health-evidence"
+  [[ "${health_policy}" != "bht-required" || -n "${health_evidence}" ]] || zfs.die "bht-required requires --health-evidence"
+  ((${#device_identifiers[@]} == 0 || ${#serial_identifiers[@]} == 0)) || zfs.die "Use either --device or --serial, not both"
   case "${transport}" in sas|sata|scsi|nvme|usb|any) ;; *) zfs.die "Unsupported transport filter: ${transport}" ;; esac
   case "${media}" in hdd|ssd|any) ;; *) zfs.die "Unsupported media filter: ${media}" ;; esac
   dataset="${dataset:-${pool}/data}"
@@ -498,10 +764,13 @@ zfs.config.build() {
   fi
 
   if [[ -n "${inventory_file}" ]]; then
-    inventory="$(jq -S . "${inventory_file}")"
+    tmp="$(mktemp)"
+    zfs.inventory.apply.health "${inventory_file}" "${tmp}" "${health_policy}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_health_evidence_age_days}"
+    inventory="$(cat "${tmp}")"
+    rm -f "${tmp}"
   else
     tmp="$(mktemp)"
-    zfs.inventory.collect > "${tmp}"
+    zfs.inventory.collect "${health_policy}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_health_evidence_age_days}" > "${tmp}"
     inventory="$(cat "${tmp}")"
     rm -f "${tmp}"
   fi
@@ -521,31 +790,55 @@ zfs.config.build() {
       avoid_json="$(jq -c --arg identifier "${identifier}" '. + [$identifier]' <<< "${avoid_json}")"
     done
   fi
+  if [[ -n "${model_filters[*]-}" ]]; then
+    for identifier in "${model_filters[@]}"; do
+      model_json="$(jq -c --arg model "${identifier}" '. + [$model]' <<< "${model_json}")"
+    done
+  fi
+  if [[ -n "${serial_identifiers[*]-}" ]]; then
+    for identifier in "${serial_identifiers[@]}"; do
+      serial_json="$(jq -c --arg serial "${identifier}" '. + [$serial]' <<< "${serial_json}")"
+    done
+  fi
+  [[ "$(jq 'length' <<< "${serial_json}")" -eq "$(jq 'unique|length' <<< "${serial_json}")" ]] || zfs.die "Duplicate --serial values are not allowed"
 
   candidates="$(jq -c \
     --arg transport "${transport}" --arg media "${media}" \
     --argjson minimum "${lower_requested}" --argjson maximum "${upper_requested}" --argjson use_size "$( [[ -n "${requested_size}" ]] && printf true || printf false )" \
-    --argjson avoided "${avoid_json}" '
+    --argjson avoided "${avoid_json}" --argjson models "${model_json}" '
+      def norm_model: ascii_downcase | gsub("[[:space:]]+"; " ") | gsub("^[[:space:]]+|[[:space:]]+$"; "");
       [.disks[] |
+        . as $disk |
         select(.eligible == true) |
         select($transport == "any" or ((.transport // "")|ascii_downcase) == $transport) |
         select($media == "any" or (.media // (if .rotational then "hdd" else "ssd" end)) == $media) |
         select(($use_size|not) or (.size_bytes >= $minimum and .size_bytes <= $maximum)) |
+        select(($models|length)==0 or ([ $models[] | norm_model ] | index(($disk.model|norm_model))) != null) |
         select(([$avoided[] as $a | (.path == $a or .stable_path == $a or .wwn == $a or .serial == $a or .kernel == $a)] | any) | not)
       ] | sort_by(.stable_path)' <<< "${inventory}")"
 
   if [[ -n "${device_identifiers[*]-}" ]]; then
     device_count="${#device_identifiers[@]}"
   fi
-  if ((device_count > 0)); then
+  if [[ -n "${serial_identifiers[*]-}" ]]; then
+    serial_count="${#serial_identifiers[@]}"
+  fi
+  if ((device_count > 0 || serial_count > 0)); then
     selected='[]'
+    if ((serial_count > 0)); then
+      device_identifiers=("${serial_identifiers[@]}")
+    fi
     for identifier in "${device_identifiers[@]}"; do
-      matches="$(zfs.identifier.filter <(printf '%s\n' "${inventory}") "${identifier}")"
+      if ((serial_count > 0)); then
+        matches="$(jq -c --arg serial "${identifier}" '[.disks[] | select(.serial==$serial)]' <<< "${inventory}")"
+      else
+        matches="$(zfs.identifier.filter <(printf '%s\n' "${inventory}") "${identifier}")"
+      fi
       match_count="$(jq 'length' <<< "${matches}")"
       [[ "${match_count}" -eq 1 ]] || zfs.die "Explicit identifier must match exactly one disk: ${identifier}"
       match="$(jq -c '.[0]' <<< "${matches}")"
       if ! jq -e --arg stable "$(jq -r '.stable_path' <<< "${match}")" 'map(.stable_path) | index($stable) != null' <<< "${candidates}" >/dev/null; then
-        zfs.die "Explicit device is not eligible under current filters: ${identifier}"
+        zfs.die "Explicit disk is not eligible under current filters: ${identifier}"
       fi
       selected="$(jq -c --argjson item "${match}" '. + [$item]' <<< "${selected}")"
     done
@@ -599,18 +892,23 @@ zfs.config.build() {
       path:.stable_path, expected_wwn:.wwn, expected_serial:.serial,
       expected_size_bytes:.size_bytes, expected_transport:.transport,
       logical_sector_bytes:.logical_sector_bytes, physical_sector_bytes:.physical_sector_bytes,
-      observed_fault_domain:(.fault_domain // "unknown")
+      observed_fault_domain:(.fault_domain // "unknown"),
+      expected_health:{policy:.health_policy,effective:.effective_health,evidence_source_digest:(.health_evidence.source_digest // null)}
     };
     [range(0;$count) as $v | {
       name:("data-"+($v|tostring)), type:$type,
       devices:[range(0;$width) as $d | device(($v*$width)+$d)]
     }]' <<< "${selected}")"
 
+  health_json="$(jq -c '{policy:.health_policy,evidence:.health_evidence}' <<< "${inventory}")"
+  observed_hbas_json="$(jq -c '[.[].hba // "unknown"]|unique' <<< "${selected}")"
+  topology_advisories_json="$(jq -n -c --argjson hbas "${observed_hbas_json}" 'if ($hbas|length)==1 then ["single-hba"] else [] end')"
   config_json="$(jq -n -S \
     --arg pool "${pool}" --arg dataset "${dataset}" --arg mountpoint "${mountpoint}" \
     --arg transport "${transport}" --arg media "${media}" --argjson allow_wipe "${allow_signature_wipe}" \
-    --argjson size_filter "${filter_size_json}" --argjson avoided "${avoid_json}" \
-    --argjson tolerance "${tolerance}" --argjson vdevs "${grouped_json}" '
+    --argjson size_filter "${filter_size_json}" --argjson avoided "${avoid_json}" --argjson models "${model_json}" --argjson serials "${serial_json}" \
+    --argjson tolerance "${tolerance}" --argjson vdevs "${grouped_json}" --argjson health "${health_json}" \
+    --argjson observed_hbas "${observed_hbas_json}" --argjson topology_advisories "${topology_advisories_json}" '
     {
       schema_version:1,
       generated_by:"setup/storage/zpool.config.sh",
@@ -620,9 +918,11 @@ zfs.config.build() {
         filesystem_properties:{compression:"lz4",atime:"off",xattr:"sa",acltype:"posixacl",dnodesize:"auto",mountpoint:"none",canmount:"off"}
       },
       selection:{
-        filters:{transport:(if $transport=="any" then [] else [$transport] end),media:$media,size_bytes:$size_filter,avoided:$avoided},
+        filters:{transport:(if $transport=="any" then [] else [$transport] end),media:$media,size_bytes:$size_filter,avoided:$avoided,models:$models,serials:$serials},
+        health:$health,
         expected_size_tolerance_percent:$tolerance
       },
+      topology:{observed_hbas:$observed_hbas,advisories:$topology_advisories},
       vdevs:$vdevs,
       datasets:[{name:$dataset,mountpoint:$mountpoint,properties:{canmount:"on",recordsize:"1M",dedup:"off"}}]
     }')"
@@ -652,7 +952,10 @@ zfs.config.print.topology() {
   jq -r '
     "Pool: \(.pool.name)",
     "Layout: \(.vdevs|length) x \(.vdevs[0].devices|length) \(.vdevs[0].type)",
-    (.vdevs[] | "\(.name) \(.type):", (.devices[] | "  \(.label)  \(.path)  serial=\(.expected_serial) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain)")),
+    "Health policy: \(.selection.health.policy)",
+    "Observed HBAs: \(.topology.observed_hbas|join(","))",
+    (if (.topology.advisories|length)>0 then "Topology advisories: \(.topology.advisories|join(","))" else empty end),
+    (.vdevs[] | "\(.name) \(.type):", (.devices[] | "  \(.label)  \(.path)  serial=\(.expected_serial) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain) health=\(.expected_health.effective)")),
     (.datasets[] | "Dataset: \(.name) -> \(.mountpoint)")' "${config}"
 }
 
@@ -690,6 +993,8 @@ zfs.config.validate.structure() {
     (.selection.filters.transport | type=="array" and all(.[]; .=="sas" or .=="sata" or .=="scsi" or .=="nvme" or .=="usb")) and
     (.selection.filters.media == "hdd" or .selection.filters.media == "ssd" or .selection.filters.media == "any") and
     (.selection.filters.avoided | type=="array" and all(.[]; type=="string")) and
+    (.selection.filters.models | type=="array" and all(.[]; type=="string" and length>0)) and
+    (.selection.filters.serials | type=="array" and all(.[]; type=="string" and length>0)) and
     (.selection.filters.size_bytes == null or (
       (.selection.filters.size_bytes.minimum_bytes | type=="number" and floor==. and .>0) and
       (.selection.filters.size_bytes.maximum_bytes | type=="number" and floor==. and .>0) and
@@ -698,6 +1003,14 @@ zfs.config.validate.structure() {
     (.selection.expected_size_tolerance_percent | type == "number") and
     .selection.expected_size_tolerance_percent > 0 and
     .selection.expected_size_tolerance_percent <= 5 and
+    (.selection.health.policy == "advisory" or .selection.health.policy == "smart-required" or .selection.health.policy == "bht-required") and
+    (.selection.health.evidence.supplied | type=="boolean") and
+    (.selection.health.evidence.file_sha256 == null or (.selection.health.evidence.file_sha256|type=="string" and test("^[0-9a-f]{64}$"))) and
+    (.selection.health.evidence.server == null or (.selection.health.evidence.server|type=="string" and length>0)) and
+    (.selection.health.evidence.max_age_days | type=="number" and floor==. and .>0) and
+    (.selection.health.evidence.package_checks_requested | type=="boolean") and
+    (.topology.observed_hbas | type=="array" and length>0 and all(.[];type=="string" and length>0)) and
+    (.topology.advisories | type=="array" and all(.[];.=="single-hba")) and
     (.vdevs | type == "array" and length > 0) and
     (all(.vdevs[]; . as $v |
       (.name | type=="string" and length>0) and
@@ -715,7 +1028,10 @@ zfs.config.validate.structure() {
       (.expected_size_bytes | type == "number" and floor==. and . > 0) and
       (.expected_transport | .=="sas" or .=="sata" or .=="scsi" or .=="nvme" or .=="usb") and
       (.logical_sector_bytes | type=="number" and floor==. and .>0) and
-      (.physical_sector_bytes | type=="number" and floor==. and .>0)
+      (.physical_sector_bytes | type=="number" and floor==. and .>0) and
+      (.expected_health.policy == $root.selection.health.policy) and
+      (.expected_health.effective | .=="passed" or .=="blocked" or .=="advisory") and
+      (.expected_health.evidence_source_digest == null or (.expected_health.evidence_source_digest|type=="string" and test("^[0-9a-f]{64}$")))
     )) and
     ([.vdevs[].devices[].path] | length == (unique|length)) and
     ([.vdevs[].devices[].expected_wwn] | length == (unique|length)) and
@@ -772,17 +1088,18 @@ zfs.inventory.match.config() {
 }
 
 zfs.preflight.validate.devices() {
-  local config="$1" inventory="$2" matched="$3" allow_wipe minimum maximum use_size tolerance failures expected_count
+  local config="$1" inventory="$2" matched="$3" allow_wipe minimum maximum use_size tolerance failures expected_count policy
   allow_wipe="$(jq -r '.pool.allow_signature_wipe' "${config}")"
   use_size="$(jq -r '.selection.filters.size_bytes != null' "${config}")"
   minimum="$(jq -r '.selection.filters.size_bytes.minimum_bytes // 0' "${config}")"
   maximum="$(jq -r '.selection.filters.size_bytes.maximum_bytes // 0' "${config}")"
   tolerance="$(jq -r '.selection.expected_size_tolerance_percent' "${config}")"
+  policy="$(jq -r '.selection.health.policy' "${config}")"
 
   failures="$(jq -r \
     --argjson minimum "${minimum}" --argjson maximum "${maximum}" --argjson tolerance "${tolerance}" \
     --argjson use_size "${use_size}" \
-    --argjson allow_wipe "$( [[ "${allow_wipe}" == true ]] && printf 1 || printf 0 )" '
+    --argjson allow_wipe "$( [[ "${allow_wipe}" == true ]] && printf 1 || printf 0 )" --arg policy "${policy}" '
     .[] |
     . as $m |
     if .matches != 1 then "\(.expected.label): expected path resolves to \(.matches) inventory entries"
@@ -793,6 +1110,10 @@ zfs.preflight.validate.devices() {
     elif ((.actual.transport // "")|ascii_downcase) != .expected.expected_transport then "\(.expected.label): transport mismatch"
     elif .actual.logical_sector_bytes != .expected.logical_sector_bytes then "\(.expected.label): logical sector size mismatch"
     elif .actual.physical_sector_bytes != .expected.physical_sector_bytes then "\(.expected.label): physical sector size mismatch"
+    elif .actual.health_policy != $policy then "\(.expected.label): health policy mismatch"
+    elif ($policy=="smart-required" and .actual.smart_health!="passed") then "\(.expected.label): required SMART health did not pass"
+    elif ($policy=="bht-required" and (.actual.health_evidence.accepted|not)) then "\(.expected.label): required BHT evidence was not accepted"
+    elif ($policy=="bht-required" and .actual.health_evidence.source_digest != .expected.expected_health.evidence_source_digest) then "\(.expected.label): BHT evidence source digest changed"
     elif ($use_size and (.actual.size_bytes < $minimum or .actual.size_bytes > $maximum)) then "\(.expected.label): size outside configured byte range"
     elif (((.actual.size_bytes - .expected.expected_size_bytes) | if . < 0 then -. else . end) > (.expected.expected_size_bytes * $tolerance / 100)) then "\(.expected.label): actual byte size differs from expected_size_bytes beyond tolerance"
     elif (($allow_wipe == 0) and ((.actual.signatures|length) > 0)) then "\(.expected.label): signatures present while allow_signature_wipe=false"
@@ -810,18 +1131,59 @@ zfs.preflight.validate.devices() {
 }
 
 zfs.preflight.prepare() {
-  local config="$1" inventory="$2" matched="$3" pool
+  local config="$1" inventory="$2" matched="$3" evidence="${4:-}" evidence_root="${5:-}" evidence_server="${6:-}" max_age_days="${7:-}" pool policy configured_evidence_hash observed_evidence_hash configured_server configured_max_age
   zfs.config.validate.structure "${config}"
   pool="$(jq -r '.pool.name' "${config}")"
+  policy="$(jq -r '.selection.health.policy' "${config}")"
+  configured_evidence_hash="$(jq -r '.selection.health.evidence.file_sha256 // ""' "${config}")"
+  configured_server="$(jq -r '.selection.health.evidence.server // ""' "${config}")"
+  configured_max_age="$(jq -r '.selection.health.evidence.max_age_days' "${config}")"
+  if [[ -n "${evidence_server}" && "${evidence_server}" != "${configured_server}" ]]; then
+    zfs.die "--evidence-server differs from the reviewed configuration"
+  fi
+  evidence_server="${configured_server}"
+  if [[ -n "${max_age_days}" && "${max_age_days}" != "${configured_max_age}" ]]; then
+    zfs.die "--max-health-evidence-age-days differs from the reviewed configuration"
+  fi
+  max_age_days="${configured_max_age}"
+  if [[ "${policy}" == "bht-required" && -z "${evidence}" ]]; then
+    zfs.die "bht-required preflight requires --health-evidence"
+  fi
+  if [[ -n "${configured_evidence_hash}" ]]; then
+    [[ -n "${evidence}" ]] || zfs.die "Configuration was generated with health evidence; supply the same --health-evidence file"
+    zfs.health.evidence.validate "${evidence}"
+    observed_evidence_hash="$(zfs.health.evidence.hash "${evidence}")"
+    [[ "${observed_evidence_hash}" == "${configured_evidence_hash}" ]] || zfs.die "Health evidence changed after configuration; generate a fresh configuration"
+  fi
   zfs.require.command zpool
   zfs.require.command zfs
   zfs.require.command wipefs
   if zfs.pool.exists.or.importable "${pool}"; then
     zfs.die "Pool ${pool} already exists or is importable"
   fi
-  zfs.inventory.collect > "${inventory}"
+  zfs.inventory.collect "${policy}" "${evidence}" "${evidence_root}" "${evidence_server}" "${max_age_days}" > "${inventory}"
   zfs.inventory.match.config "${config}" "${inventory}" "${matched}"
   zfs.preflight.validate.devices "${config}" "${inventory}" "${matched}"
+}
+
+zfs.inventory.review.hash() {
+  local config="$1" matched="$2" canonical
+  canonical="$(mktemp)"
+  jq -S --slurpfile config "${config}" '
+    ($config[0].selection.health.policy) as $policy |
+    map({
+      expected:.expected,
+      matches:.matches,
+      actual:(.actual | {
+        stable_path,wwn,serial,model,transport,size_bytes,logical_sector_bytes,physical_sector_bytes,
+        whole_disk,signatures,reasons,eligible,hba,enclosure,slot,fault_domain
+      } + (if $policy=="advisory" then {} else {
+        smart_health,effective_health,health_policy,health_evidence
+      } end))
+    })
+  ' "${matched}" > "${canonical}"
+  zfs.sha256 "${canonical}"
+  rm -f "${canonical}"
 }
 
 zfs.command.arrays() {
@@ -870,12 +1232,12 @@ zfs.json.command.run() {
 }
 
 zfs.plan.build() {
-  local config="$1" plan_file="$2" work inventory matched commands capacity payload canonical plan_id
+  local config="$1" plan_file="$2" evidence="${3:-}" evidence_root="${4:-}" evidence_server="${5:-}" max_age_days="${6:-}" work inventory matched commands capacity payload canonical plan_id
   local config_hash config_source inventory_hash requires_wipe dry_run_json
   work="$(mktemp -d)"
   inventory="${work}/inventory.json"; matched="${work}/matched.json"; commands="${work}/commands.json"; capacity="${work}/capacity.json"
   payload="${work}/payload.json"; canonical="${work}/canonical.json"
-  zfs.preflight.prepare "${config}" "${inventory}" "${matched}"
+  zfs.preflight.prepare "${config}" "${inventory}" "${matched}" "${evidence}" "${evidence_root}" "${evidence_server}" "${max_age_days}"
   zfs.command.arrays "${config}" "${matched}" "${commands}"
   zfs.capacity.estimate "${config}" "${capacity}"
   requires_wipe="$(jq '[.signature_wipes[]] | length > 0' "${commands}")"
@@ -900,7 +1262,7 @@ zfs.plan.build() {
 
   config_hash="$(zfs.sha256 "${config}")"
   config_source="$(cd "$(dirname "${config}")" && pwd -P)/$(basename "${config}")"
-  inventory_hash="$(zfs.sha256 "${matched}")"
+  inventory_hash="$(zfs.inventory.review.hash "${config}" "${matched}")"
   jq -n -S \
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg config_hash "${config_hash}" --arg config_source "${config_source}" \
     --arg inventory_hash "${inventory_hash}" --argjson requires_wipe "${requires_wipe}" \
@@ -935,7 +1297,7 @@ zfs.plan.verify.id() {
 }
 
 zfs.plan.revalidate() {
-  local plan_file="$1" work config inventory matched expected_hash actual_hash pool config_source config_hash
+  local plan_file="$1" evidence="${2:-}" evidence_root="${3:-}" evidence_server="${4:-}" max_age_days="${5:-}" work config inventory matched expected_hash actual_hash pool config_source config_hash
   work="$(mktemp -d)"; config="${work}/config.json"; inventory="${work}/inventory.json"; matched="${work}/matched.json"
   jq -S '.configuration' "${plan_file}" > "${config}"
   zfs.config.validate.structure "${config}"
@@ -947,11 +1309,9 @@ zfs.plan.revalidate() {
   if [[ "$(jq -r '.plan_kind' "${plan_file}")" == create ]] && zfs.pool.exists.or.importable "${pool}"; then
     zfs.die "Pool ${pool} already exists or is importable"
   fi
-  zfs.inventory.collect > "${inventory}"
-  zfs.inventory.match.config "${config}" "${inventory}" "${matched}"
-  zfs.preflight.validate.devices "${config}" "${inventory}" "${matched}"
+  zfs.preflight.prepare "${config}" "${inventory}" "${matched}" "${evidence}" "${evidence_root}" "${evidence_server}" "${max_age_days}"
   expected_hash="$(jq -r '.inventory_hash' "${plan_file}")"
-  actual_hash="$(zfs.sha256 "${matched}")"
+  actual_hash="$(zfs.inventory.review.hash "${config}" "${matched}")"
   [[ "${actual_hash}" == "${expected_hash}" ]] || zfs.die "Device inventory changed after planning; generate a fresh plan"
   rm -rf "${work}"
 }
@@ -981,7 +1341,7 @@ zfs.lock.acquire() {
 }
 
 zfs.signatures.wipe() {
-  local plan_file="$1" plan_id="$2" confirm_pool="$3" confirmed_all="$4" pool state_dir command_json response path
+  local plan_file="$1" plan_id="$2" confirm_pool="$3" confirmed_all="$4" evidence="${5:-}" evidence_root="${6:-}" evidence_server="${7:-}" max_age_days="${8:-}" pool state_dir command_json response path
   zfs.require.regular.entrypoint
   zfs.require.root
   zfs.plan.verify.id "${plan_file}" "${plan_id}"
@@ -989,7 +1349,7 @@ zfs.signatures.wipe() {
   pool="$(jq -r '.configuration.pool.name' "${plan_file}")"
   [[ "${confirm_pool}" == "${pool}" ]] || zfs.die "--confirm-wipe must exactly match pool name ${pool}"
   zfs.lock.acquire "${pool}"
-  zfs.plan.revalidate "${plan_file}"
+  zfs.plan.revalidate "${plan_file}" "${evidence}" "${evidence_root}" "${evidence_server}" "${max_age_days}"
   if ((confirmed_all != 1)); then
     [[ -r /dev/tty && -w /dev/tty ]] || zfs.die "Non-interactive signature wiping requires --yes"
     while IFS= read -r path; do
@@ -1009,7 +1369,7 @@ zfs.signatures.wipe() {
 }
 
 zfs.pool.apply() {
-  local plan_file="$1" plan_id="$2" confirm_pool="$3" mode="$4" confirmed="$5" pool state_dir command_json response
+  local plan_file="$1" plan_id="$2" confirm_pool="$3" mode="$4" confirmed="$5" evidence="${6:-}" evidence_root="${7:-}" evidence_server="${8:-}" max_age_days="${9:-}" pool state_dir command_json response
   zfs.require.regular.entrypoint
   zfs.require.root
   [[ "${mode}" == "create" ]] || zfs.die "Creation requires the explicit option --mode create"
@@ -1019,7 +1379,7 @@ zfs.pool.apply() {
   pool="$(jq -r '.configuration.pool.name' "${plan_file}")"
   [[ "${confirm_pool}" == "${pool}" ]] || zfs.die "--confirm-create must exactly match pool name ${pool}"
   zfs.lock.acquire "${pool}"
-  zfs.plan.revalidate "${plan_file}"
+  zfs.plan.revalidate "${plan_file}" "${evidence}" "${evidence_root}" "${evidence_server}" "${max_age_days}"
   if ((confirmed != 1)); then
     [[ -r /dev/tty && -w /dev/tty ]] || zfs.die "Non-interactive creation requires --yes"
     response="$(zfs.prompt "Type yes to create pool ${pool} from plan ${plan_id}" "no")"
@@ -1130,10 +1490,10 @@ zfs.pool.usage() {
   cat <<'EOF'
 Usage:
   setup/storage/zfs.sh configure [configuration flags]
-  setup/storage/zfs.sh inventory [--output text|json] [--output-file FILE]
+  setup/storage/zfs.sh inventory [--output text|json] [--output-file FILE] [health options]
   setup/storage/zfs.sh validate-config [--config FILE]
-  setup/storage/zfs.sh preflight [--config FILE]
-  setup/storage/zfs.sh plan [--config FILE] [--plan-file FILE]
+  setup/storage/zfs.sh preflight [--config FILE] [evidence options]
+  setup/storage/zfs.sh plan [--config FILE] [--plan-file FILE] [evidence options]
   setup/storage/zfs.sh wipe-signatures --plan-file FILE --plan-id SHA256 --mode wipe-signatures --confirm-wipe POOL [--yes]
   setup/storage/zfs.sh apply --plan-file FILE --plan-id SHA256 --mode create --confirm-create POOL [--yes]
   setup/storage/zfs.sh status --pool POOL [--output text|json]
@@ -1143,23 +1503,29 @@ Usage:
 Configuration supports equal-width mirror, RAIDZ1, RAIDZ2, and RAIDZ3 data
 vdevs with operator-selected whole disks. Signature wiping is a distinct
 reviewed action. Creation never adds zpool -f. Plan and destructive actions are
-refused from a streamed shell.
+refused from a streamed shell. Health is advisory unless an operator explicitly
+selects smart-required or bht-required.
 EOF
 }
 
 zfs.action.inventory() {
-  local output="text" output_file="" inventory install_deps=0
+  local output="text" output_file="" inventory install_deps=0 health_policy="${ZFS_DEFAULT_HEALTH_POLICY}" health_evidence="" health_evidence_root="" evidence_server="" max_age_days="${ZFS_DEFAULT_HEALTH_EVIDENCE_AGE_DAYS}"
   while (($#)); do
     case "$1" in
       --output) output="${2:?missing --output value}"; shift 2 ;;
       --output-file) output_file="${2:?missing --output-file value}"; shift 2 ;;
       --install-deps) install_deps=1; shift ;;
+      --health-policy) health_policy="${2:?missing --health-policy value}"; shift 2 ;;
+      --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
+      --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
+      --evidence-server) evidence_server="${2:?missing --evidence-server value}"; shift 2 ;;
+      --max-health-evidence-age-days) max_age_days="${2:?missing evidence age value}"; shift 2 ;;
       *) zfs.die "Unknown inventory option: $1" ;;
     esac
   done
   ((install_deps == 0)) || zfs.install.dependencies
   [[ "${output}" == text || "${output}" == json ]] || zfs.die "Inventory output must be text or json"
-  inventory="$(mktemp)"; zfs.inventory.collect > "${inventory}"
+  inventory="$(mktemp)"; zfs.inventory.collect "${health_policy}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_age_days}" > "${inventory}"
   if [[ -n "${output_file}" ]]; then
     zfs.write.atomic "${output_file}" 0600 "${inventory}"
   fi
@@ -1182,68 +1548,84 @@ zfs.action.validate.config() {
 }
 
 zfs.action.preflight() {
-  local config="$(pwd -P)/zpool.config" work inventory matched
+  local config="$(pwd -P)/zpool.config" work inventory matched health_evidence="" health_evidence_root="" evidence_server="" max_age_days=""
   while (($#)); do
     case "$1" in
       --config) config="${2:?missing --config value}"; shift 2 ;;
+      --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
+      --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
+      --evidence-server) evidence_server="${2:?missing --evidence-server value}"; shift 2 ;;
+      --max-health-evidence-age-days) max_age_days="${2:?missing evidence age value}"; shift 2 ;;
       *) zfs.die "Unknown preflight option: $1" ;;
     esac
   done
   zfs.require.regular.entrypoint
   work="$(mktemp -d)"; inventory="${work}/inventory.json"; matched="${work}/matched.json"
-  zfs.preflight.prepare "${config}" "${inventory}" "${matched}"
+  zfs.preflight.prepare "${config}" "${inventory}" "${matched}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_age_days}"
   zfs.config.print.topology "${config}"
-  jq -r '.[] | "\(.expected.label) ok  \(.expected.path)  serial=\(.actual.serial) bytes=\(.actual.size_bytes) transport=\(.actual.transport) signatures=\(.actual.signatures|join(","))"' "${matched}"
+  jq -r '.[] | "\(.expected.label) ok  \(.expected.path)  serial=\(.actual.serial) bytes=\(.actual.size_bytes) transport=\(.actual.transport) health=\(.actual.effective_health) bht=\(.actual.health_evidence.status) signatures=\(.actual.signatures|join(","))"' "${matched}"
   rm -rf "${work}"
   zfs.log "Preflight passed"
 }
 
 zfs.action.plan() {
-  local config="$(pwd -P)/zpool.config" plan_file="$(pwd -P)/zpool.plan"
+  local config="$(pwd -P)/zpool.config" plan_file="$(pwd -P)/zpool.plan" health_evidence="" health_evidence_root="" evidence_server="" max_age_days=""
   while (($#)); do
     case "$1" in
       --config) config="${2:?missing --config value}"; shift 2 ;;
       --plan-file) plan_file="${2:?missing --plan-file value}"; shift 2 ;;
+      --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
+      --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
+      --evidence-server) evidence_server="${2:?missing --evidence-server value}"; shift 2 ;;
+      --max-health-evidence-age-days) max_age_days="${2:?missing evidence age value}"; shift 2 ;;
       *) zfs.die "Unknown plan option: $1" ;;
     esac
   done
   zfs.require.regular.entrypoint
   [[ ! -L "${plan_file}" ]] || zfs.die "Refusing symlink plan output: ${plan_file}"
-  zfs.plan.build "${config}" "${plan_file}"
+  zfs.plan.build "${config}" "${plan_file}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_age_days}"
 }
 
 zfs.action.wipe() {
-  local plan_file="" plan_id="" mode="" confirm="" yes=0
+  local plan_file="" plan_id="" mode="" confirm="" yes=0 health_evidence="" health_evidence_root="" evidence_server="" max_age_days=""
   while (($#)); do
     case "$1" in
       --plan-file) plan_file="${2:?missing --plan-file value}"; shift 2 ;;
       --plan-id) plan_id="${2:?missing --plan-id value}"; shift 2 ;;
       --mode) mode="${2:?missing --mode value}"; shift 2 ;;
       --confirm-wipe) confirm="${2:?missing --confirm-wipe value}"; shift 2 ;;
+      --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
+      --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
+      --evidence-server) evidence_server="${2:?missing --evidence-server value}"; shift 2 ;;
+      --max-health-evidence-age-days) max_age_days="${2:?missing evidence age value}"; shift 2 ;;
       --yes) yes=1; shift ;;
       *) zfs.die "Unknown wipe-signatures option: $1" ;;
     esac
   done
   [[ -n "${plan_file}" && -n "${plan_id}" && -n "${confirm}" && "${mode}" == wipe-signatures ]] || \
     zfs.die "wipe-signatures requires --plan-file, --plan-id, --mode wipe-signatures, and --confirm-wipe; use --yes only for explicit all-device confirmation"
-  zfs.signatures.wipe "${plan_file}" "${plan_id}" "${confirm}" "${yes}"
+  zfs.signatures.wipe "${plan_file}" "${plan_id}" "${confirm}" "${yes}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_age_days}"
 }
 
 zfs.action.apply() {
-  local plan_file="" plan_id="" mode="" confirm="" yes=0
+  local plan_file="" plan_id="" mode="" confirm="" yes=0 health_evidence="" health_evidence_root="" evidence_server="" max_age_days=""
   while (($#)); do
     case "$1" in
       --plan-file) plan_file="${2:?missing --plan-file value}"; shift 2 ;;
       --plan-id) plan_id="${2:?missing --plan-id value}"; shift 2 ;;
       --mode) mode="${2:?missing --mode value}"; shift 2 ;;
       --confirm-create) confirm="${2:?missing --confirm-create value}"; shift 2 ;;
+      --health-evidence) health_evidence="${2:?missing --health-evidence value}"; shift 2 ;;
+      --health-evidence-root) health_evidence_root="${2:?missing --health-evidence-root value}"; shift 2 ;;
+      --evidence-server) evidence_server="${2:?missing --evidence-server value}"; shift 2 ;;
+      --max-health-evidence-age-days) max_age_days="${2:?missing evidence age value}"; shift 2 ;;
       --yes) yes=1; shift ;;
       *) zfs.die "Unknown apply option: $1" ;;
     esac
   done
   [[ -n "${plan_file}" && -n "${plan_id}" && -n "${confirm}" && "${mode}" == create ]] || \
     zfs.die "apply requires --plan-file, --plan-id, --mode create, and --confirm-create; non-interactive use also requires --yes"
-  zfs.pool.apply "${plan_file}" "${plan_id}" "${confirm}" "${mode}" "${yes}"
+  zfs.pool.apply "${plan_file}" "${plan_id}" "${confirm}" "${mode}" "${yes}" "${health_evidence}" "${health_evidence_root}" "${evidence_server}" "${max_age_days}"
 }
 
 zfs.action.status() {
