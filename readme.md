@@ -37,7 +37,9 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh | \
 ```
 
 Download the runner before generating or applying a destructive plan. Review
-the complete workflow in [the ZFS feature plan](docs/setup/storage/zfs/feature.plan).
+the design in [the ZFS feature plan](docs/setup/storage/zfs/feature.plan) and
+follow [the human acceptance procedure](docs/setup/storage/zfs/human.acceptance.md)
+for non-destructive candidate testing.
 
 ## Feature Runner Naming
 

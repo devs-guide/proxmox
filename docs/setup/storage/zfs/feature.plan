@@ -27,10 +27,23 @@ and discoverable controller/enclosure evidence. Eligible candidates are
 confirmed with `y`, `n`, `all`, or `none`. The operator then confirms the vdev
 type, equal-width vdev count, device order, dataset, and mountpoint.
 
-For deterministic automation, combine repeatable `--device` or
+SMART health is normalized to exactly one value: `passed`, `failed`, or
+`unknown`. It is advisory by default and does not override the hard safety
+checks for active usage, stable identity, whole-disk status, or signatures.
+Operators may explicitly choose `smart-required` or attach BHT inventory as
+advisory context. `bht-required` and evidence-package checksum verification are
+also available, but both are opt-in and are not part of the normal workflow.
+
+For deterministic automation, combine an ordered `--serial` array/file,
+repeatable `--device`, or
 `--all-matches` with `--non-interactive`, `--vdev-type`, and either
 `--vdev-count` or `--drives-per-vdev`. A filtered result larger than the
 requested topology is never silently truncated.
+
+Exact normalized model filters can be repeated with `--model`. `--serial`
+accepts either `[SERIAL_01,SERIAL_02,...]` or a text file containing one serial
+per line; supplied order becomes vdev member order without relying on
+transient `/dev/sdX` names.
 
 Supported data-vdev types are `mirror`, `raidz1`, `raidz2`, and `raidz3`.
 Unmirrored stripes, special vdevs, cache, log, and hot-spare creation are out of
@@ -68,6 +81,11 @@ and a physical fault-domain warning. It runs `zpool create -n`, then writes a
 canonical `zpool.plan` and SHA-256 plan ID. Editing the configuration or changing
 resolved hardware invalidates that plan.
 
+The generated configuration records observed HBAs and emits a `single-hba`
+advisory when applicable. That advisory requires human review of expanders,
+backplanes, enclosure slots, and power domains but does not guess or impose a
+physical layout.
+
 ## Explicit destructive actions
 
 Detected signatures stop ordinary planning. Setting
@@ -102,3 +120,6 @@ This release contains only the general ZFS tooling. Samba and LXC provisioning,
 network attachment, SSH access, Node.js, and server-specific storage choices
 remain separate tasks built from existing features. GPU work remains targeted
 for release 0.0.7.
+
+The step-by-step review gates are documented in the
+[human acceptance procedure](human.acceptance.md).
