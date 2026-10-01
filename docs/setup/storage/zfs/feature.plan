@@ -1,0 +1,104 @@
+# Release 0.0.6: general local ZFS provisioning
+
+Release 0.0.6 adds an opt-in, locally executed ZFS workflow. It discovers
+whole disks, helps an operator select and group them, writes an editable
+`zpool.config`, validates that declaration against current hardware, and
+creates only the exact reviewed plan.
+
+The feature has no hostname, IP address, fixed disk count, fixed transport, or
+fixed pool-topology dependency. It is not part of the automatic Proxmox
+bootstrap playlist.
+
+## Configuration workflow
+
+The streamed entry point defaults to the non-destructive configuration action
+when its first argument is a flag:
+
+```bash
+mkdir -p /root/zfs-setup
+cd /root/zfs-setup
+wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh \
+  | bash -s -- --type sas --size 6TB
+```
+
+The inventory table contains kernel and stable paths, model, serial, WWN,
+transport, media type, exact byte size, SMART state, signatures, eligibility,
+and discoverable controller/enclosure evidence. Eligible candidates are
+confirmed with `y`, `n`, `all`, or `none`. The operator then confirms the vdev
+type, equal-width vdev count, device order, dataset, and mountpoint.
+
+For deterministic automation, combine repeatable `--device` or
+`--all-matches` with `--non-interactive`, `--vdev-type`, and either
+`--vdev-count` or `--drives-per-vdev`. A filtered result larger than the
+requested topology is never silently truncated.
+
+Supported data-vdev types are `mirror`, `raidz1`, `raidz2`, and `raidz3`.
+Unmirrored stripes, special vdevs, cache, log, and hot-spare creation are out of
+scope for this release.
+
+Size units are explicit. `6TB` is decimal while `5.5TiB` is binary. Ambiguous
+forms such as `5.5T` are rejected. The generated filter stores minimum and
+maximum bytes, while each selected device records its exact expected byte size,
+WWN, serial, transport, and sector sizes.
+
+## Manual review and planning
+
+The generator writes `./zpool.config` with mode `0600` and stops. Edit that
+JSON before continuing if device ordering, grouping, properties, datasets, or
+mountpoints need adjustment.
+
+Download the runner before planning or performing any destructive action:
+
+```bash
+wget -qO zfs.sh https://devs-guide.github.io/proxmox/setup/storage/zfs.sh
+chmod 0700 zfs.sh
+./zfs.sh validate-config --config ./zpool.config
+./zfs.sh preflight --config ./zpool.config
+./zfs.sh plan --config ./zpool.config --plan-file ./zpool.plan
+```
+
+Validation enforces supported equal-width topology, unique stable by-id paths,
+whole disks, matching identities and sizes, safe property allow-lists, and
+valid datasets. Live preflight additionally rejects mounted filesystems, swap,
+LVM, mdraid, Ceph, imported ZFS members, device holders, identity drift, and an
+existing or importable pool with the requested name.
+
+Planning prints the topology, conservative capacity estimates, exact commands,
+and a physical fault-domain warning. It runs `zpool create -n`, then writes a
+canonical `zpool.plan` and SHA-256 plan ID. Editing the configuration or changing
+resolved hardware invalidates that plan.
+
+## Explicit destructive actions
+
+Detected signatures stop ordinary planning. Setting
+`allow_signature_wipe: true` permits a separate signature-wipe plan; it does
+not permit creation to erase anything automatically.
+
+```bash
+./zfs.sh wipe-signatures \
+  --plan-file ./zpool.plan --plan-id PLAN_ID \
+  --mode wipe-signatures --confirm-wipe POOL_NAME
+```
+
+Without `--yes`, the wipe workflow confirms every affected stable path. After
+wiping, inventory and planning must run again.
+
+Creation requires the fresh create-plan ID, explicit mode, exact pool name, and
+an interactive final confirmation. Non-interactive creation additionally
+requires `--yes`:
+
+```bash
+./zfs.sh apply \
+  --plan-file ./zpool.plan --plan-id PLAN_ID \
+  --mode create --confirm-create POOL_NAME
+```
+
+The tool never adds `zpool create -f`. After creation it verifies data-vdev
+type, width, device membership, pool properties, datasets, and mounted state.
+
+## Release boundary
+
+This release contains only the general ZFS tooling. Samba and LXC provisioning,
+network attachment, SSH access, Node.js, and server-specific storage choices
+remain separate tasks built from existing features. GPU work remains targeted
+for release 0.0.7.

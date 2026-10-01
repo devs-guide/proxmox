@@ -21,8 +21,23 @@ the Proxmox no-subscription repository. Update these values for the target
 environment before treating the setup as final.
 
 See [the 0.0.5 release notes](RELEASE_NOTES.md) for the complete scope and
-acceptance requirements. Whole-GPU passthrough remains the separate `0.0.6`
-candidate and is not part of the `0.0.5` tag.
+acceptance requirements. General local ZFS provisioning is the `0.0.6`
+candidate; whole-GPU passthrough remains targeted for `0.0.7`.
+
+## ZFS Provisioning Candidate
+
+The 0.0.6 candidate discovers local disks and writes an editable
+`./zpool.config`. It does not create a pool during discovery or configuration.
+
+```bash
+mkdir -p /root/zfs-setup
+cd /root/zfs-setup
+wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh | \
+  bash -s -- --type sas --size 6TB
+```
+
+Download the runner before generating or applying a destructive plan. Review
+the complete workflow in [the ZFS feature plan](docs/setup/storage/zfs/feature.plan).
 
 ## Feature Runner Naming
 

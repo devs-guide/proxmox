@@ -70,6 +70,9 @@ FILES=(
   "setup/lxc/codex.sh:setup/lxc/codex.sh"
   "setup/lxc/users.sh:setup/lxc/users.sh"
   "setup/vm/restore.sh:setup/vm/restore.sh"
+  "setup/storage/zfs.sh:setup/storage/zfs.sh"
+  "setup/storage/zpool.config.sh:setup/storage/zpool.config.sh"
+  "cli/storage/zfs.pool.sh:cli/storage/zfs.pool.sh"
   "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
   "cli/ssh/sync.sh:cli/ssh/sync.sh"
   "cli/storage/temp.sh:cli/storage/temp.sh"
@@ -309,6 +312,46 @@ check_setup_cli_refs() {
   done
 }
 
+check_feature_manifest() {
+  local manifest="${WORKDIR}/actions/pages.features.txt"
+  local source destination policy published
+  [[ -f "${manifest}" ]] || {
+    echo "[validate.pages][error] missing feature publication manifest"
+    rc=1
+    return
+  }
+  while IFS='|' read -r source destination policy; do
+    [[ -n "${source}" && "${source}" != \#* ]] || continue
+    case "${policy}" in feature|plain) ;; *)
+      echo "[validate.pages][error] invalid feature policy: ${source}|${destination}|${policy}"
+      rc=1
+      continue
+    esac
+    case "/${source}/${destination}/" in *'/../'*|*'//'*)
+      echo "[validate.pages][error] unsafe feature manifest path: ${source}|${destination}"
+      rc=1
+      continue
+    esac
+    if [[ "${source}" == /* || "${destination}" == /* || ! -f "${WORKDIR}/${source}" ]]; then
+      echo "[validate.pages][error] invalid feature manifest source: ${source}"
+      rc=1
+      continue
+    fi
+    published="${TMPDIR}/${destination}"
+    if ! fetch_artifact "${destination}" "${published}"; then
+      rc=1
+      continue
+    fi
+    if ! diff -u "${WORKDIR}/${source}" "${published}" >/dev/null; then
+      echo "[validate.pages][diff] ${source} differs from published destination ${destination}"
+      rc=1
+    fi
+    if [[ "${policy}" == feature ]] && grep -q '^[[:space:]]*FEATURE_CLI_FILES=(' "${WORKDIR}/${source}"; then
+      check_setup_cli_refs "${source}"
+    fi
+  done < "${manifest}"
+}
+
 check_published_bash_extensions() {
   local artifact first_line relative_path legacy_path
 
@@ -481,6 +524,7 @@ check_setup_feature_refs "setup/lxc/codex.sh"
 check_setup_feature_refs "setup/lxc/users.sh"
 check_setup_feature_refs "setup/vm/restore.sh"
 check_setup_cli_refs "setup/vm/restore.sh"
+check_feature_manifest
 check_published_bash_extensions
 check_wrapper_dependency_graph "ansible/proxmox/container/node.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/codex.yml"

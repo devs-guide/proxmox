@@ -13,6 +13,7 @@ declare -A PKGS
 
 # --- Playlist (Of Playbooks) File Name:
 PLAYBOOKS="debian/install.playbooks.txt"
+FEATURE_MANIFEST="actions/pages.features.txt"
 SETUP_VLAN_RUNNER="setup/vlan.sh"
 SETUP_NETWORK_RUNNER="setup/network.sh"
 SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
@@ -285,6 +286,61 @@ publish.proxmox91() {
   fi
 }
 
+publish.manifest.features() {
+  local source destination policy key cli_ref cli_source cli_destination cli_mode
+  local feature_index=0
+
+  [[ -f "${FEATURE_MANIFEST}" ]] || {
+    log.error "[www.pages] ERROR[features]: missing ${FEATURE_MANIFEST}"
+    exit 1
+  }
+
+  while IFS='|' read -r source destination policy; do
+    [[ -n "${source}" && "${source}" != \#* ]] || continue
+    case "${policy}" in feature|plain) ;; *)
+      log.error "[www.pages] ERROR[features]: invalid policy: ${source}|${destination}|${policy}"
+      exit 1
+    esac
+    case "/${source}/${destination}/" in *'/../'*|*'//'*)
+      log.error "[www.pages] ERROR[features]: unsafe path: ${source}|${destination}"
+      exit 1
+    esac
+    [[ "${source}" != /* && "${destination}" != /* ]] || {
+      log.error "[www.pages] ERROR[features]: manifest paths must be repository-relative"
+      exit 1
+    }
+    [[ -f "${source}" ]] || {
+      log.error "[www.pages] ERROR[features]: missing source: ${source}"
+      exit 1
+    }
+    mkdir -p "$(dirname "${PATH_TO[publish]}/${destination}")"
+    install -m 0755 "${source}" "${PATH_TO[publish]}/${destination}"
+    log.info "[www.pages] installing ${source} as ${destination}"
+
+    [[ "${policy}" == feature ]] || continue
+    key="manifest_feature_${feature_index}"
+    load.runner.array_from_script "${PATH_TO[root]}/${source}" "FEATURE_CLI_FILES" "${key}_cli" "0"
+    for cli_ref in ${PKGS[${key}_cli]:-}; do
+      [[ "${cli_ref}" == *.sh && "${cli_ref}" != /* && "/${cli_ref}/" != *'/../'* ]] || {
+        log.error "[www.pages] ERROR[features]: unsafe CLI helper reference: cli/${cli_ref}"
+        exit 1
+      }
+      cli_source="${PATH_TO[root]}/cli/${cli_ref}"
+      cli_destination="${PATH_TO[publish]}/cli/${cli_ref}"
+      [[ -f "${cli_source}" ]] || {
+        log.error "[www.pages] ERROR[features]: missing CLI helper: cli/${cli_ref}"
+        exit 1
+      }
+      cli_mode="0755"
+      [[ "${cli_ref}" == lib/* || "${cli_ref}" == */common.sh ]] && cli_mode="0644"
+      mkdir -p "$(dirname "${cli_destination}")"
+      install -m "${cli_mode}" "${cli_source}" "${cli_destination}"
+      log.info "[www.pages] installing cli/${cli_ref}"
+    done
+    feature_index=$((feature_index + 1))
+  done < "${FEATURE_MANIFEST}"
+}
+
 publish.setup.features() {
   if [[ -f "setup/vlan.sh" ]]; then
     log.info "[www.pages] installing setup.vlan.sh"
@@ -383,6 +439,8 @@ publish.setup.features() {
   else
     log.warn "[www.pages] ${SETUP_VM_RESTORE_RUNNER} not found; skipping structured VM restore runner publish"
   fi
+
+  publish.manifest.features
 }
 
 validate.published.bash.extensions() {

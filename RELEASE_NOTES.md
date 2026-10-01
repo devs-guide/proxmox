@@ -20,7 +20,8 @@ lane.
   - local and remote QEMU VM restore
 
 Whole-GPU passthrough is intentionally excluded from `0.0.5` and remains the
-separately reviewed `0.0.6` candidate.
+separately reviewed `0.0.7` candidate. General local ZFS provisioning is the
+intervening `0.0.6` candidate.
 
 ## Highlights
 
@@ -114,7 +115,7 @@ The accepted release must have evidence for both supported lanes:
 - interrupted and resumed remote restore coverage;
 - successful second bootstrap runs on both lanes.
 
-## Deferred to 0.0.6
+## Deferred to 0.0.7
 
 The following existing feature-branch work is not part of this tag:
 

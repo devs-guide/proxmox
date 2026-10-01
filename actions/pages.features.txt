@@ -1,0 +1,3 @@
+# source|published destination|dependency policy
+setup/storage/zfs.sh|setup/storage/zfs.sh|feature
+setup/storage/zpool.config.sh|setup/storage/zpool.config.sh|feature
