@@ -76,7 +76,14 @@ case "${1:-}" in
       canmount="$(jq -r --arg dataset "${dataset}" '.datasets[]|select(.name==$dataset)|.properties.canmount' "${ZFS_TEST_CONFIG}")"
       [[ "${canmount}" == "on" ]] && printf 'yes\n' || printf 'no\n'
     elif [[ "${dataset}" == "${pool}" ]]; then
-      jq -r --arg property "${property}" '.pool.filesystem_properties[$property] // empty' "${ZFS_TEST_CONFIG}"
+      value="$(jq -r --arg property "${property}" '.pool.filesystem_properties[$property] // empty' "${ZFS_TEST_CONFIG}")"
+      if [[ "${property}" == "acltype" && -n "${ZFS_TEST_ACLTYPE_OVERRIDE:-}" ]]; then
+        printf '%s\n' "${ZFS_TEST_ACLTYPE_OVERRIDE}"
+      elif [[ "${property}:${value}" == "acltype:posixacl" ]]; then
+        printf 'posix\n'
+      else
+        printf '%s\n' "${value}"
+      fi
     elif [[ "${property}" == "mountpoint" ]]; then
       jq -r --arg dataset "${dataset}" '.datasets[]|select(.name==$dataset)|.mountpoint' "${ZFS_TEST_CONFIG}"
     else
@@ -513,6 +520,7 @@ PLAN="${TMP}/zpool.plan"
 jq -e '
   .plan_kind=="create" and .requires_signature_wipe==false and
   (.configuration_source|endswith("/work/zpool.config")) and
+  .configuration.pool.filesystem_properties.acltype=="posix" and
   (.commands.zpool_create|index("-f")|not) and
   (.commands.zpool_create|index("ashift=12")!=null) and
   (.commands.zpool_create|index("autotrim=off")!=null) and
@@ -531,7 +539,13 @@ printf '\n' >> "${CONFIG}"
 expect_failure bash -c 'source "$1"; zfs.plan.revalidate "$2"' _ "${HELPER}" "${PLAN}"
 mv "${TMP}/config.saved" "${CONFIG}"
 "${RUNNER}" verify --config "${CONFIG}" >/dev/null
-ok "dynamic planning, advisory-health tolerance, config invalidation, capacity estimate, dry-run, and verification"
+LEGACY_ACL_CONFIG="${TMP}/legacy-posixacl.config"
+jq '.pool.filesystem_properties.acltype="posixacl"' "${CONFIG}" > "${LEGACY_ACL_CONFIG}"
+ZFS_TEST_CONFIG="${LEGACY_ACL_CONFIG}" ZFS_TEST_ACLTYPE_OVERRIDE=posix \
+  "${RUNNER}" verify --config "${LEGACY_ACL_CONFIG}" >/dev/null
+ZFS_TEST_CONFIG="${LEGACY_ACL_CONFIG}" ZFS_TEST_ACLTYPE_OVERRIDE=nfsv4 \
+  expect_failure "${RUNNER}" verify --config "${LEGACY_ACL_CONFIG}"
+ok "dynamic planning, property alias normalization, config invalidation, capacity estimate, dry-run, and verification"
 
 PLAN_ID="$(jq -r '.plan_id' "${PLAN}")"
 "${RUNNER}" apply \

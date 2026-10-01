@@ -143,6 +143,11 @@ more than one OpenZFS-managed GPT entry, including a small reserved entry; this
 is expected and should not be replaced with a manually forced single-partition
 layout.
 
+Generated configurations use the canonical OpenZFS `acltype=posix` value.
+Existing reviewed configurations that contain the accepted `posixacl` alias
+remain valid: post-creation verification compares both representations as
+`posix`, but does not relax checks for `off`, `nfsv4`, or any other mismatch.
+
 Authoritative references:
 
 - [OpenZFS pool concepts](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolconcepts.7.html)

@@ -1222,7 +1222,7 @@ zfs.config.build() {
       pool:{
         name:$pool,allow_signature_wipe:($allow_wipe==1),
         properties:{ashift:12,autotrim:"off"},
-        filesystem_properties:{compression:"lz4",atime:"off",xattr:"sa",acltype:"posixacl",dnodesize:"auto",mountpoint:"none",canmount:"off"}
+        filesystem_properties:{compression:"lz4",atime:"off",xattr:"sa",acltype:"posix",dnodesize:"auto",mountpoint:"none",canmount:"off"}
       },
       selection:{
         filters:{transport:(if $transport=="any" then [] else [$transport] end),media:$media,size_bytes:$size_filter,avoided:$avoided,models:$models,serials:$serials},
@@ -1297,7 +1297,7 @@ zfs.config.validate.structure() {
     (.pool.filesystem_properties.compression | type=="string" and test("^(off|on|lz4|zstd(-[1-9][0-9]?)?|gzip(-[1-9])?)$")) and
     (.pool.filesystem_properties.atime == "on" or .pool.filesystem_properties.atime == "off") and
     (.pool.filesystem_properties.xattr == "sa" or .pool.filesystem_properties.xattr == "on" or .pool.filesystem_properties.xattr == "off") and
-    (.pool.filesystem_properties.acltype == "posixacl" or .pool.filesystem_properties.acltype == "nfsv4" or .pool.filesystem_properties.acltype == "off") and
+    (.pool.filesystem_properties.acltype == "posix" or .pool.filesystem_properties.acltype == "posixacl" or .pool.filesystem_properties.acltype == "nfsv4" or .pool.filesystem_properties.acltype == "off") and
     (.pool.filesystem_properties.dnodesize | type=="string" and test("^(auto|legacy|[0-9]+[kK])$")) and
     .pool.filesystem_properties.mountpoint == "none" and
     .pool.filesystem_properties.canmount == "off" and
@@ -1793,10 +1793,20 @@ zfs.expect.zpool.property() {
   [[ "${observed}" == "${expected}" ]] || zfs.die "Pool property ${property}: expected ${expected}, observed ${observed:-missing}"
 }
 
+zfs.property.value.canonical() {
+  local property="$1" value="$2"
+  case "${property}:${value}" in
+    acltype:posix|acltype:posixacl) printf 'posix\n' ;;
+    *) printf '%s\n' "${value}" ;;
+  esac
+}
+
 zfs.expect.zfs.property() {
-  local dataset="$1" property="$2" expected="$3" observed
+  local dataset="$1" property="$2" expected="$3" observed expected_canonical observed_canonical
   observed="$(zfs get -H -o value "${property}" "${dataset}" 2>/dev/null | head -n1)"
-  [[ "${observed}" == "${expected}" ]] || zfs.die "Dataset property ${dataset}:${property}: expected ${expected}, observed ${observed:-missing}"
+  expected_canonical="$(zfs.property.value.canonical "${property}" "${expected}")"
+  observed_canonical="$(zfs.property.value.canonical "${property}" "${observed}")"
+  [[ "${observed_canonical}" == "${expected_canonical}" ]] || zfs.die "Dataset property ${dataset}:${property}: expected ${expected}, observed ${observed:-missing}"
 }
 
 zfs.verify.config() {

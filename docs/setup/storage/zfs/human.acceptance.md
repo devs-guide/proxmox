@@ -178,7 +178,10 @@ Confirm:
   sequence; each contiguous vdev slice matches the approved bay layout.
 - No device occurs twice.
 - `ashift=12`, `compression=lz4`, `atime=off`, `xattr=sa`,
-  `acltype=posixacl`, `recordsize=1M`, and `dedup=off` are appropriate.
+  `acltype=posix`, `recordsize=1M`, and `dedup=off` are appropriate. Older
+  reviewed configurations may contain the accepted OpenZFS compatibility alias
+  `posixacl`; verification canonicalizes both values to `posix` while still
+  rejecting a genuinely different ACL mode.
 - `allow_signature_wipe` remains `false` unless a separate wipe has been
   explicitly approved.
 - A `single-hba` advisory, if present, has been reviewed against the actual
