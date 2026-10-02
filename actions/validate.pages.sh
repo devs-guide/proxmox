@@ -545,8 +545,8 @@ check_published_samba_runner_policy() {
 
   for needle in \
     'ensure.container.ansible' \
-    'Container Ansible ready' \
-    'Using existing container system Python' \
+    'ensure.ansible.for.context()' \
+    'Using container Python strategy=' \
     'Continue with Samba base setup and no shares' \
     'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' \
     'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' \
