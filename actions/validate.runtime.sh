@@ -17,6 +17,9 @@ files=(
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
+  "bootstrap/ansible.runtime.sh"
+  "tests/unit/ansible_runtime_policy_test.sh"
+  "tests/unit/debian_lxc_template_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network.sh"
@@ -469,8 +472,8 @@ if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
 fi
-if ! grep -q 'MANAGED_TARGET_PYTHON_HOME=' "${ROOT}/setup/lxc/samba.sh"; then
-  echo "[validate.runtime][error] setup/lxc/samba.sh must define MANAGED_TARGET_PYTHON_HOME before sourcing release.common.sh"
+if ! grep -q 'PROXMOX_RUNTIME_CONTEXT="container"' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh must declare the shared container runtime context"
   exit 1
 fi
 if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/lxc/samba.sh"; then
@@ -685,32 +688,24 @@ if grep -q 'ultra-lean samba-only' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must not present Samba-specific hardening labels"
   exit 1
 fi
-if ! grep -q 'debian-10-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 10 policy template"
-  exit 1
-fi
-if ! grep -q 'debian-11-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 11 policy template"
-  exit 1
-fi
-if ! grep -q 'debian-12-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 12 policy template"
-  exit 1
-fi
-if ! grep -q 'debian-13-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 13 policy template"
+if ! grep -q 'DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must support the PVE 6-9 Debian major matrix"
   exit 1
 fi
 if ! grep -q 'pveam available --section system' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must query live templates via pveam available --section system"
   exit 1
 fi
-if ! grep -q 'DEBIAN_LXC_TEMPLATE_BASE_URL' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must define an official Proxmox template base URL fallback"
+if ! grep -q 'DEBIAN_LXC_TEMPLATE_FILENAME_REGEX' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must validate live Debian template filenames"
   exit 1
 fi
-if ! grep -q 'official URL fallback' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must expose URL fallback policy entries when pveam hides older Debian templates"
+if ! grep -q 'template.remote.latest.from.major' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must select the latest live template per supported Debian major"
+  exit 1
+fi
+if grep -q 'official URL fallback' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must not advertise direct URL fallback downloads"
   exit 1
 fi
 if ! grep -q 'download_method:' "${ROOT}/setup/lxc/debian.sh"; then
@@ -773,8 +768,15 @@ if ! grep -q 'ANSIBLE_CORE_VERSION=' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must define ANSIBLE_CORE_VERSION before sourcing release.common.sh"
   exit 1
 fi
-if ! grep -q 'MANAGED_TARGET_PYTHON_HOME=' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must define MANAGED_TARGET_PYTHON_HOME before sourcing release.common.sh"
+if ! grep -q 'PROXMOX_RUNTIME_CONTEXT="host"' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must declare the shared host runtime context"
+  exit 1
+fi
+debian_preflight_complete_line="$(grep -nF 'Preflight complete. No changes were applied.' "${ROOT}/setup/lxc/debian.sh" | head -n1 | cut -d: -f1 || true)"
+debian_ansible_bootstrap_line="$(grep -nF 'ensure.managed.ansible' "${ROOT}/setup/lxc/debian.sh" | head -n1 | cut -d: -f1 || true)"
+if [[ -z "${debian_preflight_complete_line}" || -z "${debian_ansible_bootstrap_line}" ]] \
+  || ((debian_ansible_bootstrap_line <= debian_preflight_complete_line)); then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must defer Ansible/Python bootstrap until after shell-only preflight"
   exit 1
 fi
 echo "[validate.runtime][ok] setup/lxc/debian.sh exposes the structured Debian LXC runner contract"
@@ -1212,28 +1214,16 @@ if ! grep -q 'template_policy:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] ansible/group_vars/proxmox.yml must define proxmox_lxc_debian.template_policy"
   exit 1
 fi
-if ! grep -q 'debian-10-standard_10.7-1_amd64.tar.gz' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 10/Buster template"
+if ! grep -q 'filename_regex:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy must define the dynamic Debian filename contract"
   exit 1
 fi
-if ! grep -q 'debian-11-standard_11.7-1_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 11/Bullseye template"
+if ! grep -q 'selection: "latest_version_per_supported_major"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy must select the latest version per supported major"
   exit 1
 fi
-if ! grep -q 'debian-12-standard_12.12-1_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 12/Bookworm template"
-  exit 1
-fi
-if ! grep -q 'debian-13-standard_13.1-2_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 13/Trixie template"
-  exit 1
-fi
-if ! grep -q 'base_url: "https://download.proxmox.com/images/system"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy must include the official Proxmox images/system base_url"
-  exit 1
-fi
-if ! grep -q 'fallback_download_method: "url"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy must declare URL fallback download behavior"
+if ! grep -q 'allow_direct_url_fallback: false' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy must fail closed instead of using direct URL downloads"
   exit 1
 fi
 if ! grep -q 'access_profile: "local_only"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
@@ -1268,16 +1258,16 @@ if ! grep -q 'ensure.container.ansible()' "${ROOT}/bootstrap/release.common.sh";
   echo "[validate.runtime][error] release.common.sh must expose a container-safe Ansible bootstrap helper"
   exit 1
 fi
-if ! grep -q 'Using existing container system Python' "${ROOT}/bootstrap/release.common.sh"; then
-  echo "[validate.runtime][error] release.common.sh must prefer system python3 for container-local runners"
+if ! grep -q 'Using container Python strategy=' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must report the detected container Python strategy"
   exit 1
 fi
 if ! grep -q 'ensurepip --version' "${ROOT}/bootstrap/release.common.sh"; then
   echo "[validate.runtime][error] release.common.sh must verify ensurepip availability before building the container Ansible venv"
   exit 1
 fi
-if ! grep -q 'Removing incomplete container Ansible venv before rebuild' "${ROOT}/bootstrap/release.common.sh"; then
-  echo "[validate.runtime][error] release.common.sh must clean up incomplete container venvs after failed bootstrap attempts"
+if ! grep -q 'Removing incomplete or out-of-policy' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] release.common.sh must clean up incomplete or out-of-policy Ansible venvs"
   exit 1
 fi
 if ! grep -q 'select.ansible.bootstrap.python()' "${ROOT}/bootstrap/release.common.sh"; then
@@ -1292,6 +1282,63 @@ if ! grep -q 'python${python_mm}-venv' "${ROOT}/bootstrap/release.common.sh"; th
   echo "[validate.runtime][error] release.common.sh must install version-matched pythonX.Y-venv when system ensurepip is unavailable"
   exit 1
 fi
+echo "[validate.runtime] checking canonical managed Ansible dispatch..."
+for marker in \
+  '/opt/ansible-venv' \
+  'ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"' \
+  'PROXMOX_ANSIBLE_CORE_VERSION' \
+  'ansible.runtime.prepare()' \
+  'ANSIBLE_RUNTIME_VARS_PATH' \
+  'bootstrap_needs_target_python_build' \
+  'ansible.runtime.require()' \
+  'ansible.runtime.run()' \
+  'ansible_python_interpreter=${ANSIBLE_RUNTIME_TARGET_PYTHON'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/bootstrap/ansible.runtime.sh"; then
+    echo "[validate.runtime][error] canonical Ansible helper is missing marker: ${marker}"
+    exit 1
+  fi
+done
+for runner in \
+  setup/vlan.sh \
+  setup/network.sh \
+  setup/cli.codex.sh \
+  setup/lxc/debian.sh \
+  setup/lxc/samba.sh \
+  setup/lxc/network.sh \
+  setup/lxc/codex.sh \
+  setup/lxc/users.sh \
+  bootstrap/metal.sh; do
+  if ! grep -Fq 'ansible.runtime.run' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} bypasses canonical managed Ansible dispatch"
+    exit 1
+  fi
+done
+for runner in \
+  setup/vlan.sh \
+  setup/network.sh \
+  setup/cli.codex.sh \
+  setup/lxc/debian.sh \
+  setup/lxc/samba.sh \
+  setup/lxc/network.sh \
+  setup/lxc/codex.sh \
+  setup/lxc/users.sh; do
+  if grep -Eq '^(PYTHON_VERSION|PYTHON_MAJOR_MINOR|MANAGED_TARGET_PYTHON_HOME)=' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} duplicates canonical Python runtime policy"
+    exit 1
+  fi
+done
+if grep -Fq 'meta: end_play' "${ROOT}/ansible/debian/ansible.venv.yml"; then
+  echo "[validate.runtime][error] ansible.venv.yml still terminates the caller play"
+  exit 1
+fi
+if ! grep -Fq 'Validate canonical managed ansible-playbook after maintenance' "${ROOT}/ansible/debian/ansible.venv.yml"; then
+  echo "[validate.runtime][error] ansible.venv.yml does not validate the final canonical runtime"
+  exit 1
+fi
+echo "[validate.runtime][ok] production runners use the canonical managed Ansible runtime"
+echo "[validate.runtime] running platform/runtime policy matrix..."
+bash "${ROOT}/tests/unit/ansible_runtime_policy_test.sh"
+bash "${ROOT}/tests/unit/debian_lxc_template_policy_test.sh"
 if ! bash -u -c '
   log() { :; }
   log.error() { :; }
@@ -1303,7 +1350,6 @@ if ! bash -u -c '
 
   calls=()
   ensure.managed.ansible() { calls+=("managed-ansible"); }
-  ensure.managed.target.python() { calls+=("managed-target-python"); }
   fetch.playlist() { calls+=("playlist"); }
   fetch.groupvars() { calls+=("group-vars"); }
   merge.groupvars() { calls+=("merge"); }
@@ -1311,22 +1357,22 @@ if ! bash -u -c '
 
   SKIP_ANSIBLE=0
   maybe.run.ansible
-  [[ "${calls[*]}" == "managed-ansible managed-target-python playlist group-vars merge run" ]]
+  [[ "${calls[*]}" == "managed-ansible playlist group-vars merge run" ]]
 ' _ "${ROOT}/bootstrap/release.common.sh"; then
   echo "[validate.runtime][error] shared Ansible version policy or release bootstrap call order is invalid"
   exit 1
 fi
 echo "[validate.runtime][ok] shared Ansible version policy and release bootstrap call order are valid"
-if [[ "$(grep -Fc 'if ansible.venv.matches.policy; then' "${ROOT}/bootstrap/release.common.sh" || true)" -ne 2 ]]; then
-  echo "[validate.runtime][error] managed and container Ansible paths must share the version-policy predicate"
+if ! grep -q 'ensure.ansible.for.context()' "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] managed and container Ansible paths must share the detected runtime policy"
   exit 1
 fi
-if ! grep -q 'PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"' "${ROOT}/bootstrap/release.9.1.sh"; then
-  echo "[validate.runtime][error] bootstrap/release.9.1.sh must enable native system Python preference for Ansible bootstrap"
+if ! grep -q 'PROXMOX_RUNTIME_EXPECT_PVE_MAJOR="9"' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must declare the PVE 9 runtime contract"
   exit 1
 fi
-if ! grep -q 'SYSTEM_PYTHON_MIN_MINOR="12"' "${ROOT}/bootstrap/release.9.1.sh"; then
-  echo "[validate.runtime][error] bootstrap/release.9.1.sh must require system Python 3.12+ before skipping managed-target bootstrap"
+if ! grep -q 'PROXMOX_RUNTIME_EXPECT_DEBIAN_CODENAME="trixie"' "${ROOT}/bootstrap/release.9.1.sh"; then
+  echo "[validate.runtime][error] bootstrap/release.9.1.sh must declare the Trixie runtime contract"
   exit 1
 fi
 if grep -Fq 'proxmox_users_skip_container_safety_checks: "{{ proxmox_users_skip_container_safety_checks |' "${ROOT}/ansible/debian/users.yml"; then
@@ -1345,12 +1391,12 @@ if [[ "$(grep -Ec '^[[:space:]]+when: not proxmox_users_skip_container_safety_ch
   echo "[validate.runtime][error] users.yml must apply the effective container safety flag to all nine host safety tasks"
   exit 1
 fi
-if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must support official URL fallback template downloads"
+if ! grep -q 'Require a catalog-backed template download method' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must enforce catalog-backed template downloads"
   exit 1
 fi
-if ! grep -q "proxmox_lxc_debian_template_download_method == 'url'" "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must branch URL fallback downloads by template.download_method"
+if grep -q "proxmox_lxc_debian_template_download_method == 'url'" "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must not retain the direct URL fallback path"
   exit 1
 fi
 echo "[validate.runtime][ok] Debian LXC host/base playbooks include template, pct, SSH, and light-hardening safeguards"

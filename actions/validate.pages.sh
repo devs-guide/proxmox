@@ -60,6 +60,7 @@ FILES=(
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
+  "ansible.runtime.sh:bootstrap/ansible.runtime.sh"
   "setup.vlan.sh:setup/vlan.sh"
   "setup/network.sh:setup/network.sh"
   "setup.cli.codex.sh:setup/cli.codex.sh"
@@ -544,8 +545,8 @@ check_published_samba_runner_policy() {
 
   for needle in \
     'ensure.container.ansible' \
-    'Container Ansible ready' \
-    'Using existing container system Python' \
+    'ensure.ansible.for.context()' \
+    'Using container Python strategy=' \
     'Continue with Samba base setup and no shares' \
     'findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS' \
     'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' \
@@ -570,7 +571,6 @@ check_published_release91_bootstrap_policy() {
   local published_enterprise="${TMPDIR}/ansible/release/9.1/enterprise.yml"
   local playlist_runner_body=""
   local managed_ansible_line=""
-  local managed_target_line=""
   local fetch_playlist_line=""
   local run_playlist_line=""
   local needle
@@ -586,8 +586,8 @@ check_published_release91_bootstrap_policy() {
     'Disabling Proxmox enterprise apt sources before bootstrap update' \
     "enterprise\\.proxmox\\.com/debian/(pve|ceph)" \
     'ceph.release.gpg' \
-    'PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"' \
-    'SYSTEM_PYTHON_MIN_MINOR="12"'; do
+    'PROXMOX_RUNTIME_EXPECT_PVE_MAJOR="9"' \
+    'PROXMOX_RUNTIME_EXPECT_DEBIAN_CODENAME="trixie"'; do
     if ! grep -Fq -- "${needle}" "${published_bootstrap}"; then
       echo "[validate.pages][error] published 9.1 bootstrap is stale or missing bootstrap policy marker: ${needle}"
       rc=1
@@ -603,7 +603,7 @@ check_published_release91_bootstrap_policy() {
   for needle in \
     'select.ansible.bootstrap.python()' \
     'ansible.version.line.matches.policy()' \
-    'ansible-playbook [core ${ANSIBLE_CORE_VERSION}]' \
+    'ensure.ansible.for.context()' \
     'Using native system Python for Ansible bootstrap' \
     'Installing venv support for system Python' \
     'python${python_mm}-venv'; do
@@ -612,15 +612,14 @@ check_published_release91_bootstrap_policy() {
       rc=1
     fi
   done
-  if [[ "$(grep -Fc 'if ansible.venv.matches.policy; then' "${published_common}" || true)" -ne 2 ]]; then
-    echo "[validate.pages][error] published managed and container Ansible paths do not share the version-policy predicate"
+  if ! grep -Fq 'ansible.runtime.prepare "${runtime_context}"' "${published_common}"; then
+    echo "[validate.pages][error] published managed and container Ansible paths do not share the detected runtime policy"
     rc=1
   fi
 
   playlist_runner_body="$(sed -n '/^maybe\.run\.ansible() {$/,/^}$/p' "${published_common}")"
   for needle in \
     'ensure.managed.ansible' \
-    'ensure.managed.target.python' \
     'fetch.playlist' \
     'run.playlist'; do
     if ! grep -Fq -- "${needle}" <<< "${playlist_runner_body}"; then
@@ -630,12 +629,10 @@ check_published_release91_bootstrap_policy() {
   done
 
   managed_ansible_line="$(grep -nF 'ensure.managed.ansible' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
-  managed_target_line="$(grep -nF 'ensure.managed.target.python' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
   fetch_playlist_line="$(grep -nF 'fetch.playlist' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
   run_playlist_line="$(grep -nF 'run.playlist' <<< "${playlist_runner_body}" | head -n1 | cut -d: -f1 || true)"
-  if [[ -z "${managed_ansible_line}" || -z "${managed_target_line}" || -z "${fetch_playlist_line}" || -z "${run_playlist_line}" ]] \
-    || (( managed_ansible_line >= managed_target_line )) \
-    || (( managed_target_line >= fetch_playlist_line )) \
+  if [[ -z "${managed_ansible_line}" || -z "${fetch_playlist_line}" || -z "${run_playlist_line}" ]] \
+    || (( managed_ansible_line >= fetch_playlist_line )) \
     || (( fetch_playlist_line >= run_playlist_line )); then
     echo "[validate.pages][error] published maybe.run.ansible bootstrap call order is invalid"
     rc=1
@@ -653,6 +650,31 @@ check_published_release91_bootstrap_policy() {
     'ceph.release.gpg'; do
     if ! grep -q -- "${needle}" "${published_enterprise}"; then
       echo "[validate.pages][error] published 9.1 enterprise policy is stale or missing cleanup marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
+check_published_ansible_runtime_policy() {
+  local published_runtime="${TMPDIR}/ansible.runtime.sh"
+  local needle
+
+  if [[ ! -f "${published_runtime}" ]]; then
+    echo "[validate.pages][error] published ansible.runtime.sh was not fetched"
+    rc=1
+    return
+  fi
+  for needle in \
+    '/opt/ansible-venv' \
+    'ansible-playbook [core ${ANSIBLE_CORE_VERSION}]' \
+    'ansible.runtime.prepare()' \
+    'ANSIBLE_RUNTIME_VARS_PATH' \
+    'bootstrap_needs_target_python_build' \
+    'ansible.runtime.require()' \
+    'ansible.runtime.run()' \
+    'ansible_python_interpreter=${ANSIBLE_RUNTIME_TARGET_PYTHON'; do
+    if ! grep -Fq -- "${needle}" "${published_runtime}"; then
+      echo "[validate.pages][error] published Ansible runtime helper is missing marker: ${needle}"
       rc=1
     fi
   done
@@ -696,12 +718,11 @@ check_published_debian_lxc_policy() {
   fi
 
   for needle in \
-    'debian-10-standard_10.7-1_amd64.tar.gz' \
-    'debian-11-standard_11.7-1_amd64.tar.zst' \
-    'debian-12-standard_12.12-1_amd64.tar.zst' \
-    'debian-13-standard_13.1-2_amd64.tar.zst' \
-    'DEBIAN_LXC_TEMPLATE_BASE_URL' \
-    'official URL fallback' \
+    'DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)' \
+    'DEBIAN_LXC_TEMPLATE_FILENAME_REGEX' \
+    'template.remote.latest.from.major' \
+    'A refreshed pveam catalog is required' \
+    'latest live pveam catalog' \
     'show Debian ISO + web reference context' \
     'Detected host mountpoint passthrough candidates:' \
     'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' \
@@ -717,6 +738,14 @@ check_published_debian_lxc_policy() {
 
   if grep -q 'show Debian web references' "${published_runner}"; then
     echo "[validate.pages][error] published setup/lxc/debian.sh still has stale menu label: show Debian web references"
+    rc=1
+  fi
+  if grep -q 'official URL fallback' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/debian.sh still exposes direct URL fallback downloads"
+    rc=1
+  fi
+  if grep -q 'debian-13-standard_13.1-2_amd64.tar.zst' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/debian.sh still treats Trixie 13.1-2 as an operational pin"
     rc=1
   fi
 }
@@ -742,7 +771,8 @@ check_published_debian_lxc_playbook_policy() {
     'Append default /24 when static IPv4 selection is a bare address' \
     'Report effective static IPv4 payload before pct create' \
     'Assert effective static IPv4 and gateway syntax before pct create' \
-    'Report effective pct net0 string before pct create'; do
+    'Report effective pct net0 string before pct create' \
+    'Require a catalog-backed template download method'; do
     if ! grep -q -- "${needle}" "${published_lxc}"; then
       echo "[validate.pages][error] published debian.lxc.yml is stale or missing mountpoint marker: ${needle}"
       rc=1
@@ -756,6 +786,10 @@ check_published_debian_lxc_playbook_policy() {
 
   if grep -Fq "regex_search(\"'([^']+)'\", '\\1')" "${published_lxc}"; then
     echo "[validate.pages][error] published debian.lxc.yml still has list-prone rootfs capture-group regex path derivation"
+    rc=1
+  fi
+  if grep -q "proxmox_lxc_debian_template_download_method == 'url'" "${published_lxc}"; then
+    echo "[validate.pages][error] published debian.lxc.yml still includes direct URL template downloads"
     rc=1
   fi
 }
@@ -893,6 +927,7 @@ check_published_network_playbook_policy() {
 if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_samba_runner_policy
   check_published_release91_bootstrap_policy
+  check_published_ansible_runtime_policy
   check_published_users_policy
   check_published_debian_lxc_policy
   check_published_debian_lxc_playbook_policy

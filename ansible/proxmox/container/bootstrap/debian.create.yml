@@ -13,8 +13,9 @@
       vmid: 120
       hostname: "samba"
       pool: ""
-      # Example only. Validate with `pveam available --section system` at runtime.
-      ostemplate: "local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst"
+      # Required input. Resolve the newest compatible filename from
+      # `pveam available --section system` at runtime; do not pin a point release here.
+      ostemplate: null
       ostype: "debian"
       arch: "amd64"
       auth:
@@ -122,6 +123,7 @@
         that:
           - proxmox_lxc_effective.vmid | string | length > 0
           - proxmox_lxc_effective.hostname | string | length > 0
+          - proxmox_lxc_effective.ostemplate is not none
           - proxmox_lxc_effective.ostemplate | string | length > 0
           - proxmox_lxc_effective.rootfs.storage | string | length > 0
           - proxmox_lxc_effective.rootfs.size_gb | int > 0

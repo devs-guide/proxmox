@@ -36,17 +36,7 @@ ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
 ANSIBLE_CORE_VERSION="2.20.5"
 ANSIBLE_CORE_SPEC="ansible-core==${ANSIBLE_CORE_VERSION}"
-PYTHON_VERSION="3.12.3"
-PYTHON_MAJOR_MINOR="3.12"
-PYTHON_SOURCE_PREFIX="/usr/local"
-PYTHON_BIN="${PYTHON_SOURCE_PREFIX}/bin/python${PYTHON_MAJOR_MINOR}"
-PYTHON_SRC_DIR="${PYTHON_SOURCE_PREFIX}/src/Python-${PYTHON_VERSION}"
-PYTHON_SRC_ARCHIVE="${PYTHON_SRC_DIR}.tgz"
-PYTHON_SRC_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
-MANAGED_TARGET_PYTHON_HOME="/opt/ansible/py312"
-MANAGED_TARGET_PYTHON_PATH="${MANAGED_TARGET_PYTHON_HOME}/bin/python"
-MANAGED_TARGET_HANDOFF_MARKER="${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready"
-PYTHON_BOOTSTRAP_BIN=""
+PROXMOX_RUNTIME_CONTEXT="host"
 FEATURE_MODE="${1:-${PROXMOX_VLAN_MODE:-preflight}}"
 FEATURE_USE_DISCOVERY="${PROXMOX_VLAN_USE_DISCOVERY:-true}"
 FEATURE_BASELINE_BYPASS="${PROXMOX_FEATURE_SKIP_BASELINE_CHECK:-0}"
@@ -777,7 +767,7 @@ prepare.feature.files() {
 run.feature.playbook() {
   local playbook_path="$1"
   shift
-  "${ANSIBLE_VENV_BIN}" -i localhost, -c local -e "@${GROUP_VARS_PATH}" "$@" "${playbook_path}"
+  ansible.runtime.run -i localhost, -c local -e "@${GROUP_VARS_PATH}" "$@" "${playbook_path}"
 }
 
 write.vlan.extra.vars.file() {

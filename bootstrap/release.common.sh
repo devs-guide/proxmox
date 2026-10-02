@@ -7,9 +7,9 @@
 # this file directly from GitHub Pages. Keep this helper safe under
 # `set -u` by assigning conservative defaults when the caller did not provide
 # them. Caller-provided values remain authoritative.
-: "${PYTHON_VERSION:=3.12.3}"
-: "${PYTHON_MAJOR_MINOR:=3.12}"
-: "${PYTHON_SOURCE_PREFIX:=/usr/local}"
+: "${PYTHON_VERSION:=${PROXMOX_BOOTSTRAP_PYTHON_VERSION:-3.12.3}}"
+: "${PYTHON_MAJOR_MINOR:=${PYTHON_VERSION%.*}}"
+: "${PYTHON_SOURCE_PREFIX:=${PROXMOX_BOOTSTRAP_PYTHON_SOURCE_PREFIX:-/usr/local}}"
 : "${PYTHON_BIN:=${PYTHON_SOURCE_PREFIX}/bin/python${PYTHON_MAJOR_MINOR}}"
 : "${PYTHON_SRC_DIR:=${PYTHON_SOURCE_PREFIX}/src/Python-${PYTHON_VERSION}}"
 : "${PYTHON_SRC_ARCHIVE:=${PYTHON_SRC_DIR}.tgz}"
@@ -18,13 +18,39 @@
 : "${ANSIBLE_VENV_BIN:=${ANSIBLE_VENV}/bin/ansible-playbook}"
 : "${ANSIBLE_CORE_VERSION:=2.20.5}"
 : "${ANSIBLE_CORE_SPEC:=ansible-core==${ANSIBLE_CORE_VERSION}}"
-: "${MANAGED_TARGET_PYTHON_HOME:=/opt/ansible/py312}"
+: "${MANAGED_TARGET_PYTHON_HOME:=${PROXMOX_BOOTSTRAP_MANAGED_TARGET_PYTHON_HOME:-/opt/ansible/py312}}"
 : "${MANAGED_TARGET_PYTHON_PATH:=${MANAGED_TARGET_PYTHON_HOME}/bin/python}"
 : "${MANAGED_TARGET_HANDOFF_MARKER:=${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready}"
 : "${PYTHON_BOOTSTRAP_BIN:=}"
-: "${PREFER_SYSTEM_PYTHON_FOR_ANSIBLE:=0}"
 : "${SYSTEM_PYTHON_MIN_MAJOR:=3}"
 : "${SYSTEM_PYTHON_MIN_MINOR:=12}"
+: "${PROXMOX_RUNTIME_PYTHON_MIN_MAJOR:=${SYSTEM_PYTHON_MIN_MAJOR}}"
+: "${PROXMOX_RUNTIME_PYTHON_MIN_MINOR:=${SYSTEM_PYTHON_MIN_MINOR}}"
+
+source.ansible.runtime() {
+  local common_source="${BASH_SOURCE[0]:-}" common_dir="" runtime_path="" runtime_url=""
+
+  if [[ -n "${common_source}" && -f "${common_source}" ]]; then
+    common_dir="$(cd "$(dirname "${common_source}")" && pwd)"
+    if [[ "$(basename "${common_dir}")" == bootstrap && -r "${common_dir}/ansible.runtime.sh" ]]; then
+      # shellcheck source=bootstrap/ansible.runtime.sh
+      source "${common_dir}/ansible.runtime.sh"
+      return
+    fi
+  fi
+
+  runtime_path="${common_dir:-${TMP_DIR:-/tmp/proxmox-ansible-runtime}}/ansible.runtime.sh"
+  runtime_url="${PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}/ansible.runtime.sh"
+  mkdir -p "$(dirname "${runtime_path}")"
+  if ! wget -qO "${runtime_path}" "${runtime_url}"; then
+    log.error "Failed to fetch shared Ansible runtime helper: ${runtime_url}"
+    exit 10
+  fi
+  # shellcheck source=/tmp/proxmox-ansible-runtime/ansible.runtime.sh
+  source "${runtime_path}"
+}
+
+source.ansible.runtime
 
 require.root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -107,15 +133,7 @@ require.apt() {
 
 system.python.meets.minimum() {
   local python_bin="${1:-}"
-  [[ -n "${python_bin}" && -x "${python_bin}" ]] || return 1
-
-  "${python_bin}" - "$SYSTEM_PYTHON_MIN_MAJOR" "$SYSTEM_PYTHON_MIN_MINOR" <<'PY' >/dev/null 2>&1
-import sys
-
-major = int(sys.argv[1])
-minor = int(sys.argv[2])
-sys.exit(0 if sys.version_info[:2] >= (major, minor) else 1)
-PY
+  ansible.runtime.python.compatible "${python_bin}"
 }
 
 ensure.python.venv.support() {
@@ -131,32 +149,41 @@ ensure.python.venv.support() {
   python_mm="$("${python_bin}" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
   log "Installing venv support for system Python ${python_mm}..."
   apt-get update -y
-  apt-get install -y --no-install-recommends \
-    "python${python_mm}-venv"
+  if ! apt-get install -y --no-install-recommends "python${python_mm}-venv"; then
+    log "Version-specific venv package was unavailable; trying python3-venv..."
+    apt-get install -y --no-install-recommends python3-venv
+  fi
 
   "${python_bin}" -m ensurepip --version >/dev/null 2>&1
 }
 
 select.ansible.bootstrap.python() {
-  local system_python=""
-
-  if [[ "${PREFER_SYSTEM_PYTHON_FOR_ANSIBLE}" == "1" ]] && command -v python3 >/dev/null 2>&1; then
-    system_python="$(command -v python3)"
-    if system.python.meets.minimum "${system_python}"; then
-      ensure.python.venv.support "${system_python}"
-      PYTHON_BOOTSTRAP_BIN="${system_python}"
+  case "${ANSIBLE_RUNTIME_PYTHON_STRATEGY:-source_build}" in
+    existing_venv)
+      PYTHON_BOOTSTRAP_BIN="${ANSIBLE_RUNTIME_PYTHON}"
+      ;;
+    system)
+      ensure.python.venv.support "${ANSIBLE_RUNTIME_SYSTEM_PYTHON}"
+      PYTHON_BOOTSTRAP_BIN="${ANSIBLE_RUNTIME_SYSTEM_PYTHON}"
       log "Using native system Python for Ansible bootstrap: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
-      return
-    fi
-  fi
-
-  ensure.managed.target.python
+      ;;
+    managed_existing)
+      PYTHON_BOOTSTRAP_BIN="${MANAGED_TARGET_PYTHON_PATH}"
+      log "Using existing managed target Python for Ansible bootstrap: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+      ;;
+    source_existing|source_build)
+      ensure.managed.target.python
+      ;;
+    *)
+      log.error "Unsupported Ansible Python bootstrap strategy: ${ANSIBLE_RUNTIME_PYTHON_STRATEGY:-<empty>}"
+      exit 1
+      ;;
+  esac
 }
 
 ansible.version.line.matches.policy() {
   local version_line="${1:-}"
-
-  [[ "${version_line}" == "ansible-playbook [core ${ANSIBLE_CORE_VERSION}]" ]]
+  ansible.runtime.version.line.matches.policy "${version_line}"
 }
 
 ansible.venv.matches.policy() {
@@ -170,7 +197,69 @@ ansible.venv.matches.policy() {
   ansible.version.line.matches.policy "${version_line}"
 }
 
-ensure.python312() {
+acquire.ansible.bootstrap.lock() {
+  local lock_dir="${PROXMOX_ANSIBLE_LOCK_DIR:-/run/lock}"
+  local lock_path=""
+
+  if ! mkdir -p "${lock_dir}" 2>/dev/null; then
+    lock_dir="/tmp"
+  fi
+  lock_path="${lock_dir}/proxmox-ansible-bootstrap.lock"
+  if ! command -v flock >/dev/null 2>&1; then
+    log.error "flock is required to serialize the shared Ansible bootstrap."
+    exit 1
+  fi
+  exec {ANSIBLE_BOOTSTRAP_LOCK_FD}>"${lock_path}"
+  flock "${ANSIBLE_BOOTSTRAP_LOCK_FD}"
+}
+
+release.ansible.bootstrap.lock() {
+  if [[ -n "${ANSIBLE_BOOTSTRAP_LOCK_FD:-}" ]]; then
+    if command -v flock >/dev/null 2>&1; then
+      flock -u "${ANSIBLE_BOOTSTRAP_LOCK_FD}" || true
+    fi
+    exec {ANSIBLE_BOOTSTRAP_LOCK_FD}>&-
+    ANSIBLE_BOOTSTRAP_LOCK_FD=""
+  fi
+}
+
+python.source.cleanup.target.safe() {
+  local source_dir="${1:-}" version="${2:-}"
+  [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  case "${source_dir}" in
+    "/usr/local/src/Python-${version}"|"/opt/local/src/Python-${version}") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+cleanup.python.source.version() {
+  local version="${1:-}"
+  local source_dir="${PYTHON_SOURCE_PREFIX}/src/Python-${version}"
+  local source_archive="${source_dir}.tgz"
+
+  [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+  if ! python.source.cleanup.target.safe "${source_dir}" "${version}"; then
+    log "Skipping Python source cleanup outside the known install roots: ${source_dir}"
+    return 0
+  fi
+  if [[ -e "${source_dir}" && ! -L "${source_dir}" ]]; then
+    log "Removing verified Python source tree: ${source_dir}"
+    rm -rf -- "${source_dir}"
+  fi
+  if [[ -f "${source_archive}" && ! -L "${source_archive}" ]]; then
+    log "Removing verified Python source archive: ${source_archive}"
+    rm -f -- "${source_archive}"
+  fi
+}
+
+cleanup.python.source.artifacts() {
+  local version=""
+  for version in "${PYTHON_VERSION}" 3.12.3 3.13.5; do
+    cleanup.python.source.version "${version}"
+  done
+}
+
+ensure.fallback.python() {
   export DEBIAN_FRONTEND=noninteractive
   if command -v "python${PYTHON_MAJOR_MINOR}" >/dev/null 2>&1; then
     PYTHON_BOOTSTRAP_BIN="$(command -v "python${PYTHON_MAJOR_MINOR}")"
@@ -242,7 +331,7 @@ ensure.managed.target.python() {
     rm -rf "${MANAGED_TARGET_PYTHON_HOME}"
   fi
 
-  ensure.python312
+  ensure.fallback.python
   log "Creating managed target Python environment..."
   mkdir -p "$(dirname "${MANAGED_TARGET_PYTHON_HOME}")"
   "${PYTHON_BOOTSTRAP_BIN}" -m venv "${MANAGED_TARGET_PYTHON_HOME}"
@@ -253,83 +342,57 @@ ensure.managed.target.python() {
 
 ensure.container.python() {
   export DEBIAN_FRONTEND=noninteractive
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BOOTSTRAP_BIN="$(command -v python3)"
-    log "Using existing container system Python: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+  ansible.runtime.prepare container || exit $?
+  select.ansible.bootstrap.python
+  log "Using container Python strategy=${ANSIBLE_RUNTIME_PYTHON_STRATEGY}: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
+}
+
+ensure.ansible.for.context() {
+  local runtime_context="${1:-host}"
+  local runtime_label="${2:-managed}"
+
+  export DEBIAN_FRONTEND=noninteractive
+  acquire.ansible.bootstrap.lock
+  if ! ansible.runtime.prepare "${runtime_context}"; then
+    release.ansible.bootstrap.lock
+    exit 20
+  fi
+  ansible.runtime.report >&2
+
+  if ((ANSIBLE_RUNTIME_ANSIBLE_READY)); then
+    ansible.runtime.require
+    cleanup.python.source.artifacts
+    log "Using existing ${runtime_label} Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+    release.ansible.bootstrap.lock
     return
   fi
 
-  log "Installing container Python runtime prerequisites..."
-  apt-get update -y
-  apt-get install -y --no-install-recommends \
-    python3 \
-    python3-venv \
-    python3-apt \
-    ca-certificates
-
-  if ! command -v python3 >/dev/null 2>&1; then
-    log.error "python3 is still unavailable after installing container runtime prerequisites."
-    exit 1
-  fi
-
-  PYTHON_BOOTSTRAP_BIN="$(command -v python3)"
-  log "Using installed container system Python: $("${PYTHON_BOOTSTRAP_BIN}" --version 2>&1)"
-}
-
-ensure.managed.ansible() {
-  export DEBIAN_FRONTEND=noninteractive
-  if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
-    if ansible.venv.matches.policy; then
-      select.ansible.bootstrap.python
-      log "Using existing managed Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
-      return
-    fi
-    log "Existing managed Ansible is out of policy; rebuilding venv..."
+  if [[ -d "${ANSIBLE_VENV}" ]]; then
+    log "Removing incomplete or out-of-policy ${runtime_label} Ansible venv before rebuild..."
     rm -rf "${ANSIBLE_VENV}"
   fi
 
   select.ansible.bootstrap.python
-  log "Creating managed Ansible venv..."
+  log "Creating ${runtime_label} Ansible venv with strategy=${ANSIBLE_RUNTIME_PYTHON_STRATEGY}..."
   mkdir -p "${ANSIBLE_VENV}"
   "${PYTHON_BOOTSTRAP_BIN}" -m venv "${ANSIBLE_VENV}"
   "${ANSIBLE_VENV}/bin/pip" install --upgrade pip setuptools wheel
   "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
   "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
-  log "Managed Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+
+  ansible.runtime.prepare "${runtime_context}"
+  ansible.runtime.require
+  cleanup.python.source.artifacts
+  log "${runtime_label^} Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+  release.ansible.bootstrap.lock
+}
+
+ensure.managed.ansible() {
+  ensure.ansible.for.context "${PROXMOX_RUNTIME_CONTEXT:-host}" managed
 }
 
 ensure.container.ansible() {
-  export DEBIAN_FRONTEND=noninteractive
-  if [[ -x "${ANSIBLE_VENV_BIN}" ]]; then
-    if ansible.venv.matches.policy; then
-      ensure.container.python
-      log "Using existing container Ansible: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
-      return
-    fi
-    log "Existing container Ansible is out of policy; rebuilding venv..."
-    rm -rf "${ANSIBLE_VENV}"
-  fi
-
-  ensure.container.python
-
-  if ! "${PYTHON_BOOTSTRAP_BIN}" -m ensurepip --version >/dev/null 2>&1; then
-    log "Installing python3-venv for container runtime..."
-    apt-get update -y
-    apt-get install -y --no-install-recommends python3-venv
-  fi
-
-  if [[ -d "${ANSIBLE_VENV}" && ! -x "${ANSIBLE_VENV_BIN}" ]]; then
-    log "Removing incomplete container Ansible venv before rebuild..."
-    rm -rf "${ANSIBLE_VENV}"
-  fi
-
-  log "Creating container Ansible venv..."
-  mkdir -p "${ANSIBLE_VENV}"
-  "${PYTHON_BOOTSTRAP_BIN}" -m venv "${ANSIBLE_VENV}"
-  "${ANSIBLE_VENV}/bin/pip" install --upgrade pip setuptools wheel
-  "${ANSIBLE_VENV}/bin/pip" install --upgrade "${ANSIBLE_CORE_SPEC}" passlib
-  "${ANSIBLE_VENV}/bin/ansible-galaxy" collection install community.general:8.6.0
-  log "Container Ansible ready: $("${ANSIBLE_VENV_BIN}" --version | head -n1)"
+  ensure.ansible.for.context "${PROXMOX_RUNTIME_CONTEXT:-container}" container
 }
 
 fetch.playlist() {
@@ -450,7 +513,6 @@ fetch.playbook() {
 
 run.playlist() {
   log "Running ${RELEASE_LABEL} playlist via ansible..."
-  local ansible_bin="${ANSIBLE_VENV_BIN}"
   local extra_vars_args=("-e" "@${MERGED_GROUP_VARS_PATH}")
   while IFS= read -r line; do
     line="${line%%$'\r'}"
@@ -459,7 +521,7 @@ run.playlist() {
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
 
-    if ! "${ansible_bin}" -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
+    if ! ansible.runtime.run -i localhost, -c local "${extra_vars_args[@]}" "${TMP_DIR}/${line}"; then
       log.error "Ansible failed on playbook: ${line}"
       exit 1
     fi
@@ -473,9 +535,6 @@ maybe.run.ansible() {
     return
   fi
   ensure.managed.ansible
-  # The controller may use native system Python, but playlist modules retain
-  # the release-managed target interpreter contract.
-  ensure.managed.target.python
   fetch.playlist
   fetch.groupvars
   merge.groupvars
