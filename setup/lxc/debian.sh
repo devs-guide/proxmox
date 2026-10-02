@@ -31,16 +31,11 @@ NETBOOT_PATH="${PLAYBOOK_DEBIAN_DIR}/${NETBOOT_FILE}"
 SSH_POLICY_FILE="ssh.yml"
 SSH_POLICY_URL="${PAGES_BASE_URL}/ansible/debian/${SSH_POLICY_FILE}"
 SSH_POLICY_PATH="${PLAYBOOK_DEBIAN_DIR}/${SSH_POLICY_FILE}"
-DEBIAN_LXC_TEMPLATE_POLICY_VERSION="2026-05-02"
-DEBIAN_LXC_TEMPLATE_BASE_URL="${PROXMOX_LXC_DEBIAN_TEMPLATE_BASE_URL:-https://download.proxmox.com/images/system}"
+DEBIAN_LXC_TEMPLATE_POLICY_VERSION="2026-10-02"
+DEBIAN_LXC_TEMPLATE_BASE_URL="${PROXMOX_LXC_DEBIAN_TEMPLATE_BASE_URL:-http://download.proxmox.com/images/system}"
+DEBIAN_LXC_TEMPLATE_FILENAME_REGEX='^debian-([0-9]+)-standard_([0-9]+([.][0-9]+)*-[0-9]+([.][0-9]+)*)_amd64[.]tar[.](zst|xz|gz)$'
 DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)
 DEBIAN_LXC_TEMPLATE_CODENAME=(buster bullseye bookworm trixie)
-DEBIAN_LXC_TEMPLATE_NAME=(
-  "debian-10-standard_10.7-1_amd64.tar.gz"
-  "debian-11-standard_11.7-1_amd64.tar.zst"
-  "debian-12-standard_12.12-1_amd64.tar.zst"
-  "debian-13-standard_13.1-2_amd64.tar.zst"
-)
 DEBIAN_LXC_TEMPLATE_STATUS=(legacy oldstable stable-minus-one current)
 FEATURE_PLAYBOOKS=(
   "proxmox/container/debian.lxc.yml"
@@ -161,6 +156,8 @@ declare -a TEMPLATE_POLICY_NAME=()
 declare -a TEMPLATE_POLICY_LABEL=()
 declare -a TEMPLATE_POLICY_STATUS=()
 declare -a TEMPLATE_POLICY_AVAILABLE=()
+PVEAM_CATALOG_READY="false"
+PVEAM_CATALOG_ERROR=""
 declare -a STORAGE_NAME=()
 declare -a STORAGE_TYPE=()
 declare -a STORAGE_STATUS=()
@@ -192,6 +189,7 @@ SELECTED_TEMPLATE_NAME=""
 SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
 SELECTED_TEMPLATE_DOWNLOAD_METHOD="none"
 SELECTED_TEMPLATE_URL=""
+SELECTED_TEMPLATE_STATUS="unknown"
 SELECTED_ROOTFS_STORAGE=""
 SELECTED_ROOTFS_SIZE_GB=""
 SELECTED_CORES=""
@@ -291,8 +289,8 @@ collect.sudo.env.args() {
 
 is.true() {
   local value="${1:-}"
-  case "${value,,}" in
-    1|true|yes|y|on) return 0 ;;
+  case "${value}" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Yy]|[Oo][Nn]) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -738,13 +736,27 @@ discover.containers() {
   } > "${CONTAINERS_TSV_PATH}"
 }
 
+template.name.is.valid() {
+  local name="${1:-}"
+  [[ "${name}" =~ ${DEBIAN_LXC_TEMPLATE_FILENAME_REGEX} ]]
+}
+
 template.major.from.name() {
   local name="${1:-}"
-  if [[ "${name}" =~ ^debian-([0-9]+)-standard_ ]]; then
+  if template.name.is.valid "${name}"; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
-  printf '\n'
+  return 1
+}
+
+template.version.from.name() {
+  local name="${1:-}"
+  if template.name.is.valid "${name}"; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
 }
 
 template.codename.from.major() {
@@ -768,29 +780,20 @@ template.policy.index.from.major() {
   return 1
 }
 
-template.policy.name.from.major() {
-  local major="${1:-}" idx
-  if ! idx="$(template.policy.index.from.major "${major}")"; then
-    return 1
-  fi
-  printf '%s\n' "${DEBIAN_LXC_TEMPLATE_NAME[$idx]}"
+template.policy.url.from.name() {
+  local name="${1:-}"
+  template.name.is.valid "${name}" || return 1
+  printf '%s/%s\n' "${DEBIAN_LXC_TEMPLATE_BASE_URL%/}" "${name}"
 }
 
-template.policy.index.from.name() {
-  local name="${1:-}" i
-  for i in "${!DEBIAN_LXC_TEMPLATE_NAME[@]}"; do
-    if [[ "${DEBIAN_LXC_TEMPLATE_NAME[$i]}" == "${name}" ]]; then
-      printf '%s\n' "${i}"
+template.local.contains.name() {
+  local needle="${1:-}" item
+  for item in "${TEMPLATE_LOCAL[@]:-}"; do
+    if [[ "${item}" == "${needle}" ]]; then
       return 0
     fi
   done
   return 1
-}
-
-template.policy.url.from.name() {
-  local name="${1:-}"
-  [[ -n "${name}" ]] || return 1
-  printf '%s/%s\n' "${DEBIAN_LXC_TEMPLATE_BASE_URL%/}" "${name}"
 }
 
 template.remote.advertises.name() {
@@ -801,6 +804,26 @@ template.remote.advertises.name() {
     fi
   done
   return 1
+}
+
+template.remote.latest.from.major() {
+  local major="${1:-}" item item_major item_version
+  local -a matches=()
+
+  template.policy.index.from.major "${major}" >/dev/null 2>&1 || return 1
+  for item in "${TEMPLATE_REMOTE_RAW[@]:-}"; do
+    item_major="$(template.major.from.name "${item}" || true)"
+    if [[ "${item_major}" == "${major}" ]]; then
+      item_version="$(template.version.from.name "${item}" || true)"
+      [[ -n "${item_version}" ]] || continue
+      matches+=("${item_version}"$'\t'"${item}")
+    fi
+  done
+  ((${#matches[@]} > 0)) || return 1
+  printf '%s\n' "${matches[@]}" \
+    | sort -t $'\t' -k1,1V -k2,2 \
+    | tail -n1 \
+    | cut -f2
 }
 
 build.template.policy.view() {
@@ -815,10 +838,13 @@ build.template.policy.view() {
     major="${DEBIAN_LXC_TEMPLATE_MAJOR[$i]}"
     codename="$(template.codename.from.major "${major}")"
     label="${codename}:${major}"
-    name="${DEBIAN_LXC_TEMPLATE_NAME[$i]}"
     status="${DEBIAN_LXC_TEMPLATE_STATUS[$i]}"
     available="false"
-    if template.remote.advertises.name "${name}"; then
+    name=""
+    if is.true "${PVEAM_CATALOG_READY}"; then
+      name="$(template.remote.latest.from.major "${major}" || true)"
+    fi
+    if [[ -n "${name}" ]]; then
       available="true"
       TEMPLATE_REMOTE+=("${name}")
     fi
@@ -830,12 +856,15 @@ build.template.policy.view() {
 }
 
 discover.local.templates() {
+  local file name
   TEMPLATE_LOCAL=()
   if [[ -d /var/lib/vz/template/cache ]]; then
     while IFS= read -r file; do
       [[ -n "${file}" ]] || continue
-      TEMPLATE_LOCAL+=("${file}")
-    done < <(find /var/lib/vz/template/cache -maxdepth 1 -type f -print 2>/dev/null | xargs -n1 basename 2>/dev/null | grep -i '^debian' || true)
+      name="${file##*/}"
+      template.name.is.valid "${name}" || continue
+      TEMPLATE_LOCAL+=("${name}")
+    done < <(find /var/lib/vz/template/cache -maxdepth 1 -type f -print 2>/dev/null | sort -V)
   fi
 
   mkdir -p "${FACTS_DIR}"
@@ -849,17 +878,39 @@ discover.local.templates() {
 }
 
 discover.remote.templates() {
+  local update_output="" catalog_output="" section name _rest
   TEMPLATE_REMOTE_RAW=()
+  PVEAM_CATALOG_READY="false"
+  PVEAM_CATALOG_ERROR=""
 
-  if ! pveam update >/dev/null 2>&1; then
-    log "Warning: pveam update failed; continuing with current available catalog."
+  if ! update_output="$(pveam update 2>&1)"; then
+    PVEAM_CATALOG_ERROR="pveam update failed: ${update_output:-no diagnostic output}"
+    log "Warning: ${PVEAM_CATALOG_ERROR}"
+    build.template.policy.view
+    return 1
   fi
 
-  while IFS= read -r name; do
-    [[ -n "${name}" ]] || continue
-    TEMPLATE_REMOTE_RAW+=("${name}")
-  done < <(pveam available --section system 2>/dev/null | awk 'NR>1 {print $2}' | grep -E '^debian-[0-9]+-standard_.*amd64\.tar\.(zst|gz)$' || true)
+  if ! catalog_output="$(pveam available --section system 2>&1)"; then
+    PVEAM_CATALOG_ERROR="pveam available failed: ${catalog_output:-no diagnostic output}"
+    log "Warning: ${PVEAM_CATALOG_ERROR}"
+    build.template.policy.view
+    return 1
+  fi
 
+  while read -r section name _rest; do
+    [[ "${section}" == "system" ]] || continue
+    template.name.is.valid "${name:-}" || continue
+    TEMPLATE_REMOTE_RAW+=("${name}")
+  done <<< "${catalog_output}"
+
+  if ((${#TEMPLATE_REMOTE_RAW[@]} == 0)); then
+    PVEAM_CATALOG_ERROR="refreshed pveam catalog contains no supported amd64 Debian templates"
+    log "Warning: ${PVEAM_CATALOG_ERROR}"
+    build.template.policy.view
+    return 1
+  fi
+
+  PVEAM_CATALOG_READY="true"
   build.template.policy.view
 }
 
@@ -870,6 +921,10 @@ show.raw.remote.templates() {
   fi
 
   printf '\nRaw pveam Debian template list (policy version: %s):\n' "${DEBIAN_LXC_TEMPLATE_POLICY_VERSION}" >&3
+  printf '  catalog ready: %s\n' "${PVEAM_CATALOG_READY}" >&3
+  if [[ -n "${PVEAM_CATALOG_ERROR}" ]]; then
+    printf '  catalog error: %s\n' "${PVEAM_CATALOG_ERROR}" >&3
+  fi
   if ((${#TEMPLATE_REMOTE_RAW[@]} == 0)); then
     printf '  (no Debian templates currently advertised by pveam)\n' >&3
   else
@@ -1196,144 +1251,155 @@ select.existing.container() {
   SELECTED_HOSTNAME="${CT_HOSTNAMES[$idx]}"
 }
 
-select.template.interactive() {
-  local -a options=()
-  local choice idx policy_name policy_available policy_status policy_desc
+set.selected.template() {
+  local name="${1:-}" method="${2:-}" status="${3:-unknown}"
+  template.name.is.valid "${name}" || {
+    log.error "Refusing invalid Debian template filename: ${name:-unset}"
+    return 1
+  }
+  SELECTED_TEMPLATE_NAME="${name}"
+  SELECTED_TEMPLATE_DOWNLOAD_METHOD="${method}"
+  SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="$([[ "${method}" == "pveam" ]] && printf true || printf false)"
+  SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${name}")"
+  SELECTED_TEMPLATE_STATUS="${status}"
+}
+
+require.live.template.catalog() {
+  if is.true "${PVEAM_CATALOG_READY}"; then
+    return 0
+  fi
+  log.error "A refreshed pveam catalog is required to select a remote Debian template."
+  log.error "${PVEAM_CATALOG_ERROR:-pveam catalog status is unavailable}"
+  log.error "Run: pveam update && pveam available --section system"
+  return 1
+}
+
+select.template.noninteractive() {
+  local latest="" major=""
 
   if [[ -n "${DEFAULT_TEMPLATE}" ]]; then
-    SELECTED_TEMPLATE_NAME="${DEFAULT_TEMPLATE}"
-    if printf '%s\n' "${TEMPLATE_LOCAL[@]:-}" | grep -Fxq "${DEFAULT_TEMPLATE}"; then
-      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="local"
-      SELECTED_TEMPLATE_URL=""
+    template.name.is.valid "${DEFAULT_TEMPLATE}" || {
+      log.error "PROXMOX_LXC_DEBIAN_TEMPLATE is not a valid amd64 Debian template filename: ${DEFAULT_TEMPLATE}"
+      exit 1
+    }
+    major="$(template.major.from.name "${DEFAULT_TEMPLATE}")"
+    template.policy.index.from.major "${major}" >/dev/null 2>&1 || {
+      log.error "Debian ${major} is not supported by this runner. Supported: ${DEBIAN_LXC_TEMPLATE_MAJOR[*]}."
+      exit 1
+    }
+    if template.local.contains.name "${DEFAULT_TEMPLATE}"; then
+      set.selected.template "${DEFAULT_TEMPLATE}" local local
       return 0
     fi
-
-    discover.remote.templates
+    discover.remote.templates || true
+    require.live.template.catalog || exit 1
     if template.remote.advertises.name "${DEFAULT_TEMPLATE}"; then
-      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="pveam"
-      SELECTED_TEMPLATE_URL=""
+      latest="$(template.remote.latest.from.major "${major}")"
+      set.selected.template "${DEFAULT_TEMPLATE}" pveam "$([[ "${DEFAULT_TEMPLATE}" == "${latest}" ]] && printf latest || printf catalog-non-current)"
       return 0
     fi
-
-    if template.policy.index.from.name "${DEFAULT_TEMPLATE}" >/dev/null 2>&1; then
-      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="url"
-      SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${DEFAULT_TEMPLATE}")"
-      return 0
-    fi
-
-    log.error "Template ${DEFAULT_TEMPLATE} is not in local cache, is not currently advertised by pveam, and is not in the Debian LXC policy fallback list."
+    log.error "Template ${DEFAULT_TEMPLATE} is neither local nor advertised by the refreshed pveam catalog."
     exit 1
   fi
 
-  if [[ -n "${DEFAULT_TEMPLATE_MAJOR}" ]]; then
-    if ! SELECTED_TEMPLATE_NAME="$(template.policy.name.from.major "${DEFAULT_TEMPLATE_MAJOR}")"; then
-      log.error "Unsupported PROXMOX_LXC_DEBIAN_TEMPLATE_MAJOR=${DEFAULT_TEMPLATE_MAJOR}. Supported: 10 11 12 13."
-      exit 1
-    fi
-
-    if printf '%s\n' "${TEMPLATE_LOCAL[@]:-}" | grep -Fxq "${SELECTED_TEMPLATE_NAME}"; then
-      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="local"
-      SELECTED_TEMPLATE_URL=""
-      return 0
-    fi
-
-    discover.remote.templates
-    if template.remote.advertises.name "${SELECTED_TEMPLATE_NAME}"; then
-      SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="pveam"
-      SELECTED_TEMPLATE_URL=""
-      return 0
-    fi
-
-    SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
-    SELECTED_TEMPLATE_DOWNLOAD_METHOD="url"
-    SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${SELECTED_TEMPLATE_NAME}")"
-    return 0
+  template.policy.index.from.major "${DEFAULT_TEMPLATE_MAJOR}" >/dev/null 2>&1 || {
+    log.error "Non-interactive create mode requires PROXMOX_LXC_DEBIAN_TEMPLATE or a supported PROXMOX_LXC_DEBIAN_TEMPLATE_MAJOR (${DEBIAN_LXC_TEMPLATE_MAJOR[*]})."
+    exit 1
+  }
+  discover.remote.templates || true
+  require.live.template.catalog || exit 1
+  latest="$(template.remote.latest.from.major "${DEFAULT_TEMPLATE_MAJOR}" || true)"
+  [[ -n "${latest}" ]] || {
+    log.error "The refreshed pveam catalog has no amd64 Debian ${DEFAULT_TEMPLATE_MAJOR} template."
+    exit 1
+  }
+  if template.local.contains.name "${latest}"; then
+    set.selected.template "${latest}" local latest
+  else
+    set.selected.template "${latest}" pveam latest
   fi
+}
 
-  if ((${#TEMPLATE_LOCAL[@]} > 0)); then
-    for idx in "${!TEMPLATE_LOCAL[@]}"; do
-      options+=("${TEMPLATE_LOCAL[$idx]} | local")
-    done
-    options+=("show Debian ISO + web reference context")
-    options+=("abort")
-    choice="$(menu.tty "Select local Debian LXC template:" "${options[@]}")"
-    if ((choice == ${#options[@]})); then
-      log.error "Operator aborted template selection."
-      exit 1
-    fi
-    if ((choice == ${#options[@]} - 1)); then
-      show.iso.context
-      options=()
-      for idx in "${!TEMPLATE_LOCAL[@]}"; do
-        options+=("${TEMPLATE_LOCAL[$idx]} | local")
-      done
-      options+=("abort")
-      choice="$(menu.tty "Select local Debian LXC template:" "${options[@]}")"
-      if ((choice == ${#options[@]})); then
-        log.error "Operator aborted template selection."
-        exit 1
-      fi
-    fi
-    idx=$((choice - 1))
-    SELECTED_TEMPLATE_NAME="${TEMPLATE_LOCAL[$idx]}"
-    SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="false"
-    SELECTED_TEMPLATE_DOWNLOAD_METHOD="local"
-    SELECTED_TEMPLATE_URL=""
+select.template.interactive() {
+  local -a options=() option_names=() option_methods=() option_statuses=()
+  local choice idx policy_name policy_status policy_desc local_name local_major latest_for_major
+
+  if [[ -n "${DEFAULT_TEMPLATE}" || -n "${DEFAULT_TEMPLATE_MAJOR}" ]]; then
+    select.template.noninteractive
     return 0
   fi
 
   show.iso.context
-  discover.remote.templates
-  ((${#TEMPLATE_POLICY_NAME[@]} > 0)) || {
-    log.error "No Debian template policy entries are configured."
+  discover.remote.templates || true
+
+  for idx in "${!TEMPLATE_POLICY_NAME[@]}"; do
+    [[ "${TEMPLATE_POLICY_AVAILABLE[$idx]}" == "true" ]] || continue
+    policy_name="${TEMPLATE_POLICY_NAME[$idx]}"
+    policy_status="${TEMPLATE_POLICY_STATUS[$idx]}"
+    policy_desc="latest live pveam catalog"
+    [[ "${policy_status}" == "legacy" ]] && policy_desc="${policy_desc} / legacy"
+    if template.local.contains.name "${policy_name}"; then
+      options+=("${TEMPLATE_POLICY_LABEL[$idx]} | ${policy_name} | local cache / latest")
+      option_methods+=("local")
+    else
+      options+=("${TEMPLATE_POLICY_LABEL[$idx]} | ${policy_name} | ${policy_desc}")
+      option_methods+=("pveam")
+    fi
+    option_names+=("${policy_name}")
+    option_statuses+=("latest")
+  done
+
+  for local_name in "${TEMPLATE_LOCAL[@]:-}"; do
+    local_major="$(template.major.from.name "${local_name}" || true)"
+    [[ -n "${local_major}" ]] || continue
+    template.policy.index.from.major "${local_major}" >/dev/null 2>&1 || continue
+    latest_for_major="$(template.remote.latest.from.major "${local_major}" || true)"
+    [[ "${local_name}" != "${latest_for_major}" ]] || continue
+    options+=("$(template.codename.from.major "${local_major}"):${local_major} | ${local_name} | local cache / non-current")
+    option_names+=("${local_name}")
+    option_methods+=("local")
+    option_statuses+=("non-current")
+  done
+
+  if ((${#option_names[@]} == 0)); then
+    log.error "No valid local template or refreshed pveam Debian template is available."
+    log.error "${PVEAM_CATALOG_ERROR:-The live catalog contained no supported Debian major.}"
+    log.error "Run: pveam update && pveam available --section system"
     exit 1
-  }
+  fi
+
+  options+=("show raw pveam Debian template list")
+  option_names+=("")
+  option_methods+=("show_raw")
+  option_statuses+=("")
+  options+=("show Debian ISO + web reference context")
+  option_names+=("")
+  option_methods+=("show_iso")
+  option_statuses+=("")
+  options+=("abort")
+  option_names+=("")
+  option_methods+=("abort")
+  option_statuses+=("")
 
   while true; do
-    options=()
-    for idx in "${!TEMPLATE_POLICY_NAME[@]}"; do
-      policy_name="${TEMPLATE_POLICY_NAME[$idx]}"
-      policy_available="${TEMPLATE_POLICY_AVAILABLE[$idx]}"
-      policy_status="${TEMPLATE_POLICY_STATUS[$idx]}"
-      if [[ "${policy_available}" == "true" ]]; then
-        policy_desc="remote download via pveam"
-        if [[ "${policy_status}" == "legacy" ]]; then
-          policy_desc="remote download via pveam / legacy"
-        fi
-      else
-        policy_desc="official URL fallback (not currently advertised by pveam)"
-      fi
-      options+=("${TEMPLATE_POLICY_LABEL[$idx]} | ${policy_name} | ${policy_desc}")
-    done
-    options+=("show raw pveam Debian template list")
-    options+=("abort")
-
-    choice="$(menu.tty "Select Debian LXC template to download:" "${options[@]}")"
-    if ((choice == ${#options[@]})); then
-      log.error "Operator aborted remote template selection."
-      exit 1
-    fi
-    if ((choice == ${#options[@]} - 1)); then
-      show.raw.remote.templates
-      continue
-    fi
-
+    choice="$(menu.tty "Select Debian LXC template:" "${options[@]}")"
     idx=$((choice - 1))
-    SELECTED_TEMPLATE_NAME="${TEMPLATE_POLICY_NAME[$idx]}"
-    SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING="true"
-    if [[ "${TEMPLATE_POLICY_AVAILABLE[$idx]}" == "true" ]]; then
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="pveam"
-      SELECTED_TEMPLATE_URL=""
-    else
-      SELECTED_TEMPLATE_DOWNLOAD_METHOD="url"
-      SELECTED_TEMPLATE_URL="$(template.policy.url.from.name "${SELECTED_TEMPLATE_NAME}")"
-    fi
-    return 0
+    case "${option_methods[$idx]}" in
+      show_raw)
+        show.raw.remote.templates
+        ;;
+      show_iso)
+        show.iso.context
+        ;;
+      abort)
+        log.error "Operator aborted template selection."
+        exit 1
+        ;;
+      local|pveam)
+        set.selected.template "${option_names[$idx]}" "${option_methods[$idx]}" "${option_statuses[$idx]}"
+        return 0
+        ;;
+    esac
   done
 }
 
@@ -1499,13 +1565,27 @@ collect.hardening.selection() {
 }
 
 confirm.selection() {
+  local selected_template_major="" selected_template_version=""
+  local selected_catalog_source="none"
+  if [[ -n "${SELECTED_TEMPLATE_NAME:-}" ]]; then
+    selected_template_major="$(template.major.from.name "${SELECTED_TEMPLATE_NAME}" || true)"
+    selected_template_version="$(template.version.from.name "${SELECTED_TEMPLATE_NAME}" || true)"
+  fi
+  case "${SELECTED_TEMPLATE_DOWNLOAD_METHOD:-none}" in
+    pveam) selected_catalog_source="live pveam" ;;
+    local) selected_catalog_source="local cache" ;;
+  esac
   printf '\nProposed Debian LXC action:\n' >&3
   printf '  mode:             %s\n' "${FEATURE_MODE}" >&3
   printf '  operation:        %s\n' "${SELECTED_OPERATION}" >&3
   printf '  ctid:             %s\n' "${SELECTED_CTID}" >&3
   printf '  hostname:         %s\n' "${SELECTED_HOSTNAME:-unchanged}" >&3
   printf '  template:         %s\n' "${SELECTED_TEMPLATE_NAME:-existing}" >&3
+  printf '  Debian major:     %s\n' "${selected_template_major:-existing}" >&3
+  printf '  template version: %s\n' "${selected_template_version:-existing}" >&3
+  printf '  catalog source:   %s\n' "${selected_catalog_source}" >&3
   printf '  template method:  %s\n' "${SELECTED_TEMPLATE_DOWNLOAD_METHOD:-none}" >&3
+  printf '  template status:  %s\n' "${SELECTED_TEMPLATE_STATUS:-unknown}" >&3
   if [[ -n "${SELECTED_TEMPLATE_URL:-}" ]]; then
     printf '  template url:     %s\n' "${SELECTED_TEMPLATE_URL}" >&3
   fi
@@ -1583,10 +1663,13 @@ collect.operator.selection() {
       log.error "Interactive UI unavailable. Set PROXMOX_LXC_DEBIAN_OPERATION and related env vars."
       exit 1
     }
-    [[ "${SELECTED_OPERATION}" != "create" || -n "${SELECTED_TEMPLATE_NAME}" ]] || {
-      log.error "Non-interactive create mode requires PROXMOX_LXC_DEBIAN_TEMPLATE."
-      exit 1
-    }
+    if [[ "${SELECTED_OPERATION}" == "create" ]]; then
+      [[ -n "${DEFAULT_TEMPLATE}" || -n "${DEFAULT_TEMPLATE_MAJOR}" ]] || {
+        log.error "Non-interactive create mode requires PROXMOX_LXC_DEBIAN_TEMPLATE or PROXMOX_LXC_DEBIAN_TEMPLATE_MAJOR."
+        exit 1
+      }
+      select.template.noninteractive
+    fi
     [[ -n "${SELECTED_CTID}" ]] || SELECTED_CTID="$(next.available.ctid)"
     if [[ "${SELECTED_OPERATION}" == "use_existing" ]]; then
       SELECTED_EXISTING_CTID="${SELECTED_CTID}"
@@ -1636,6 +1719,7 @@ proxmox_lxc_debian_operator_selection:
     name: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_NAME}")
     download_if_missing: $(bool.yaml "${SELECTED_TEMPLATE_DOWNLOAD_IF_MISSING}")
     download_method: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_DOWNLOAD_METHOD}")
+    status: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_STATUS}")
     url: $(yaml.scalar.or.null "${SELECTED_TEMPLATE_URL}")
     storage: "local"
   resources:
@@ -1776,4 +1860,7 @@ main() {
   run.debian.feature
 }
 
-main "$@"
+case "${PROXMOX_LXC_DEBIAN_SOURCE_ONLY:-0}" in
+  1|true|yes|y|on) ;;
+  *) main "$@" ;;
+esac
