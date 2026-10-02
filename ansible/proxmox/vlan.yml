@@ -1,5 +1,5 @@
 ---
-- name: "[proxmox]: manage VLAN-aware data bridge feature"
+- name: "[proxmox]: manage discovered data bridge feature"
   hosts: localhost
   connection: local
   become: true
@@ -17,19 +17,21 @@
     proxmox_vlan_legacy_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"
     proxmox_vlan_vmbr1_safe_defaults:
       management:
-        bridge: "vmbr0"
+        bridge: null
         nic: null
         ip_cidr: null
         gateway: null
         gui_port: 8006
       data:
-        bridge: "vmbr1"
+        bridge: null
         nic: null
         expected_driver: null
         expected_pci: null
-        bridge_vlan_aware: true
+        expected_mac: null
+        link_mode: "untagged"
+        bridge_vlan_aware: false
         bridge_fd: 2
-        bridge_vids: "10 20 30 40"
+        bridge_vids: ""
         host_ip: null
       safety:
         require_oob_console: true
@@ -38,6 +40,7 @@
         require_data_nic_no_ip: true
         require_ifreload_dry_run: true
         normalize_legacy_bridge_fd_zero: true
+        allow_disconnected_link: false
         oob_console_ack: false
       workloads:
         migrate: false
@@ -251,6 +254,24 @@
                     true
                   )
               }}
+            expected_mac: >-
+              {{
+                proxmox_vlan.data.expected_mac
+                | default(
+                    proxmox_vlan_selection.data.expected_mac
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_mac),
+                    true
+                  )
+              }}
+            link_mode: >-
+              {{
+                proxmox_vlan.data.link_mode
+                | default(
+                    proxmox_vlan_selection.data.link_mode
+                    | default(proxmox_vlan_vmbr1_safe_defaults.data.link_mode),
+                    true
+                  )
+              }}
             bridge_vlan_aware: >-
               {{
                 proxmox_vlan.data.bridge_vlan_aware
@@ -349,6 +370,19 @@
           - proxmox_vlan_effective.data.nic | length > 0
         fail_msg: "No data NIC was resolved for proxmox_vlan.data.nic."
 
+    - name: Assert data bridge and physical link mode were explicitly resolved
+      assert:
+        that:
+          - proxmox_vlan_effective.data.bridge is string
+          - proxmox_vlan_effective.data.bridge | length > 0
+          - proxmox_vlan_effective.data.link_mode in ['untagged', 'vlan-aware']
+          - >-
+            (proxmox_vlan_effective.data.link_mode == 'vlan-aware')
+            == (proxmox_vlan_effective.data.bridge_vlan_aware | bool)
+        fail_msg: >-
+          Data bridge/link mode is incomplete or inconsistent. Use setup/vlan.sh to
+          discover the host, select a NIC, and explicitly choose untagged or VLAN-aware.
+
     - name: Assert data bridge differs from management bridge
       assert:
         that:
@@ -390,6 +424,7 @@
         that:
           - proxmox_vlan_vid_tokens | length > 0
         fail_msg: "VLAN ID list is empty."
+      when: proxmox_vlan_effective.data.bridge_vlan_aware | bool
 
     - name: Assert VLAN token syntax is valid for ifupdown2
       assert:
@@ -397,15 +432,7 @@
           - (proxmox_vlan_vid_tokens | select('match', '^[0-9]+(-[0-9]+)?$') | list | length) == (proxmox_vlan_vid_tokens | length)
         fail_msg: >-
           VLAN tokens must be numeric IDs or ranges (for example: 10 20 30-40).
-
-    - name: Assert management plane remains on vmbr0
-      assert:
-        that:
-          - proxmox_vlan_effective.management.bridge == 'vmbr0'
-        fail_msg: >-
-          This feature is scoped to hosts whose management plane stays on vmbr0.
-          Resolved bridge: {{ proxmox_vlan_effective.management.bridge }}
-      when: proxmox_vlan_effective.safety.require_management_unchanged | bool
+      when: proxmox_vlan_effective.data.bridge_vlan_aware | bool
 
     - name: Assert discovered management bridge matches effective bridge
       assert:
@@ -477,6 +504,24 @@
       when:
         - proxmox_vlan_effective.data.expected_pci is not none
         - (proxmox_vlan_effective.data.expected_pci | string) | length > 0
+
+    - name: Assert discovered permanent/current MAC matches expected MAC
+      assert:
+        that:
+          - >-
+            (proxmox_vlan_data_nic_record.permanent_mac | default('', true) | lower)
+            == (proxmox_vlan_effective.data.expected_mac | lower)
+            or
+            (proxmox_vlan_data_nic_record.mac | default('', true) | lower)
+            == (proxmox_vlan_effective.data.expected_mac | lower)
+        fail_msg: >-
+          Data NIC MAC mismatch for {{ proxmox_vlan_effective.data.nic }}.
+          Expected {{ proxmox_vlan_effective.data.expected_mac }}, found permanent={{
+          proxmox_vlan_data_nic_record.permanent_mac | default('unknown', true) }} current={{
+          proxmox_vlan_data_nic_record.mac | default('unknown', true) }}.
+      when:
+        - proxmox_vlan_effective.data.expected_mac is not none
+        - (proxmox_vlan_effective.data.expected_mac | string) | length > 0
 
     - name: Assert vmbr1 is not already defined outside the managed block
       assert:
@@ -878,6 +923,29 @@
               remediation_stdout={{ proxmox_vlan_attachment_remediation.stdout | default('') }};
               remediation_stderr={{ proxmox_vlan_attachment_remediation.stderr | default('') }}.
           when: proxmox_vlan_mode == 'apply'
+
+        - name: Read selected data NIC carrier after apply
+          command:
+            argv:
+              - cat
+              - "/sys/class/net/{{ proxmox_vlan_effective.data.nic }}/carrier"
+          register: proxmox_vlan_data_carrier_after_apply
+          changed_when: false
+          failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Require data-link carrier after apply unless explicitly overridden
+          assert:
+            that:
+              - proxmox_vlan_data_carrier_after_apply.rc == 0
+              - proxmox_vlan_data_carrier_after_apply.stdout | trim == '1'
+            fail_msg: >-
+              The selected data NIC has no carrier after apply. Connect the physical
+              data link and retry, or explicitly set
+              PROXMOX_VLAN_ALLOW_DISCONNECTED_DATA_LINK=true when staging offline.
+          when:
+            - proxmox_vlan_mode == 'apply'
+            - not (proxmox_vlan_effective.safety.allow_disconnected_link | default(false) | bool)
 
         - name: Report post-apply attachment summary
           debug:

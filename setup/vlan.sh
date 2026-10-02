@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-## Manual Proxmox VLAN feature runner.
+## Discovery-led Proxmox data-bridge feature runner (untagged or VLAN-aware).
 ## Local usage:
-##   ./setup/vlan.sh [preflight|write|apply]
+##   ./setup/vlan.sh [preflight|probe|write|apply]
 ## Published usage:
 ##   wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash
 
@@ -46,22 +46,27 @@ FACTS_DIR="${PROXMOX_VLAN_FACTS_DIR:-/etc/ansible/proxmox/facts}"
 HARDWARE_FACTS_PATH="${PROXMOX_VLAN_HARDWARE_FACTS_PATH:-${FACTS_DIR}/hardware.yml}"
 HARDWARE_NICS_TSV="${PROXMOX_VLAN_HARDWARE_NICS_TSV:-${FACTS_DIR}/hardware.nics.tsv}"
 VLAN_SELECTION_PATH="${PROXMOX_VLAN_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
-DEFAULT_DATA_BRIDGE="${PROXMOX_VLAN_DATA_BRIDGE:-vmbr1}"
-DEFAULT_BRIDGE_VIDS="${PROXMOX_VLAN_BRIDGE_VIDS:-10 20 30 40}"
+DEFAULT_DATA_BRIDGE="${PROXMOX_VLAN_DATA_BRIDGE:-}"
+DEFAULT_LINK_MODE="${PROXMOX_VLAN_LINK_MODE:-untagged}"
+DEFAULT_BRIDGE_VIDS="${PROXMOX_VLAN_BRIDGE_VIDS:-}"
+PROBE_SECONDS="${PROXMOX_VLAN_PROBE_SECONDS:-3}"
 ALLOW_VLAN_1="${PROXMOX_VLAN_ALLOW_VLAN_1:-false}"
 ALLOW_ALL_VLAN_RANGE="${PROXMOX_VLAN_ALLOW_ALL_VLAN_RANGE:-false}"
 ALLOW_SAME_MANAGEMENT_AND_DATA_NIC="${PROXMOX_VLAN_ALLOW_SAME_MANAGEMENT_AND_DATA_NIC:-false}"
 ALLOW_DATA_NIC_WITH_HOST_IP="${PROXMOX_VLAN_ALLOW_DATA_NIC_WITH_HOST_IP:-false}"
 ALLOW_DATA_NIC_BRIDGE_MEMBER="${PROXMOX_VLAN_ALLOW_DATA_NIC_BRIDGE_MEMBER:-false}"
+ALLOW_DISCONNECTED_DATA_LINK="${PROXMOX_VLAN_ALLOW_DISCONNECTED_DATA_LINK:-false}"
 
 declare -a NIC_IFACE=()
 declare -a NIC_ROLE=()
 declare -a NIC_SCORE=()
 declare -a NIC_SPEED=()
+declare -a NIC_SUPPORTED_SPEED=()
 declare -a NIC_DRIVER=()
 declare -a NIC_PCI=()
 declare -a NIC_PCI_LABEL=()
 declare -a NIC_MAC=()
+declare -a NIC_PERMANENT_MAC=()
 declare -a NIC_IP=()
 declare -a NIC_BRIDGE_MEMBER=()
 declare -a NIC_OPERSTATE=()
@@ -75,9 +80,11 @@ MGMT_GATEWAY=""
 MGMT_GUI_PORT="8006"
 SELECTED_DATA_NIC=""
 SELECTED_DATA_BRIDGE=""
+SELECTED_DATA_LINK_MODE=""
 SELECTED_DATA_BRIDGE_VIDS=""
 SELECTED_DATA_DRIVER=""
 SELECTED_DATA_PCI=""
+SELECTED_DATA_MAC=""
 SELECTED_DATA_HOST_IP="null"
 SELECTION_OOB_ACK="false"
 
@@ -127,10 +134,10 @@ require.proxmox() {
 
 require.valid.mode() {
   case "${FEATURE_MODE}" in
-    preflight|write|apply) ;;
+    preflight|probe|write|apply) ;;
     *)
       log.error "Unsupported mode: ${FEATURE_MODE}"
-      log.error "Use one of: preflight, write, apply"
+      log.error "Use one of: preflight, probe, write, apply"
       exit 1
       ;;
   esac
@@ -161,7 +168,7 @@ require.baseline.ready() {
 }
 
 require.oob.ack() {
-  if [[ "${FEATURE_MODE}" == "preflight" ]]; then
+  if [[ "${FEATURE_MODE}" == "preflight" || "${FEATURE_MODE}" == "probe" ]]; then
     return
   fi
 
@@ -246,13 +253,18 @@ bool.yaml() {
 nic.speed.class() {
   local driver="${1:-}"
   local speed="${2:-}"
+  local supported_speed="${3:-}"
 
-  if [[ "${speed}" =~ ^[0-9]+$ ]]; then
-    if (( speed >= 10000 )); then
+  if [[ "${speed}" =~ ^[0-9]+$ ]] && (( speed >= 10000 )); then
+      printf '10GbE-class (linked)'
+      return
+  fi
+  if [[ "${supported_speed}" =~ ^[0-9]+$ ]]; then
+    if (( supported_speed >= 10000 )); then
       printf '10GbE-class'
       return
     fi
-    if (( speed >= 1000 )); then
+    if (( supported_speed >= 1000 )); then
       printf '1GbE-class'
       return
     fi
@@ -293,29 +305,30 @@ nic.recommendation.label() {
 }
 
 build.management.snapshot() {
-  local default_route_device
+  local default_route_device master_path port
   default_route_device="$(ip route show default | awk 'NR==1 {print $5}')"
   MGMT_GATEWAY="$(ip route show default | awk 'NR==1 {print $3}')"
 
-  if [[ "${default_route_device}" =~ ^vmbr[0-9]+$ ]]; then
+  if [[ -d "/sys/class/net/${default_route_device}/bridge" ]]; then
     MGMT_BRIDGE="${default_route_device}"
-  else
-    MGMT_BRIDGE="vmbr0"
+  elif [[ -L "/sys/class/net/${default_route_device}/master" ]]; then
+    master_path="$(readlink -f "/sys/class/net/${default_route_device}/master")"
+    MGMT_BRIDGE="$(basename "${master_path}")"
+  elif [[ -n "${default_route_device}" ]]; then
+    MGMT_BRIDGE="${default_route_device}"
   fi
 
-  MGMT_NIC="$(
-    bridge link 2>/dev/null \
-      | awk -v bridge="${MGMT_BRIDGE}" '
-          $0 ~ (" master " bridge " ") {
-            nic=$2
-            sub(/@.*/, "", nic)
-            sub(/:/, "", nic)
-            print nic
-            exit
-          }
-        '
-  )"
-  if [[ -z "${MGMT_NIC}" && -n "${default_route_device}" && ! "${default_route_device}" =~ ^vmbr[0-9]+$ ]]; then
+  MGMT_NIC=""
+  if [[ -d "/sys/class/net/${MGMT_BRIDGE}/brif" ]]; then
+    for port in /sys/class/net/"${MGMT_BRIDGE}"/brif/*; do
+      [[ -e "${port}" ]] || continue
+      if [[ -e "/sys/class/net/$(basename "${port}")/device" ]]; then
+        MGMT_NIC="$(basename "${port}")"
+        break
+      fi
+    done
+  fi
+  if [[ -z "${MGMT_NIC}" && -e "/sys/class/net/${default_route_device}/device" ]]; then
     MGMT_NIC="${default_route_device}"
   fi
 
@@ -323,6 +336,20 @@ build.management.snapshot() {
   if [[ -z "${MGMT_IP_CIDR}" && -n "${MGMT_NIC}" ]]; then
     MGMT_IP_CIDR="$(ip -o -4 addr show dev "${MGMT_NIC}" 2>/dev/null | awk 'NR==1 {print $4}')"
   fi
+}
+
+suggest.data.bridge() {
+  local bridge_number=1 candidate=""
+  while ((bridge_number < 4096)); do
+    candidate="vmbr${bridge_number}"
+    if [[ ! -e "/sys/class/net/${candidate}" ]] \
+      && ! grep -qE "^[[:space:]]*(auto|iface)[[:space:]]+${candidate}([[:space:]]|$)" /etc/network/interfaces 2>/dev/null; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    bridge_number=$((bridge_number + 1))
+  done
+  return 1
 }
 
 load.management.from.hardware.facts() {
@@ -384,7 +411,7 @@ PY
 
 load.nic.summary() {
   local row field_count
-  local iface role score speed driver pci pci_label mac ip_cidr bridge_member operstate carrier reason
+  local iface role score speed supported_speed driver pci pci_label mac permanent_mac ip_cidr bridge_member operstate carrier reason
   [[ -f "${HARDWARE_NICS_TSV}" ]] || {
     log.error "Missing NIC summary: ${HARDWARE_NICS_TSV}"
     exit 1
@@ -394,10 +421,12 @@ load.nic.summary() {
   NIC_ROLE=()
   NIC_SCORE=()
   NIC_SPEED=()
+  NIC_SUPPORTED_SPEED=()
   NIC_DRIVER=()
   NIC_PCI=()
   NIC_PCI_LABEL=()
   NIC_MAC=()
+  NIC_PERMANENT_MAC=()
   NIC_IP=()
   NIC_BRIDGE_MEMBER=()
   NIC_OPERSTATE=()
@@ -418,17 +447,21 @@ load.nic.summary() {
     role=""
     score=""
     speed=""
+    supported_speed=""
     driver=""
     pci=""
     pci_label=""
     mac=""
+    permanent_mac=""
     ip_cidr=""
     bridge_member=""
     operstate=""
     carrier=""
     reason=""
 
-    if [[ "${field_count}" -ge 13 ]]; then
+    if [[ "${field_count}" -ge 15 ]]; then
+      IFS=$'\t' read -r iface role score speed supported_speed driver pci pci_label mac permanent_mac ip_cidr bridge_member operstate carrier reason <<< "${row}"
+    elif [[ "${field_count}" -ge 13 ]]; then
       IFS=$'\t' read -r iface role score speed driver pci pci_label mac ip_cidr bridge_member operstate carrier reason <<< "${row}"
     else
       IFS=$'\t' read -r iface role score speed driver pci mac ip_cidr bridge_member operstate carrier reason <<< "${row}"
@@ -439,10 +472,12 @@ load.nic.summary() {
     NIC_ROLE+=("${role:-other}")
     NIC_SCORE+=("${score:-0}")
     NIC_SPEED+=("${speed:-"-"}")
+    NIC_SUPPORTED_SPEED+=("${supported_speed:-"-"}")
     NIC_DRIVER+=("${driver:-"-"}")
     NIC_PCI+=("${pci:-"-"}")
     NIC_PCI_LABEL+=("${pci_label:-"-"}")
     NIC_MAC+=("${mac:-"-"}")
+    NIC_PERMANENT_MAC+=("${permanent_mac:-"-"}")
     NIC_IP+=("${ip_cidr:-"-"}")
     NIC_BRIDGE_MEMBER+=("${bridge_member:-"-"}")
     NIC_OPERSTATE+=("${operstate:-"-"}")
@@ -466,6 +501,71 @@ lookup.nic.index() {
     fi
   done
   return 1
+}
+
+resolve.selected.nic.identity() {
+  local candidate_path candidate candidate_pci candidate_mac candidate_permanent matches resolved=""
+
+  for candidate_path in /sys/class/net/*; do
+    [[ -e "${candidate_path}/device" ]] || continue
+    candidate="$(basename "${candidate_path}")"
+    candidate_pci="$(basename "$(readlink -f "${candidate_path}/device")")"
+    candidate_mac="$(cat "${candidate_path}/address" 2>/dev/null || true)"
+    candidate_permanent="$(ethtool -P "${candidate}" 2>/dev/null | awk '{print $3}' || true)"
+    matches=1
+
+    if [[ -n "${SELECTED_DATA_PCI}" && "${SELECTED_DATA_PCI}" != "-" && "${candidate_pci}" != "${SELECTED_DATA_PCI}" ]]; then
+      matches=0
+    fi
+    if [[ -n "${SELECTED_DATA_MAC}" && "${SELECTED_DATA_MAC}" != "-" \
+      && "${candidate_mac,,}" != "${SELECTED_DATA_MAC,,}" \
+      && "${candidate_permanent,,}" != "${SELECTED_DATA_MAC,,}" ]]; then
+      matches=0
+    fi
+    if ((matches == 1)); then
+      if [[ -n "${resolved}" ]]; then
+        log.error "Stable NIC identity matched more than one interface (${resolved}, ${candidate})."
+        exit 1
+      fi
+      resolved="${candidate}"
+    fi
+  done
+
+  [[ -n "${resolved}" ]] || {
+    log.error "Selected NIC identity no longer exists (pci=${SELECTED_DATA_PCI:-unknown}, mac=${SELECTED_DATA_MAC:-unknown})."
+    exit 1
+  }
+  if [[ "${resolved}" != "${SELECTED_DATA_NIC}" ]]; then
+    log "Resolved renamed data NIC ${SELECTED_DATA_NIC} -> ${resolved} from stable PCI/MAC identity."
+    SELECTED_DATA_NIC="${resolved}"
+  fi
+}
+
+probe.selected.data.nic() {
+  local was_up=0
+  if ip -o link show dev "${SELECTED_DATA_NIC}" | grep -q '<[^>]*UP'; then
+    was_up=1
+  fi
+
+  restore.probed.nic() {
+    if ((was_up == 0)); then
+      ip link set dev "${SELECTED_DATA_NIC}" down >/dev/null 2>&1 || true
+    fi
+  }
+  trap restore.probed.nic EXIT INT TERM
+
+  log "Temporarily bringing ${SELECTED_DATA_NIC} up for ${PROBE_SECONDS}s; original state will be restored."
+  if ! ip link set dev "${SELECTED_DATA_NIC}" up; then
+    log.error "Unable to bring selected data NIC up for probing."
+    exit 1
+  fi
+  sleep "${PROBE_SECONDS}"
+  ip -details link show dev "${SELECTED_DATA_NIC}" >&2 || true
+  ethtool "${SELECTED_DATA_NIC}" >&2 || true
+
+  restore.probed.nic
+  trap - EXIT INT TERM
+  log "Temporary probe complete; ${SELECTED_DATA_NIC} administrative state restored."
 }
 
 validate.bridge.vids() {
@@ -542,11 +642,22 @@ validate.selection() {
     log.error "Selected NIC (${SELECTED_DATA_NIC}) already belongs to bridge ${selected_bridge_member} and policy forbids this."
     exit 1
   fi
-  [[ "${SELECTED_DATA_BRIDGE}" =~ ^vmbr[0-9]+$ ]] || {
-    log.error "Data bridge must match vmbr<id>; got: ${SELECTED_DATA_BRIDGE}"
+  [[ "${SELECTED_DATA_BRIDGE}" =~ ^[a-zA-Z0-9_.:-]+$ ]] || {
+    log.error "Data bridge contains unsupported characters: ${SELECTED_DATA_BRIDGE}"
     exit 1
   }
-  validate.bridge.vids "${SELECTED_DATA_BRIDGE_VIDS}"
+  case "${SELECTED_DATA_LINK_MODE}" in
+    untagged)
+      SELECTED_DATA_BRIDGE_VIDS=""
+      ;;
+    vlan-aware)
+      validate.bridge.vids "${SELECTED_DATA_BRIDGE_VIDS}"
+      ;;
+    *)
+      log.error "Data link mode must be untagged or vlan-aware; got: ${SELECTED_DATA_LINK_MODE}"
+      exit 1
+      ;;
+  esac
 }
 
 choose.data.nic.interactive() {
@@ -565,7 +676,7 @@ choose.data.nic.interactive() {
       continue
     fi
 
-    speed_class="$(nic.speed.class "${NIC_DRIVER[$i]}" "${NIC_SPEED[$i]}")"
+    speed_class="$(nic.speed.class "${NIC_DRIVER[$i]}" "${NIC_SPEED[$i]}" "${NIC_SUPPORTED_SPEED[$i]}")"
     recommend_label="$(nic.recommendation.label "${NIC_ROLE[$i]}" "${NIC_SCORE[$i]}" "${NIC_DRIVER[$i]}")"
     state_label="${NIC_OPERSTATE[$i]}"
     if [[ "${NIC_CARRIER[$i]}" == "0" && "${state_label}" != "-" ]]; then
@@ -598,15 +709,20 @@ choose.data.nic.interactive() {
   SELECTED_DATA_NIC="${NIC_IFACE[$i]}"
   SELECTED_DATA_DRIVER="${NIC_DRIVER[$i]}"
   SELECTED_DATA_PCI="${NIC_PCI[$i]}"
+  SELECTED_DATA_MAC="${NIC_PERMANENT_MAC[$i]}"
+  if [[ -z "${SELECTED_DATA_MAC}" || "${SELECTED_DATA_MAC}" == "-" ]]; then
+    SELECTED_DATA_MAC="${NIC_MAC[$i]}"
+  fi
 }
 
 select.mode.interactive() {
   local choice
-  choice="$(menu.tty "Select VLAN execution mode (current: ${FEATURE_MODE}):" "preflight (validate only)" "write (write config + dry-run reload)" "apply (write + reload)")"
+  choice="$(menu.tty "Select data-bridge execution mode (current: ${FEATURE_MODE}):" "preflight (read-only validation)" "probe (temporarily bring selected link up, then restore)" "write (write config + dry-run reload)" "apply (write + reload + verify/rollback)")"
   case "${choice}" in
     1) FEATURE_MODE="preflight" ;;
-    2) FEATURE_MODE="write" ;;
-    3) FEATURE_MODE="apply" ;;
+    2) FEATURE_MODE="probe" ;;
+    3) FEATURE_MODE="write" ;;
+    4) FEATURE_MODE="apply" ;;
     *) log.error "Invalid mode selection"; exit 1 ;;
   esac
 }
@@ -629,11 +745,14 @@ proxmox_vlan_operator_selection:
     nic: $(yaml.quote "${SELECTED_DATA_NIC}")
     expected_driver: $(yaml.scalar.or.null "${SELECTED_DATA_DRIVER}")
     expected_pci: $(yaml.scalar.or.null "${SELECTED_DATA_PCI}")
-    bridge_vlan_aware: true
+    expected_mac: $(yaml.scalar.or.null "${SELECTED_DATA_MAC}")
+    link_mode: $(yaml.quote "${SELECTED_DATA_LINK_MODE}")
+    bridge_vlan_aware: $(if [[ "${SELECTED_DATA_LINK_MODE}" == "vlan-aware" ]]; then printf true; else printf false; fi)
     bridge_vids: $(yaml.quote "${SELECTED_DATA_BRIDGE_VIDS}")
     host_ip: ${SELECTED_DATA_HOST_IP}
   safety:
     oob_console_ack: ${SELECTION_OOB_ACK}
+    allow_disconnected_link: $(if is.true "${ALLOW_DISCONNECTED_DATA_LINK}"; then printf true; else printf false; fi)
 EOF
   log "Persisted operator selection: ${VLAN_SELECTION_PATH}"
 }
@@ -651,7 +770,8 @@ collect.operator.selection() {
   load.nic.summary
   build.management.snapshot
   load.management.from.hardware.facts
-  SELECTED_DATA_BRIDGE="${DEFAULT_DATA_BRIDGE}"
+  SELECTED_DATA_BRIDGE="${DEFAULT_DATA_BRIDGE:-$(suggest.data.bridge)}"
+  SELECTED_DATA_LINK_MODE="${DEFAULT_LINK_MODE}"
   SELECTED_DATA_BRIDGE_VIDS="${DEFAULT_BRIDGE_VIDS}"
 
   if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
@@ -674,10 +794,18 @@ collect.operator.selection() {
 
     choose.data.nic.interactive
     SELECTED_DATA_BRIDGE="$(prompt.tty "Enter data bridge name" "${SELECTED_DATA_BRIDGE}")"
-    SELECTED_DATA_BRIDGE_VIDS="$(prompt.tty "Enter VLAN IDs/ranges (space separated)" "${SELECTED_DATA_BRIDGE_VIDS}")"
+    confirm_choice="$(menu.tty "Select physical data-link mode:" "untagged (no VLAN filtering; unmanaged-switch friendly)" "VLAN-aware trunk")"
+    case "${confirm_choice}" in
+      1) SELECTED_DATA_LINK_MODE="untagged"; SELECTED_DATA_BRIDGE_VIDS="" ;;
+      2)
+        SELECTED_DATA_LINK_MODE="vlan-aware"
+        SELECTED_DATA_BRIDGE_VIDS="$(prompt.tty "Enter VLAN IDs/ranges (space separated)" "${SELECTED_DATA_BRIDGE_VIDS:-10}")"
+        ;;
+      *) log.error "Invalid data-link mode selection."; exit 1 ;;
+    esac
     select.mode.interactive
 
-    if [[ "${FEATURE_MODE}" == "preflight" ]]; then
+    if [[ "${FEATURE_MODE}" == "preflight" || "${FEATURE_MODE}" == "probe" ]]; then
       SELECTION_OOB_ACK="false"
       FEATURE_OOB_ACK="${FEATURE_OOB_ACK:-NO}"
     else
@@ -700,9 +828,13 @@ collect.operator.selection() {
     if [[ -n "${selected_index}" ]]; then
       SELECTED_DATA_DRIVER="${NIC_DRIVER[$selected_index]}"
       SELECTED_DATA_PCI="${NIC_PCI[$selected_index]}"
+      SELECTED_DATA_MAC="${NIC_PERMANENT_MAC[$selected_index]}"
+      if [[ -z "${SELECTED_DATA_MAC}" || "${SELECTED_DATA_MAC}" == "-" ]]; then
+        SELECTED_DATA_MAC="${NIC_MAC[$selected_index]}"
+      fi
     fi
 
-    if [[ "${FEATURE_MODE}" == "preflight" ]]; then
+    if [[ "${FEATURE_MODE}" == "preflight" || "${FEATURE_MODE}" == "probe" ]]; then
       SELECTION_OOB_ACK="false"
     else
       if is.true "${FEATURE_OOB_ACK}"; then
@@ -715,6 +847,7 @@ collect.operator.selection() {
   fi
 
   require.valid.mode
+  resolve.selected.nic.identity
   validate.selection
   write.selection.file
 }
@@ -800,7 +933,12 @@ run.vlan.feature() {
   collect.operator.selection
   require.oob.ack
 
-  log "Running Proxmox VLAN feature in mode=${FEATURE_MODE}..."
+  if [[ "${FEATURE_MODE}" == "probe" ]]; then
+    probe.selected.data.nic
+    return 0
+  fi
+
+  log "Running Proxmox data-bridge feature in mode=${FEATURE_MODE}..."
   write.vlan.extra.vars.file
   run.feature.playbook \
     "${VLAN_PLAYBOOK_PATH}" \

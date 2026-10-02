@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fail() { printf '[validate.lxc.samba][error] %s\n' "$*" >&2; exit 1; }
+ok() { printf '[validate.lxc.samba][ok] %s\n' "$*"; }
+
+SHELL_FILES=(
+  "${ROOT}/setup/vlan.sh"
+  "${ROOT}/setup/network.sh"
+  "${ROOT}/setup/firewall.sh"
+  "${ROOT}/setup/lxc/debian.sh"
+  "${ROOT}/setup/lxc/samba.sh"
+  "${ROOT}/setup/lxc/storage.sh"
+  "${ROOT}/setup/lxc/egress.sh"
+)
+for path in "${SHELL_FILES[@]}"; do [[ -f "${path}" ]] || fail "missing ${path#${ROOT}/}"; done
+bash -n "${SHELL_FILES[@]}"
+ok 'shell syntax'
+
+HARDWARE="${ROOT}/ansible/proxmox/helper/hardware.yml"
+VLAN="${ROOT}/ansible/proxmox/vlan.yml"
+NETWORK="${ROOT}/setup/network.sh"
+UPDATE="${ROOT}/ansible/proxmox/network.update.yml"
+SAMBA="${ROOT}/ansible/proxmox/container/samba.file.share.yml"
+GROUP_VARS="${ROOT}/ansible/group_vars/proxmox.yml"
+
+grep -q 'supported_speed_mbps' "${HARDWARE}" || fail 'supported NIC speed is not persisted'
+grep -q 'permanent_mac' "${HARDWARE}" || fail 'permanent NIC MAC is not persisted'
+grep -q "reject('match', '\^veth')" "${HARDWARE}" || fail 'veth interfaces are not excluded'
+grep -q "reject('match', '\^fw')" "${HARDWARE}" || fail 'Proxmox firewall interfaces are not excluded'
+grep -q "link_mode.*untagged" "${VLAN}" || fail 'untagged bridge mode is missing'
+grep -q 'expected_mac' "${VLAN}" || fail 'MAC drift assertion is missing'
+grep -q 'probe.selected.data.nic' "${ROOT}/setup/vlan.sh" || fail 'temporary link probe is missing'
+ok 'physical NIC discovery and identity contract'
+
+grep -q 'add_static_data_role_no_gateway' "${NETWORK}" || fail 'static no-gateway data role is missing'
+grep -q 'firewall=1,ip=${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}' "${NETWORK}" || fail 'data NIC is not serialized as static/firewalled'
+! grep -q 'selected_lxc_highspeed_only' "${NETWORK}" || fail 'destructive net0 replacement path remains'
+grep -q 'unsafe_data_route' "${UPDATE}" || fail 'gateway/DHCP rejection is missing'
+grep -q 'refuse_live_slot_overwrite' "${UPDATE}" || fail 'live slot overwrite protection is missing'
+grep -q 'rollback.network.update.plan' "${NETWORK}" || fail 'guest NIC rollback is missing'
+grep -q 'probe.data.ip.conflict' "${NETWORK}" || fail 'duplicate static-address probe is missing'
+grep -q 'ensure.lxc.runtime.data.role' "${NETWORK}" || fail 'running-container NIC activation verification is missing'
+grep -q 'PROXMOX_NETWORK_ALLOW_LXC_RESTART' "${NETWORK}" || fail 'operator-controlled restart gate is missing'
+ok 'role-based LXC network contract'
+
+grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
+! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'
+grep -q '_RO]' "${SAMBA}" && grep -q '_RW]' "${SAMBA}" || fail 'dual Samba shares are missing'
+grep -q 'Prove guest writes are rejected' "${SAMBA}" || fail 'guest read-only write probe is missing'
+grep -q 'Prove authenticated create rename and delete' "${SAMBA}" || fail 'authenticated write lifecycle probe is missing'
+grep -q 'default deny outgoing' "${SAMBA}" || fail 'default-deny egress is missing'
+grep -q 'Require SMB listener to stay on loopback and the selected data role' "${SAMBA}" || fail 'SMB listener binding verification is missing'
+grep -q 'ssh.socket' "${SAMBA}" || fail 'SSH socket masking is missing'
+grep -q 'Remove the SSH server package' "${SAMBA}" || fail 'SSH server removal is missing'
+grep -q 'Lock temporary interactive accounts' "${SAMBA}" || fail 'temporary account locking is missing'
+grep -q 'Stop and mask legacy NetBIOS discovery' "${SAMBA}" || fail 'NetBIOS daemon hardening is missing'
+grep -q 'setup/lxc/storage.sh' "${SAMBA}" || fail 'mapped host ACL remediation is missing'
+grep -q 'pct exec.*setpriv' "${ROOT}/setup/lxc/storage.sh" || fail 'mapped identity container verification is missing'
+grep -q 'remove_managed_rules' "${ROOT}/setup/lxc/egress.sh" || fail 'egress approval reconciliation is missing'
+grep -q 'preflight|apply|revoke' "${ROOT}/setup/lxc/egress.sh" || fail 'egress revoke mode is missing'
+grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxmox LXC boundary rule is missing'
+grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'
+ok 'Samba, storage, and hardening contract'
+
+for published in setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md; do
+  grep -q "^${published}|${published}|feature$" "${ROOT}/actions/pages.features.txt" \
+    || fail "Pages manifest omits ${published}"
+done
+ok 'Pages feature manifest'
+
+if command -v ansible-playbook >/dev/null 2>&1; then
+  for playbook in \
+    ansible/proxmox/helper/hardware.yml \
+    ansible/proxmox/vlan.yml \
+    ansible/proxmox/network.update.yml \
+    ansible/proxmox/network.verify.yml \
+    ansible/proxmox/container/samba.file.share.yml; do
+    ansible-playbook --syntax-check -i localhost, "${ROOT}/${playbook}" >/dev/null
+  done
+  ok 'Ansible syntax'
+fi

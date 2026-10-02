@@ -948,11 +948,23 @@ if ! grep -q 'catia' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
   echo "[validate.runtime][error] samba.file.share.yml must configure macOS vfs objects"
   exit 1
 fi
-if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
-  echo "[validate.runtime][error] samba.file.share.yml must configure UFW subnet rules"
+if ! grep -q 'Set UFW default-deny ingress and egress policy' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'Allow SMB only from trusted subnets on the selected data interface' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must enforce interface-scoped, default-deny UFW policy"
   exit 1
 fi
-echo "[validate.runtime][ok] samba.file.share.yml includes container/Samba/SSH/firewall safeguards"
+if ! grep -q '_RO]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q '_RW]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'write list =' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must render separate guest-read and authenticated-write shares"
+  exit 1
+fi
+if ! grep -q 'Stop and mask SSH for the console-only ingest appliance' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'Require SSH listener to be absent for console-only mode' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must stop SSH and verify that port 22 is absent"
+  exit 1
+fi
+echo "[validate.runtime][ok] samba.file.share.yml includes isolated Samba/SSH/firewall safeguards"
 
 echo "[validate.runtime] checking LXC network playbook safety contract..."
 if ! grep -q 'This LXC network feature must run inside a Debian LXC container, not on the Proxmox host.' "${ROOT}/ansible/proxmox/container/network.access.yml"; then

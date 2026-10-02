@@ -38,6 +38,7 @@
         verify="{{ proxmox_network_verify_path }}"
         tab="$(printf '\t')"
         errors=0
+        expected_egress_if="{{ proxmox_network_expected_guest_egress_if | default('') }}"
 
         printf 'guest_type\tguest_id\tguest_name\tnet_slot\tdesired_value\tactual_value\tstatus\n' > "${verify}"
 
@@ -47,7 +48,19 @@
           status="ok"
 
           if [ "${guest_type}" = "lxc" ]; then
-            actual_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            live_config="$(pct config "${guest_id}" 2>/dev/null || true)"
+            actual_value="$(printf '%s\n' "${live_config}" | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            if [ -z "${expected_egress_if}" ] \
+              || ! printf '%s\n' "${live_config}" | grep -Eq "^net[0-9]+: .*name=${expected_egress_if}(,|$)"; then
+              status="egress_role_missing"
+              errors=$((errors + 1))
+            fi
+            case ",${actual_value}," in
+              *,gw=*|*,gw6=*|*,ip=dhcp,*|*,ip6=dhcp,*)
+                status="unsafe_data_route"
+                errors=$((errors + 1))
+                ;;
+            esac
           elif [ "${guest_type}" = "vm" ]; then
             actual_value="$(qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
           else

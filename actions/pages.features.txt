@@ -1,3 +1,8 @@
 # source|published destination|dependency policy
 setup/storage/zfs.sh|setup/storage/zfs.sh|feature
 setup/storage/zpool.config.sh|setup/storage/zpool.config.sh|feature
+setup/firewall.sh|setup/firewall.sh|feature
+setup/lxc/storage.sh|setup/lxc/storage.sh|feature
+setup/lxc/egress.sh|setup/lxc/egress.sh|feature
+docs/setup/lxc/samba.zfs.plan|docs/setup/lxc/samba.zfs.plan|feature
+docs/setup/lxc/ingest.md|docs/setup/lxc/ingest.md|feature

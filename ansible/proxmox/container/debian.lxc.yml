@@ -23,7 +23,7 @@
         cores: 1
         memory_mb: 512
         swap_mb: 256
-        bridge: "vmbr1"
+        bridge: null
         ipv4_mode: "dhcp"
         ipv4_cidr: null
         gateway: null

@@ -48,7 +48,7 @@
       network:
         net0:
           name: "eth0"
-          bridge: "vmbr1"
+          bridge: null
           type: "veth"
           hwaddr: null
           ipv4: "dhcp"

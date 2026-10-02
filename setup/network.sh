@@ -23,23 +23,27 @@ FEATURE_MODE="${CLI_MODE_RAW:-${PROXMOX_NETWORK_MODE:-preflight}}"
 OUTPUT_ROOT="${PROXMOX_NETWORK_OUTPUT_ROOT:-${HOME:-/root}/proxmox.network.preflight}"
 REPORT_DIR_OVERRIDE="${PROXMOX_NETWORK_REPORT_DIR:-}"
 SNAPSHOT_DIR_OVERRIDE="${PROXMOX_NETWORK_SNAPSHOT_DIR:-}"
-EXPECTED_ADMIN_BRIDGE="${PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE:-vmbr0}"
-EXPECTED_DATA_BRIDGE="${PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE:-vmbr1}"
-EXPECTED_LAN_CIDR="${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-10.0.0.0/24}"
-EXPECTED_GUEST_ADMIN_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF:-eth0}"
-EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-eth1}"
+EXPECTED_ADMIN_BRIDGE="${PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE:-}"
+EXPECTED_DATA_BRIDGE="${PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE:-}"
+EXPECTED_DATA_LINK_MODE="${PROXMOX_NETWORK_EXPECTED_DATA_LINK_MODE:-}"
+EXPECTED_LAN_CIDR="${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-}"
+EXPECTED_GUEST_ADMIN_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF:-}"
+EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-}"
 CTID_FILTER="${PROXMOX_NETWORK_CTIDS:-}"
 VMID_FILTER="${PROXMOX_NETWORK_VMIDS:-}"
 FEATURE_INTERACTIVE="${PROXMOX_NETWORK_INTERACTIVE:-1}"
 FEATURE_DEBUG="${PROXMOX_NETWORK_DEBUG:-0}"
 PROXMOX_NETWORK_UPDATE_MODE="${PROXMOX_NETWORK_UPDATE_MODE:-check}"
 PROXMOX_NETWORK_UPDATE_AUTO_APPLY="${PROXMOX_NETWORK_UPDATE_AUTO_APPLY:-0}"
-PROXMOX_NETWORK_UPDATE_VLAN_TAG="${PROXMOX_NETWORK_UPDATE_VLAN_TAG-1}"
+PROXMOX_NETWORK_UPDATE_VLAN_TAG="${PROXMOX_NETWORK_UPDATE_VLAN_TAG:-}"
 PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS="${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS:-}"
 PROXMOX_NETWORK_UPDATE_VM_MODEL="${PROXMOX_NETWORK_UPDATE_VM_MODEL:-virtio}"
 PROXMOX_NETWORK_UPDATE_LXCS="${PROXMOX_NETWORK_UPDATE_LXCS:-}"
 PROXMOX_NETWORK_UPDATE_VMS="${PROXMOX_NETWORK_UPDATE_VMS:-}"
-PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY:-highspeed_only}"
+PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY:-add_data_nic}"
+PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR="${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR:-}"
+PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP="${PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP:-0}"
+PROXMOX_NETWORK_ALLOW_LXC_RESTART="${PROXMOX_NETWORK_ALLOW_LXC_RESTART:-0}"
 
 TMP_DIR="/tmp/pve-feature-network"
 PAGES_BASE_URL="https://devs-guide.github.io/proxmox"
@@ -80,6 +84,7 @@ ANSIBLE_PREFLIGHT_FACTS_JSON="${PROXMOX_NETWORK_PREFLIGHT_FACTS_JSON:-${FACTS_DI
 NETWORK_INTENT_PATH="${PROXMOX_NETWORK_INTENT_PATH:-${FACTS_DIR}/network.intent.yml}"
 NETWORK_PLAN_PATH="${PROXMOX_NETWORK_PLAN_PATH:-${FACTS_DIR}/network.plan.tsv}"
 NETWORK_VERIFY_PATH="${PROXMOX_NETWORK_VERIFY_PATH:-${FACTS_DIR}/network.verify.tsv}"
+DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
 
 RUN_DIR=""
 RAW_DIR=""
@@ -143,26 +148,29 @@ Optional environment overrides:
   PROXMOX_NETWORK_REPORT_DIR=/root/proxmox.network.preflight/host.timestamp
   PROXMOX_NETWORK_SNAPSHOT_DIR=/root/proxmox.network.preflight/host.timestamp
   PROXMOX_NETWORK_FACTS_DIR=/etc/ansible/proxmox/facts
-  PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE=vmbr0
-  PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE=vmbr1
-  PROXMOX_NETWORK_EXPECTED_LAN_CIDR=10.0.0.0/24
-  PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF=eth0
-  PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF=eth1
+  PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE=<discovered-bridge>
+  PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE=<operator-selected-bridge>
+  PROXMOX_NETWORK_EXPECTED_LAN_CIDR=<discovered-management-cidr>
+  PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF=<discovered-egress-if>
+  PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF=<operator-selected-data-if>
   PROXMOX_NETWORK_CTIDS=100,101
   PROXMOX_NETWORK_VMIDS=200,201
   PROXMOX_NETWORK_UPDATE_MODE=check|apply
   PROXMOX_NETWORK_UPDATE_AUTO_APPLY=0|1
-  PROXMOX_NETWORK_UPDATE_VLAN_TAG=<vid>   # defaults to 1 when unset
+  PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR=<address>/<prefix>
+  PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP=0|1
+  PROXMOX_NETWORK_ALLOW_LXC_RESTART=0|1
+  PROXMOX_NETWORK_UPDATE_VLAN_TAG=<vid>   # blank means untagged
   PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=10;20;30
   PROXMOX_NETWORK_UPDATE_VM_MODEL=virtio
   PROXMOX_NETWORK_UPDATE_LXCS=100,101
   PROXMOX_NETWORK_UPDATE_VMS=200,201
-  PROXMOX_NETWORK_UPDATE_LXC_STRATEGY=highspeed_only|add_data_nic
+  PROXMOX_NETWORK_UPDATE_LXC_STRATEGY=add_data_nic
 
 Safety:
   Preflight/report remain read-only. Update mode changes guest NIC config
-  through Ansible with an explicit check -> apply gate. Samba hardening is
-  intentionally out of scope here and belongs in a separate script.
+  through Ansible with an explicit check -> apply gate. Existing egress NICs
+  and default routes are preserved; the data NIC is static and has no gateway.
 EOF
 }
 
@@ -329,6 +337,52 @@ trim.space() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "${value}"
+}
+
+valid.ipv4.cidr() {
+  local value="${1:-}" address prefix octet
+  [[ "${value}" == */* ]] || return 1
+  address="${value%/*}"
+  prefix="${value#*/}"
+  [[ "${prefix}" =~ ^[0-9]+$ ]] && ((prefix >= 1 && prefix <= 32)) || return 1
+  IFS='.' read -r -a octets <<< "${address}"
+  ((${#octets[@]} == 4)) || return 1
+  for octet in "${octets[@]}"; do
+    [[ "${octet}" =~ ^[0-9]+$ ]] && ((10#${octet} >= 0 && 10#${octet} <= 255)) || return 1
+  done
+}
+
+valid.interface.name() {
+  [[ "${1:-}" =~ ^[a-zA-Z0-9_.-]{1,15}$ ]]
+}
+
+probe.data.ip.conflict() {
+  local address carrier
+  address="${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR%/*}"
+  carrier="$(cat "/sys/class/net/${EXPECTED_DATA_BRIDGE}/carrier" 2>/dev/null || true)"
+  if [[ "${carrier}" != "1" ]]; then
+    if is.true "${PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP}"; then
+      log.warn "Data bridge ${EXPECTED_DATA_BRIDGE} has no carrier; explicit override skips duplicate-address probing for ${address}."
+      return 0
+    fi
+    log.error "Data bridge ${EXPECTED_DATA_BRIDGE} has no carrier; refusing an unverifiable static address."
+    log.error "Connect the data link or explicitly set PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP=1."
+    exit 1
+  fi
+  if ! command_exists arping; then
+    if is.true "${PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP}"; then
+      log.warn "arping is unavailable; explicit override skips duplicate-address probing for ${address}."
+      return 0
+    fi
+    log.error 'arping is required for duplicate-address detection (install iputils-arping).'
+    exit 1
+  fi
+  log "Probing ${address} for duplicates on ${EXPECTED_DATA_BRIDGE}."
+  if ! arping -D -q -c 3 -w 4 -I "${EXPECTED_DATA_BRIDGE}" "${address}"; then
+    log.error "Static address ${address} answered on ${EXPECTED_DATA_BRIDGE}; choose an unused address."
+    exit 1
+  fi
+  log "No duplicate response detected for ${address}."
 }
 
 path.basename.or.empty() {
@@ -594,6 +648,7 @@ update.latest.pointer() {
 }
 
 discover.basic.host.facts() {
+  local candidate_bridge="" candidate_count=0 port_path=""
   set.stage "discover.basic.host.facts"
   if [[ -z "${HOSTNAME_SHORT}" ]]; then
     HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
@@ -612,10 +667,80 @@ discover.basic.host.facts() {
     DISCOVERED_ADMIN_NIC="${DEFAULT_ROUTE_DEV}"
   else
     DISCOVERED_ADMIN_NIC=""
+    if [[ -d "/sys/class/net/${DISCOVERED_ADMIN_BRIDGE}/brif" ]]; then
+      for port_path in /sys/class/net/"${DISCOVERED_ADMIN_BRIDGE}"/brif/*; do
+        [[ -e "${port_path}" ]] || continue
+        if [[ -e "/sys/class/net/$(basename "${port_path}")/device" ]]; then
+          DISCOVERED_ADMIN_NIC="$(basename "${port_path}")"
+          break
+        fi
+      done
+    fi
   fi
   DISCOVERED_ADMIN_IP_CIDR="$(ip -o -4 addr show dev "${DISCOVERED_ADMIN_BRIDGE}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
-  DISCOVERED_DATA_BRIDGE="${EXPECTED_DATA_BRIDGE}"
+
+  if [[ -z "${EXPECTED_ADMIN_BRIDGE}" ]]; then
+    EXPECTED_ADMIN_BRIDGE="${DISCOVERED_ADMIN_BRIDGE}"
+  fi
+  if [[ -z "${EXPECTED_LAN_CIDR}" ]]; then
+    EXPECTED_LAN_CIDR="$(ip -4 route show dev "${DISCOVERED_ADMIN_BRIDGE}" proto kernel scope link 2>/dev/null | awk 'NR==1 {print $1}')"
+  fi
+
+  if [[ -z "${EXPECTED_DATA_BRIDGE}" && -r "${DATA_BRIDGE_SELECTION_PATH}" ]]; then
+    EXPECTED_DATA_BRIDGE="$(
+      awk '
+        /^[[:space:]]{2}data:[[:space:]]*$/ { in_data=1; next }
+        in_data && /^[[:space:]]{4}bridge:[[:space:]]*/ {
+          value=$0
+          sub(/^[^:]+:[[:space:]]*/, "", value)
+          gsub(/["'\'' ]/, "", value)
+          print value
+          exit
+        }
+        in_data && /^[[:space:]]{2}[^[:space:]]/ { in_data=0 }
+      ' "${DATA_BRIDGE_SELECTION_PATH}"
+    )"
+  fi
+  if [[ -z "${EXPECTED_DATA_LINK_MODE}" && -r "${DATA_BRIDGE_SELECTION_PATH}" ]]; then
+    EXPECTED_DATA_LINK_MODE="$(
+      awk '
+        /^[[:space:]]{2}data:[[:space:]]*$/ { in_data=1; next }
+        in_data && /^[[:space:]]{4}link_mode:[[:space:]]*/ {
+          value=$0
+          sub(/^[^:]+:[[:space:]]*/, "", value)
+          gsub(/["'\'' ]/, "", value)
+          print value
+          exit
+        }
+        in_data && /^[[:space:]]{2}[^[:space:]]/ { in_data=0 }
+      ' "${DATA_BRIDGE_SELECTION_PATH}"
+    )"
+  fi
+
+  if [[ -z "${EXPECTED_DATA_BRIDGE}" ]]; then
+    for candidate_path in /sys/class/net/*/bridge; do
+      [[ -d "${candidate_path}" ]] || continue
+      candidate_bridge="$(basename "$(dirname "${candidate_path}")")"
+      [[ "${candidate_bridge}" != "${DISCOVERED_ADMIN_BRIDGE}" ]] || continue
+      for port_path in /sys/class/net/"${candidate_bridge}"/brif/*; do
+        [[ -e "${port_path}" ]] || continue
+        if [[ -e "/sys/class/net/$(basename "${port_path}")/device" ]]; then
+          DISCOVERED_DATA_BRIDGE="${candidate_bridge}"
+          candidate_count=$((candidate_count + 1))
+          break
+        fi
+      done
+    done
+    if ((candidate_count == 1)); then
+      EXPECTED_DATA_BRIDGE="${DISCOVERED_DATA_BRIDGE}"
+    else
+      DISCOVERED_DATA_BRIDGE=""
+    fi
+  else
+    DISCOVERED_DATA_BRIDGE="${EXPECTED_DATA_BRIDGE}"
+  fi
   log "Discovered admin bridge=${DISCOVERED_ADMIN_BRIDGE:-unknown} admin_nic=${DISCOVERED_ADMIN_NIC:-unknown} admin_ip=${DISCOVERED_ADMIN_IP_CIDR:-none} gateway=${DEFAULT_GATEWAY:-none}"
+  log "Resolved data bridge=${DISCOVERED_DATA_BRIDGE:-operator-selection-required} link_mode=${EXPECTED_DATA_LINK_MODE:-unknown} management CIDR=${EXPECTED_LAN_CIDR:-operator-selection-required}"
 }
 
 collect.host.raw() {
@@ -864,6 +989,7 @@ collect.lxc.data() {
   local runtime_default_route=""
   local listen_summary=""
   local sysctl_summary=""
+  local guest_sysctl_keys=""
   local testparm_interfaces=""
   local testparm_bind_only=""
   local testparm_hosts_allow=""
@@ -936,13 +1062,20 @@ collect.lxc.data() {
     fi
 
     if [[ "${status}" == "running" ]]; then
+      guest_sysctl_keys="net.ipv4.conf.all.arp_ignore net.ipv4.conf.all.arp_announce net.ipv4.conf.all.rp_filter"
+      if [[ -n "${admin_nic_name}" && "${admin_nic_name}" != "-" ]]; then
+        guest_sysctl_keys+=" net.ipv4.conf.${admin_nic_name}.rp_filter"
+      fi
+      if [[ -n "${data_nic_name}" && "${data_nic_name}" != "-" ]]; then
+        guest_sysctl_keys+=" net.ipv4.conf.${data_nic_name}.rp_filter"
+      fi
       capture.cmd "${runtime_dir}/ip.o4.addr.txt" "pct exec ${id} -- ip -o -4 addr show" "pct exec ${id} -- ip -o -4 addr show"
       capture.cmd "${runtime_dir}/ip.route.txt" "pct exec ${id} -- ip route" "pct exec ${id} -- ip route"
       capture.cmd "${runtime_dir}/ss.ltnp.txt" "pct exec ${id} -- ss -ltnp" "pct exec ${id} -- ss -ltnp"
       capture.cmd "${runtime_dir}/interfaces.txt" "pct exec ${id} -- cat /etc/network/interfaces" "pct exec ${id} -- cat /etc/network/interfaces"
       capture.cmd "${runtime_dir}/interfaces.d.list.txt" "pct exec ${id} -- ls -1 /etc/network/interfaces.d" "pct exec ${id} -- bash -lc 'ls -1 /etc/network/interfaces.d 2>/dev/null || true'"
       capture.cmd "${runtime_dir}/sysctl.arp-rpf.txt" "pct exec ${id} -- sysctl ARP/rp_filter" \
-        "pct exec ${id} -- bash -lc 'sysctl net.ipv4.conf.all.arp_ignore net.ipv4.conf.all.arp_announce net.ipv4.conf.all.rp_filter net.ipv4.conf.${EXPECTED_GUEST_ADMIN_IF}.rp_filter net.ipv4.conf.${EXPECTED_GUEST_DATA_IF}.rp_filter 2>/dev/null || true'"
+        "pct exec ${id} -- bash -lc 'sysctl ${guest_sysctl_keys} 2>/dev/null || true'"
       capture.cmd "${runtime_dir}/samba.testparm.filtered.txt" "pct exec ${id} -- Samba effective network config" \
         "pct exec ${id} -- bash -lc 'if command -v testparm >/dev/null 2>&1; then testparm -s 2>/dev/null | grep -E \"interfaces =|bind interfaces only =|hosts allow =|smb ports =\" || true; fi'"
       capture.cmd "${runtime_dir}/samba.smbconf.filtered.txt" "pct exec ${id} -- Samba raw smb.conf network lines" \
@@ -976,13 +1109,13 @@ collect.lxc.data() {
         "${testparm_interfaces}" "${testparm_bind_only}" "${testparm_hosts_allow}" \
         "${testparm_smb_ports}" "${ufw_summary}"
 
-      if [[ -n "${runtime_default_route}" && "${runtime_default_route}" == *"dev ${EXPECTED_GUEST_DATA_IF}"* ]]; then
+      if [[ -n "${data_nic_name}" && "${data_nic_name}" != "-" && -n "${runtime_default_route}" && "${runtime_default_route}" == *"dev ${data_nic_name}"* ]]; then
         append.risk "warn" "lxc" "${id}" "${name}" "data_nic_default_route" \
-          "Default route currently points at ${EXPECTED_GUEST_DATA_IF}; admin traffic may not stay on ${EXPECTED_GUEST_ADMIN_IF}."
+          "Default route currently points at data interface ${data_nic_name}; egress-role selection must be reviewed."
       fi
-      if [[ "${service_present}" == "yes" && "${testparm_interfaces}" == *"${EXPECTED_GUEST_ADMIN_IF}"* ]]; then
+      if [[ "${service_present}" == "yes" && -n "${admin_nic_name}" && "${admin_nic_name}" != "-" && "${testparm_interfaces}" == *"${admin_nic_name}"* ]]; then
         append.risk "warn" "samba" "${id}" "${name}" "samba_bound_to_admin_if" \
-          "Samba interfaces include ${EXPECTED_GUEST_ADMIN_IF}; file traffic may leak onto the admin path."
+          "Samba interfaces include egress interface ${admin_nic_name}; file traffic may leak onto the management path."
       fi
       if [[ "${service_present}" == "yes" && -n "${data_nic_name}" && "${testparm_interfaces}" != *"${data_nic_name}"* ]]; then
         append.risk "warn" "samba" "${id}" "${name}" "samba_missing_data_if" \
@@ -1098,7 +1231,10 @@ classify.host.risks() {
   local data_vlan_filtering=""
 
   data_bridge_row="$(awk -F'\t' -v bridge="${EXPECTED_DATA_BRIDGE}" '$1 == bridge {print $0; exit}' "${BRIDGES_TSV_PATH}" 2>/dev/null || true)"
-  if [[ -z "${data_bridge_row}" ]]; then
+  if [[ -z "${EXPECTED_DATA_BRIDGE}" ]]; then
+    append.risk "error" "host" "-" "${HOSTNAME_SHORT}" "data_bridge_selection_required" \
+      "No unique data bridge was discovered; operator selection is required."
+  elif [[ -z "${data_bridge_row}" ]]; then
     append.risk "error" "host" "-" "${HOSTNAME_SHORT}" "missing_data_bridge" \
       "Expected data bridge ${EXPECTED_DATA_BRIDGE} was not found."
   else
@@ -1106,9 +1242,13 @@ classify.host.risks() {
     data_members="$(awk -F'\t' -v bridge="${EXPECTED_DATA_BRIDGE}" '$1 == bridge {print $3; exit}' "${BRIDGES_TSV_PATH}" 2>/dev/null || true)"
     data_ipv4="$(awk -F'\t' -v bridge="${EXPECTED_DATA_BRIDGE}" '$1 == bridge {print $4; exit}' "${BRIDGES_TSV_PATH}" 2>/dev/null || true)"
 
-    if [[ "${data_vlan_filtering}" != "1" ]]; then
+    if [[ "${EXPECTED_DATA_LINK_MODE}" == "vlan-aware" && "${data_vlan_filtering}" != "1" ]]; then
       append.risk "warn" "host" "-" "${HOSTNAME_SHORT}" "data_bridge_not_vlan_aware" \
         "Bridge ${EXPECTED_DATA_BRIDGE} does not report vlan_filtering=1."
+    fi
+    if [[ "${EXPECTED_DATA_LINK_MODE}" == "untagged" && "${data_vlan_filtering}" == "1" ]]; then
+      append.risk "warn" "host" "-" "${HOSTNAME_SHORT}" "untagged_bridge_vlan_filtering_enabled" \
+        "Bridge ${EXPECTED_DATA_BRIDGE} is selected as untagged but reports vlan_filtering=1."
     fi
     if [[ -z "${data_members}" ]]; then
       append.risk "warn" "host" "-" "${HOSTNAME_SHORT}" "data_bridge_no_members" \
@@ -1156,6 +1296,7 @@ proxmox_network_preflight:
   expected:
     admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
     data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+    data_link_mode: $(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
     lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
     guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
     guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
@@ -1190,6 +1331,7 @@ write.next.stage.env() {
 export PROXMOX_NETWORK_REPORT_DIR=$(yaml.quote "${RUN_DIR}")
 export PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE=$(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
 export PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE=$(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+export PROXMOX_NETWORK_EXPECTED_DATA_LINK_MODE=$(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
 export PROXMOX_NETWORK_EXPECTED_LAN_CIDR=$(yaml.quote "${EXPECTED_LAN_CIDR}")
 export PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF=$(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
 export PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF=$(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
@@ -1216,6 +1358,7 @@ proxmox_network_preflight_latest:
   expected:
     admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
     data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+    data_link_mode: $(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
     lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
     guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
     guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
@@ -1402,6 +1545,12 @@ load.snapshot.defaults() {
   if [[ -f "${env_file}" ]]; then
     # shellcheck disable=SC1090
     source "${env_file}"
+    EXPECTED_ADMIN_BRIDGE="${PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE:-${EXPECTED_ADMIN_BRIDGE}}"
+    EXPECTED_DATA_BRIDGE="${PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE:-${EXPECTED_DATA_BRIDGE}}"
+    EXPECTED_DATA_LINK_MODE="${PROXMOX_NETWORK_EXPECTED_DATA_LINK_MODE:-${EXPECTED_DATA_LINK_MODE}}"
+    EXPECTED_LAN_CIDR="${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-${EXPECTED_LAN_CIDR}}"
+    EXPECTED_GUEST_ADMIN_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF:-${EXPECTED_GUEST_ADMIN_IF}}"
+    EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-${EXPECTED_GUEST_DATA_IF}}"
   fi
 }
 
@@ -1518,29 +1667,46 @@ lxc.has.admin.nic() {
     "${LXC_TSV_PATH}" 2>/dev/null
 }
 
+lxc.egress.if.name() {
+  local id="$1"
+  awk -F'\t' -v target="${id}" '
+    NR > 1 && $2 == target {
+      if ($13 != "" && $13 != "-") { print $6; printed=1; exit }
+      if (dhcp == "" && $12 == "dhcp") dhcp=$6
+      if (first == "") first=$6
+    }
+    END {
+      if (!printed && dhcp != "") print dhcp
+      else if (!printed && first != "") print first
+    }
+  ' "${LXC_TSV_PATH}" 2>/dev/null | head -n1
+}
+
+lxc.guest.if.exists() {
+  local id="$1" guest_if="$2"
+  awk -F'\t' -v target="${id}" -v guest_if="${guest_if}" \
+    'NR > 1 && $2 == target && $6 == guest_if {found=1} END {exit(found ? 0 : 1)}' \
+    "${LXC_TSV_PATH}" 2>/dev/null
+}
+
+suggest.lxc.data.if.name() {
+  local id="$1" number=0 candidate=""
+  while ((number < 100)); do
+    candidate="eth${number}"
+    if ! lxc.guest.if.exists "${id}" "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    number=$((number + 1))
+  done
+  return 1
+}
+
 lxc.net.body.by.slot() {
   local config_path="${1:-}"
   local slot="${2:-}"
   [[ -f "${config_path}" ]] || return 1
   sed -n "s/^${slot}: //p" "${config_path}" 2>/dev/null | head -n1
-}
-
-build.lxc.highspeed.only.body() {
-  local current_body="${1:-}"
-  local desired=""
-  desired="${current_body}"
-  desired="$(upsert.csv.kv "${desired}" "bridge" "${EXPECTED_DATA_BRIDGE}")"
-  if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
-    desired="$(drop.csv.kv "${desired}" "trunks")"
-    desired="$(upsert.csv.kv "${desired}" "tag" "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")"
-  elif [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}" ]]; then
-    desired="$(drop.csv.kv "${desired}" "tag")"
-    desired="$(upsert.csv.kv "${desired}" "trunks" "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")"
-  else
-    desired="$(drop.csv.kv "${desired}" "tag")"
-    desired="$(drop.csv.kv "${desired}" "trunks")"
-  fi
-  printf '%s' "${desired}"
 }
 
 vm.has.any.nic() {
@@ -1549,16 +1715,15 @@ vm.has.any.nic() {
 }
 
 candidate.lxc.ids() {
-  awk -F'\t' -v admin="${EXPECTED_ADMIN_BRIDGE}" -v data="${EXPECTED_DATA_BRIDGE}" '
+  awk -F'\t' -v data="${EXPECTED_DATA_BRIDGE}" '
     NR > 1 {
       id = $2
       name[id] = $3
-      if ($7 == admin) has_admin[id] = 1
       if ($7 == data) has_data[id] = 1
     }
     END {
       for (id in name) {
-        if (has_admin[id] && !has_data[id]) {
+        if (!has_data[id]) {
           print id
         }
       }
@@ -1599,13 +1764,9 @@ load.update.candidates() {
 }
 
 collect.update.selection() {
-  local candidate_lxc_csv candidate_vm_csv choice manual_lxc manual_vm selected_lxc
+  local candidate_lxc_csv choice manual_lxc selected_lxc selected_id suggested_data_if
   candidate_lxc_csv="$(csv.from.id.list UPDATE_LXC_IDS)"
-  candidate_vm_csv="$(csv.from.id.list UPDATE_VM_IDS)"
-
-  if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
-    PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
-  fi
+  UPDATE_VM_IDS=()
 
   if ! is.true "${FEATURE_INTERACTIVE}" || ! open.tty; then
     if [[ -n "${PROXMOX_NETWORK_UPDATE_LXCS}" ]]; then
@@ -1619,93 +1780,62 @@ collect.update.selection() {
         append.unique.id UPDATE_LXC_IDS "${choice}"
       done < <(parse.id.filter "${CTID_FILTER}")
     fi
-    if [[ -n "${PROXMOX_NETWORK_UPDATE_VMS}" ]]; then
-      UPDATE_VM_IDS=()
-      while IFS= read -r choice; do
-        append.unique.id UPDATE_VM_IDS "${choice}"
-      done < <(parse.id.filter "${PROXMOX_NETWORK_UPDATE_VMS}")
-    elif [[ -n "${VMID_FILTER}" ]]; then
-      UPDATE_VM_IDS=()
-      while IFS= read -r choice; do
-        append.unique.id UPDATE_VM_IDS "${choice}"
-      done < <(parse.id.filter "${VMID_FILTER}")
-    fi
-    return 0
-  fi
+  else
+    printf '\nNetwork update candidate summary:\n' >&3
+    printf '  Snapshot: %s\n' "${RUN_DIR}" >&3
+    printf '  Candidate LXC IDs missing data NIC: %s\n' "${candidate_lxc_csv:-none}" >&3
+    printf '  Discovered/selected data bridge: %s\n' "${EXPECTED_DATA_BRIDGE:-none}" >&3
+    printf '\n' >&3
 
-  printf '\nNetwork update candidate summary:\n' >&3
-  printf '  Snapshot: %s\n' "${RUN_DIR}" >&3
-  printf '  Candidate LXC IDs missing data NIC: %s\n' "${candidate_lxc_csv:-none}" >&3
-  printf '  Candidate VM IDs missing data NIC: %s\n' "${candidate_vm_csv:-none}" >&3
-  printf '  Default data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
-  printf '\n' >&3
-
-  choice="$(menu.tty "Select update scope:" "selected LXC fix" "all candidates" "manual IDs" "abort")"
-  case "${choice}" in
-    1)
-      selected_lxc="$(prompt.tty "Enter LXC ID to fix" "${candidate_lxc_csv%%,*}")"
-      UPDATE_LXC_IDS=()
-      UPDATE_VM_IDS=()
-      while IFS= read -r choice; do
-        append.unique.id UPDATE_LXC_IDS "${choice}"
-      done < <(parse.id.filter "${selected_lxc}")
-      ;;
-    2)
-      ;;
-    3)
-      manual_lxc="$(prompt.tty "Enter LXC IDs to update (blank = none)" "${candidate_lxc_csv}")"
-      manual_vm="$(prompt.tty "Enter VM IDs to update (blank = none)" "${candidate_vm_csv}")"
-      UPDATE_LXC_IDS=()
-      UPDATE_VM_IDS=()
-      while IFS= read -r choice; do
-        append.unique.id UPDATE_LXC_IDS "${choice}"
-      done < <(parse.id.filter "${manual_lxc}")
-      while IFS= read -r choice; do
-        append.unique.id UPDATE_VM_IDS "${choice}"
-      done < <(parse.id.filter "${manual_vm}")
-      ;;
-    *)
-      log.error "Aborted by operator."
-      exit 1
-      ;;
-  esac
-
-  EXPECTED_DATA_BRIDGE="$(prompt.tty "Enter target high-speed bridge" "${EXPECTED_DATA_BRIDGE}")"
-  if ((${#UPDATE_LXC_IDS[@]} > 0)); then
-    choice="$(menu.tty "Select LXC network strategy:" "high-speed only on VLAN 1 (replace net0)" "keep admin NIC and add data NIC")"
+    choice="$(menu.tty "Select update scope:" "selected LXC" "enter one LXC ID" "abort")"
     case "${choice}" in
-      1) PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="highspeed_only" ;;
-      2) PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="add_data_nic" ;;
-      *) log.error "Invalid LXC strategy selection."; exit 1 ;;
+      1) selected_lxc="$(prompt.tty "Enter LXC ID" "${candidate_lxc_csv%%,*}")" ;;
+      2) selected_lxc="$(prompt.tty "Enter LXC ID" "")" ;;
+      *) log.error "Aborted by operator."; exit 1 ;;
     esac
-  fi
+    UPDATE_LXC_IDS=()
+    while IFS= read -r choice; do
+      append.unique.id UPDATE_LXC_IDS "${choice}"
+    done < <(parse.id.filter "${selected_lxc}")
 
-  PROXMOX_NETWORK_UPDATE_VLAN_TAG="$(trim.space "$(prompt.tty "Enter VLAN tag (blank = none, default = 1)" "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}")")"
-  if [[ -z "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
-    PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS="$(trim.space "$(prompt.tty "Enter VLAN trunks (blank = none)" "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}")")"
-  else
-    PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
-  fi
-  PROXMOX_NETWORK_UPDATE_VM_MODEL="$(trim.space "$(prompt.tty "Enter VM NIC model" "${PROXMOX_NETWORK_UPDATE_VM_MODEL}")")"
-  if [[ -z "${PROXMOX_NETWORK_UPDATE_VM_MODEL}" ]]; then
-    PROXMOX_NETWORK_UPDATE_VM_MODEL="virtio"
-  fi
-
-  if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]]; then
-    choice="$(menu.tty "Run apply stage after check preview?" "yes" "no")"
-    if [[ "${choice}" == "2" ]]; then
-      PROXMOX_NETWORK_UPDATE_MODE="check"
+    EXPECTED_DATA_BRIDGE="$(trim.space "$(prompt.tty "Enter discovered data bridge" "${EXPECTED_DATA_BRIDGE}")")"
+    if ((${#UPDATE_LXC_IDS[@]} == 1)); then
+      selected_id="${UPDATE_LXC_IDS[0]}"
+      EXPECTED_GUEST_ADMIN_IF="$(lxc.egress.if.name "${selected_id}")"
+      suggested_data_if="$(suggest.lxc.data.if.name "${selected_id}")"
+      EXPECTED_GUEST_DATA_IF="$(trim.space "$(prompt.tty "Enter new container data interface name" "${EXPECTED_GUEST_DATA_IF:-${suggested_data_if}}")")"
+      PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR="$(trim.space "$(prompt.tty "Enter static data IPv4/CIDR (no gateway will be added)" "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")")"
     fi
-  else
-    choice="$(menu.tty "Update mode:" "check only" "check then apply")"
-    if [[ "${choice}" == "2" ]]; then
-      PROXMOX_NETWORK_UPDATE_MODE="apply"
+
+    if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]]; then
+      choice="$(menu.tty "Run apply stage after check preview?" "yes" "no")"
+      [[ "${choice}" == "2" ]] && PROXMOX_NETWORK_UPDATE_MODE="check"
+    else
+      choice="$(menu.tty "Update mode:" "check only" "check then apply")"
+      [[ "${choice}" == "2" ]] && PROXMOX_NETWORK_UPDATE_MODE="apply"
     fi
   fi
+
+  ((${#UPDATE_LXC_IDS[@]} == 1)) || {
+    log.error "The static ingest-network workflow configures exactly one LXC per run."
+    exit 1
+  }
+  selected_id="${UPDATE_LXC_IDS[0]}"
+  [[ -n "${EXPECTED_DATA_BRIDGE}" ]] || { log.error "A discovered/operator-selected data bridge is required."; exit 1; }
+  ip link show dev "${EXPECTED_DATA_BRIDGE}" >/dev/null 2>&1 || { log.error "Data bridge does not exist: ${EXPECTED_DATA_BRIDGE}"; exit 1; }
+  EXPECTED_GUEST_ADMIN_IF="${EXPECTED_GUEST_ADMIN_IF:-$(lxc.egress.if.name "${selected_id}")}"
+  [[ -n "${EXPECTED_GUEST_ADMIN_IF}" && "${EXPECTED_GUEST_ADMIN_IF}" != "-" ]] || { log.error "Could not discover the existing LXC egress interface."; exit 1; }
+  valid.interface.name "${EXPECTED_GUEST_DATA_IF}" || { log.error "Invalid or missing container data interface name: ${EXPECTED_GUEST_DATA_IF:-empty}"; exit 1; }
+  [[ "${EXPECTED_GUEST_DATA_IF}" != "${EXPECTED_GUEST_ADMIN_IF}" ]] || { log.error "Data and egress interface names must differ."; exit 1; }
+  ! lxc.guest.if.exists "${selected_id}" "${EXPECTED_GUEST_DATA_IF}" || { log.error "Container interface already exists: ${EXPECTED_GUEST_DATA_IF}"; exit 1; }
+  valid.ipv4.cidr "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}" || { log.error "A valid static data IPv4/CIDR is required."; exit 1; }
+  [[ "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}" == "add_data_nic" ]] || { log.error "Only the non-destructive add_data_nic strategy is supported."; exit 1; }
+  PROXMOX_NETWORK_UPDATE_VLAN_TAG=""
+  PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
 }
 
 build.network.update.plan() {
-  local id name conf_path slot desired current_body
+  local id name conf_path slot desired
   local row_count=0
   set.stage "build.network.update.plan"
   mkdir -p "${FACTS_DIR}"
@@ -1722,27 +1852,6 @@ build.network.update.plan() {
     name="$(awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {print $3; exit}' "${LXC_TSV_PATH}" 2>/dev/null || true)"
     [[ -n "${name}" ]] || name="ct${id}"
 
-    if [[ "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}" == "highspeed_only" ]]; then
-      current_body="$(lxc.net.body.by.slot "${conf_path}" "net0" || true)"
-      if [[ -z "${current_body}" ]]; then
-        log.warn "Skipping LXC ${id}: high-speed-only mode requires existing net0."
-        continue
-      fi
-      if lxc.has.data.nic "${id}" && ! lxc.has.admin.nic "${id}"; then
-        log "Skipping LXC ${id}: it already appears to be data-only."
-        continue
-      fi
-      slot="net0"
-      desired="$(build.lxc.highspeed.only.body "${current_body}")"
-      append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "selected_lxc_highspeed_only"
-      row_count=$((row_count + 1))
-      continue
-    fi
-
-    if ! lxc.has.admin.nic "${id}"; then
-      log.warn "Skipping LXC ${id}: no admin NIC on ${EXPECTED_ADMIN_BRIDGE}."
-      continue
-    fi
     if lxc.has.data.nic "${id}"; then
       log "Skipping LXC ${id}: already has a data NIC on ${EXPECTED_DATA_BRIDGE}."
       continue
@@ -1752,13 +1861,8 @@ build.network.update.plan() {
       log.warn "Skipping LXC ${id}: no free net slot from net1..net9."
       continue
     fi
-    desired="name=${EXPECTED_GUEST_DATA_IF},bridge=${EXPECTED_DATA_BRIDGE},ip=dhcp"
-    if [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TAG}" ]]; then
-      desired="${desired},tag=${PROXMOX_NETWORK_UPDATE_VLAN_TAG}"
-    elif [[ -n "${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}" ]]; then
-      desired="${desired},trunks=${PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS}"
-    fi
-    append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "missing_data_nic_add_data_nic"
+    desired="name=${EXPECTED_GUEST_DATA_IF},bridge=${EXPECTED_DATA_BRIDGE},firewall=1,ip=${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}"
+    append.tsv.row "${NETWORK_PLAN_PATH}" "lxc" "${id}" "${name}" "${slot}" "${desired}" "add_static_data_role_no_gateway"
     row_count=$((row_count + 1))
   done
 
@@ -1816,9 +1920,11 @@ proxmox_network_update:
   expected:
     admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
     data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+    data_link_mode: $(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
     lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
     guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
     guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
+    data_ipv4_cidr: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")
   selected:
     lxc_ids_csv: $(yaml.quote "${lxc_csv}")
     vm_ids_csv: $(yaml.quote "${vm_csv}")
@@ -1855,8 +1961,88 @@ proxmox_network_update_mode: $(yaml.quote "${mode}")
 proxmox_network_expected_admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
 proxmox_network_expected_data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
 proxmox_network_expected_lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+proxmox_network_expected_guest_egress_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
+proxmox_network_expected_guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
+proxmox_network_expected_data_ipv4_cidr: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")
 proxmox_network_update_apply_requested: ${apply_requested}
 EOF
+}
+
+rollback.network.update.plan() {
+  local guest_type guest_id guest_name net_slot desired_value reason current_value
+  log.warn "Rolling back NICs added by the failed network apply/verify stage."
+  while IFS=$'\t' read -r guest_type guest_id guest_name net_slot desired_value reason; do
+    [[ "${guest_type}" != "guest_type" ]] || continue
+    if [[ "${guest_type}" == "lxc" ]]; then
+      current_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+      if [[ "${current_value}" == "${desired_value}" ]]; then
+        pct set "${guest_id}" -delete "${net_slot}" || log.error "Rollback failed for LXC ${guest_id} ${net_slot}."
+      fi
+    elif [[ "${guest_type}" == "vm" ]]; then
+      current_value="$(qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+      if [[ "${current_value}" == "${desired_value}" ]]; then
+        qm set "${guest_id}" -delete "${net_slot}" || log.error "Rollback failed for VM ${guest_id} ${net_slot}."
+      fi
+    fi
+  done < "${NETWORK_PLAN_PATH}"
+}
+
+lxc.runtime.data.ready() {
+  local id="$1" addr_output route_output
+  addr_output="$(pct exec "${id}" -- ip -o -4 addr show dev "${EXPECTED_GUEST_DATA_IF}" 2>/dev/null || true)"
+  route_output="$(pct exec "${id}" -- ip -4 route show default 2>/dev/null || true)"
+  printf '%s\n' "${addr_output}" | awk -v expected="${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}" '$4 == expected {found=1} END {exit(found ? 0 : 1)}' \
+    || return 1
+  printf '%s\n' "${route_output}" | awk -v expected_if="${EXPECTED_GUEST_ADMIN_IF}" '
+    /^default / {
+      count += 1
+      for (i = 1; i < NF; i += 1) if ($i == "dev" && $(i + 1) == expected_if) matched=1
+    }
+    END {exit(count == 1 && matched ? 0 : 1)}
+'
+}
+
+wait.lxc.runtime.data() {
+  local id="$1" attempt
+  for attempt in {1..20}; do
+    lxc.runtime.data.ready "${id}" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+ensure.lxc.runtime.data.role() {
+  local id status choice restart_allowed=0
+  for id in "${UPDATE_LXC_IDS[@]}"; do
+    status="$(pct status "${id}" 2>/dev/null | awk '{print $2}')"
+    if [[ "${status}" != running ]]; then
+      log "LXC ${id} is stopped; the verified data NIC will activate on its next operator-controlled start."
+      continue
+    fi
+    if wait.lxc.runtime.data "${id}"; then
+      log "LXC ${id} hot-applied ${EXPECTED_GUEST_DATA_IF}=${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR} and preserved its sole default route on ${EXPECTED_GUEST_ADMIN_IF}."
+      continue
+    fi
+
+    log.warn "LXC ${id} config is updated, but runtime interface/address verification is still pending."
+    is.true "${PROXMOX_NETWORK_ALLOW_LXC_RESTART}" && restart_allowed=1
+    if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
+      choice="$(menu.tty "Restart LXC ${id} now to activate the verified data NIC?" "no (rollback the new NIC)" "yes")"
+      [[ "${choice}" == 2 ]] && restart_allowed=1
+    fi
+    if ((restart_allowed == 0)); then
+      log.error "Runtime activation was not authorized; the newly added NIC will be rolled back."
+      return 1
+    fi
+
+    log "Restarting LXC ${id} because runtime evidence proved hot-apply incomplete."
+    pct reboot "${id}" || return 1
+    if ! wait.lxc.runtime.data "${id}"; then
+      log.error "LXC ${id} did not return with the expected data role and sole egress default route."
+      return 1
+    fi
+    log "LXC ${id} restart verification passed."
+  done
 }
 
 run.network.update.flow() {
@@ -1867,6 +2053,7 @@ run.network.update.flow() {
   require.snapshot.artifacts
   load.update.candidates
   collect.update.selection
+  probe.data.ip.conflict
   build.network.update.plan
   if ! awk 'NR > 1 {found=1} END {exit(found ? 0 : 1)}' "${NETWORK_PLAN_PATH}" 2>/dev/null; then
     log.warn "No actionable plan rows found. Update stage exiting without changes."
@@ -1902,8 +2089,18 @@ run.network.update.flow() {
   fi
 
   write.network.extra.vars.file "apply"
-  run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
-  run.feature.playbook "${NETWORK_VERIFY_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
+  if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
+    rollback.network.update.plan
+    return 1
+  fi
+  if ! run.feature.playbook "${NETWORK_VERIFY_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
+    rollback.network.update.plan
+    return 1
+  fi
+  if ! ensure.lxc.runtime.data.role; then
+    rollback.network.update.plan
+    return 1
+  fi
 
   log "Apply phase complete. Running post-apply preflight snapshot."
   prev_interactive="${FEATURE_INTERACTIVE}"

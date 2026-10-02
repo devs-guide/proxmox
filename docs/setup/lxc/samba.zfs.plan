@@ -55,7 +55,7 @@ select `nic2` merely because its fixture name or MAC is familiar.
 Network execution is split into explicit stages:
 
 1. `preflight`: read-only inventory and risk report.
-2. `probe-link`: temporarily bring one unused candidate up, wait for carrier,
+2. `probe`: temporarily bring one unused candidate up, wait for carrier,
    inspect it with ethtool, then restore its prior state unless applying.
 3. `write`: save a checksummed backup, stage the reviewed bridge block, and
    require `ifreload -a -s` to pass.
@@ -135,7 +135,7 @@ reviewed outbound destination IP/CIDR and port tuples. IPv6 remains disabled
 until an equivalent policy is supplied.
 
 Approved URL metadata is validated by a download helper, but static firewall
-enforcement remains IP/port based. All resolved and redirected destinations
+enforcement remains IP/port based and redirects are refused. The final URL
 must be explicitly approved. The proxy-backed 0.0.7 extension will later
 provide hostname policy, exact-URL broker downloads, checksums, size limits,
 approval windows, and audit logs without changing the network role model.

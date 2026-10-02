@@ -71,6 +71,9 @@
         tab="$(printf '\t')"
         changed=0
         errors=0
+        expected_egress_if="{{ proxmox_network_expected_guest_egress_if | default('') }}"
+        expected_data_if="{{ proxmox_network_expected_guest_data_if | default('') }}"
+        expected_data_cidr="{{ proxmox_network_expected_data_ipv4_cidr | default('') }}"
 
         while IFS="${tab}" read -r guest_type guest_id guest_name net_slot desired_value reason; do
           [ "${guest_type}" = "guest_type" ] && continue
@@ -81,9 +84,42 @@
           fi
 
           if [ "${guest_type}" = "lxc" ]; then
-            current_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            live_config="$(pct config "${guest_id}" 2>/dev/null || true)"
+            current_value="$(printf '%s\n' "${live_config}" | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            case ",${desired_value}," in
+              *,gw=*|*,gw6=*|*,ip=dhcp,*|*,ip6=dhcp,*)
+                echo "ERROR\tunsafe_data_route\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
+                errors=$((errors + 1))
+                continue
+                ;;
+            esac
+            case ",${desired_value}," in
+              *,firewall=1,*) ;;
+              *) echo "ERROR\tdata_nic_firewall_disabled\tlxc\t${guest_id}\t${desired_value}"; errors=$((errors + 1)); continue ;;
+            esac
+            if [ -z "${expected_egress_if}" ] \
+              || ! printf '%s\n' "${live_config}" | grep -Eq "^net[0-9]+: .*name=${expected_egress_if}(,|$)"; then
+              echo "ERROR\tmissing_preserved_egress_role\tlxc\t${guest_id}\t${expected_egress_if}"
+              errors=$((errors + 1))
+              continue
+            fi
+            if [ -n "${expected_data_if}" ] && [ -n "${expected_data_cidr}" ]; then
+              case ",${desired_value}," in
+                *,name=${expected_data_if},*|*,name=${expected_data_if}) ;;
+                *) echo "ERROR\tdata_interface_mismatch\tlxc\t${guest_id}\t${desired_value}"; errors=$((errors + 1)); continue ;;
+              esac
+              case ",${desired_value}," in
+                *,ip=${expected_data_cidr},*|*,ip=${expected_data_cidr}) ;;
+                *) echo "ERROR\tdata_cidr_mismatch\tlxc\t${guest_id}\t${desired_value}"; errors=$((errors + 1)); continue ;;
+              esac
+            fi
             if [ "${current_value}" = "${desired_value}" ]; then
               echo "NOOP\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
+              continue
+            fi
+            if [ -n "${current_value}" ]; then
+              echo "ERROR\trefuse_live_slot_overwrite\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${current_value}"
+              errors=$((errors + 1))
               continue
             fi
 
