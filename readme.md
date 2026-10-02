@@ -2,9 +2,10 @@
 
 ## Current Release
 
-Release `0.0.5` covers the managed Proxmox runtime, host networking, expanded
-Debian LXC workflows, and recoverable VM restore tooling. It supports the
-published Proxmox VE 6.4/Buster and Proxmox VE 9.1/Trixie lanes.
+Release `0.0.6` adds reviewed general local ZFS provisioning to the managed
+Proxmox runtime, networking, LXC, and VM restore baseline released in `0.0.5`.
+The published Proxmox VE 6.4/Buster and Proxmox VE 9.1/Trixie lanes remain
+supported.
 
 ```bash
 # Proxmox VE 6.4 / Debian Buster
@@ -20,13 +21,13 @@ passwords default to their account names (`app`, `agent`, `proxmox`, and
 the Proxmox no-subscription repository. Update these values for the target
 environment before treating the setup as final.
 
-See [the 0.0.5 release notes](RELEASE_NOTES.md) for the complete scope and
-acceptance requirements. General local ZFS provisioning is the `0.0.6`
-candidate; whole-GPU passthrough remains targeted for `0.0.7`.
+See [the 0.0.6 release notes](RELEASE_NOTES.md) for the complete scope and
+acceptance evidence. ZFS-backed LXC/Samba delivery is planned for `0.0.7`,
+whole-GPU passthrough for `0.0.8`, and Local Model Inventory for `0.0.9`.
 
-## ZFS Provisioning Candidate
+## ZFS Provisioning
 
-The 0.0.6 candidate discovers local disks and writes an editable
+The 0.0.6 feature discovers local disks and writes an editable
 `./zpool.config`. It does not create a pool during discovery or configuration.
 Its storage-oriented defaults are pool `zfspool`, dataset `zfspool/archive`,
 and mountpoint `/media/zfspool/archive`; Samba and LXC remain later consumers
@@ -43,7 +44,7 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh | \
 Download the runner before generating or applying a destructive plan. Review
 the design in [the ZFS feature plan](docs/setup/storage/zfs/feature.plan) and
 follow [the human acceptance procedure](docs/setup/storage/zfs/human.acceptance.md)
-for non-destructive candidate testing.
+for review, planning, explicitly authorized creation, and verification.
 
 ## Feature Runner Naming
 

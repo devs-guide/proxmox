@@ -194,8 +194,9 @@ type, width, device membership, pool properties, datasets, and mounted state.
 
 This release contains only the general ZFS tooling. Samba and LXC provisioning,
 network attachment, SSH access, Node.js, and server-specific storage choices
-remain separate tasks built from existing features. GPU work remains targeted
-for release 0.0.7.
+remain separate tasks built from existing features. ZFS-backed LXC and Samba
+work is planned for release 0.0.7, GPU work for 0.0.8, and Local Model
+Inventory for 0.0.9.
 
 The step-by-step review gates are documented in the
 [human acceptance procedure](human.acceptance.md).
