@@ -67,7 +67,7 @@ remove_managed_rules() {
   local -a numbers=()
   mapfile -t numbers < <(
     ufw status numbered 2>/dev/null \
-      | awk '/# devs-guide-ingest-egress/ {line=$0; sub(/^\[/, "", line); sub(/\].*$/, "", line); gsub(/[[:space:]]/, "", line); print line}' \
+      | awk '/# ingest-egress/ {line=$0; sub(/^\[/, "", line); sub(/\].*$/, "", line); gsub(/[[:space:]]/, "", line); print line}' \
       | sort -rn
   )
   for number in "${numbers[@]}"; do
@@ -126,7 +126,7 @@ main() {
   remove_managed_rules
   for rule in "${rules[@]}"; do
     IFS='|' read -r ip port host <<< "${rule}"
-    ufw allow out on "${EGRESS_IF}" to "${ip}" port "${port}" proto tcp comment "devs-guide-ingest-egress"
+    ufw allow out on "${EGRESS_IF}" to "${ip}" port "${port}" proto tcp comment "ingest-egress"
   done
   write_fetch_wrapper
   ufw --force enable

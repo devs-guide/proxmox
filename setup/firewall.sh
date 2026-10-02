@@ -181,7 +181,7 @@ for rule in json.loads(sys.argv[3]):
   fi
 
   HOST_FW_PATH="/etc/pve/nodes/${node}/host.fw"
-  BACKUP_PATH="/var/backups/devs-guide-firewall/${node}.host.fw.$(date -u +%Y%m%dT%H%M%SZ).bak"
+  BACKUP_PATH="/var/backups/ingest-firewall/${node}.host.fw.$(date -u +%Y%m%dT%H%M%SZ).bak"
   mkdir -p "$(dirname "${BACKUP_PATH}")"
   if [[ -f "${HOST_FW_PATH}" ]]; then
     cp -- "${HOST_FW_PATH}" "${BACKUP_PATH}"
@@ -190,7 +190,7 @@ for rule in json.loads(sys.argv[3]):
     : > "${BACKUP_PATH}"
   fi
   CT_FW_PATH="/etc/pve/firewall/${CTID}.fw"
-  CT_BACKUP_PATH="/var/backups/devs-guide-firewall/${CTID}.fw.$(date -u +%Y%m%dT%H%M%SZ).bak"
+  CT_BACKUP_PATH="/var/backups/ingest-firewall/${CTID}.fw.$(date -u +%Y%m%dT%H%M%SZ).bak"
   if [[ -f "${CT_FW_PATH}" ]]; then
     cp -- "${CT_FW_PATH}" "${CT_BACKUP_PATH}"
     CT_FW_EXISTED=1
@@ -201,7 +201,7 @@ for rule in json.loads(sys.argv[3]):
   APPLY_ACTIVE=1
 
   for port in 22 8006; do
-    comment="devs-guide local management tcp/${port}"
+    comment="local management tcp/${port}"
     if ! python3 -c '
 import ipaddress, json, sys
 comment, source, port = sys.argv[1:]
@@ -222,7 +222,7 @@ raise SystemExit(0 if any(matches(rule) for rule in json.load(sys.stdin)) else 1
         --source "${MGMT_CIDR}" --proto tcp --dport "${port}" --comment "${comment}"
     fi
   done
-  comment="devs-guide Samba ingest tcp/445"
+  comment="Samba ingest tcp/445"
   if ! python3 -c '
 import ipaddress, json, sys
 source, slot, comment = ipaddress.ip_network(sys.argv[1], strict=False), sys.argv[2], sys.argv[3]
