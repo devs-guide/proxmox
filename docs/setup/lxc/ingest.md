@@ -5,16 +5,24 @@ are discovered or confirmed; examples are not defaults. Run every `preflight`
 before its corresponding mutation and keep physical or out-of-band console
 access during host network/firewall changes.
 
+The feature runners use the shared runtime detector. On PVE 9/Trixie, the
+native compatible `python3` is sufficient; `/opt/ansible/py312` and its handoff
+marker are not prerequisites. A missing or stale shared Ansible venv may be
+repaired from system Python, but CPython is built only as an older-release
+fallback when the native interpreter is below the supported minimum.
+
 ## Proxmox host sequence
 
-1. Bootstrap the matching supported Proxmox lane using the current entrypoint
-   in the repository `readme.md`. For the PVE 9/Trixie lane:
+1. Bootstrap the matching supported Proxmox lane when the base host still
+   needs repository, package, or baseline configuration. For PVE 9/Trixie:
 
    ```bash
    wget -qO- https://devs-guide.github.io/proxmox/9.1.sh | bash
    ```
 
-   Run the existing ZFS inventory/verification workflow from
+   This full baseline is not required merely to manufacture a managed Python
+   when compatible system Python and the shared Ansible runtime are already
+   available. Run the existing ZFS inventory/verification workflow from
    `docs/setup/storage/zfs/human.acceptance.md`. An already accepted pool is
    verified, not recreated.
 2. Discover physical NICs and the management default-route path:

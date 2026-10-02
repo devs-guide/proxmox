@@ -39,7 +39,6 @@ ANSIBLE_CORE_SPEC="ansible-core==${ANSIBLE_CORE_VERSION}"
 PROXMOX_RUNTIME_CONTEXT="host"
 FEATURE_MODE="${1:-${PROXMOX_VLAN_MODE:-preflight}}"
 FEATURE_USE_DISCOVERY="${PROXMOX_VLAN_USE_DISCOVERY:-true}"
-FEATURE_BASELINE_BYPASS="${PROXMOX_FEATURE_SKIP_BASELINE_CHECK:-0}"
 FEATURE_OOB_ACK="${PROXMOX_VLAN_CONFIRM_OOB:-}"
 FEATURE_INTERACTIVE="${PROXMOX_VLAN_INTERACTIVE:-1}"
 FACTS_DIR="${PROXMOX_VLAN_FACTS_DIR:-/etc/ansible/proxmox/facts}"
@@ -143,24 +142,7 @@ require.valid.mode() {
   esac
 }
 
-require.baseline.ready() {
-  if [[ "${FEATURE_BASELINE_BYPASS}" == "1" ]]; then
-    log "Skipping baseline readiness gate because PROXMOX_FEATURE_SKIP_BASELINE_CHECK=1."
-    return
-  fi
-
-  if [[ ! -x "${MANAGED_TARGET_PYTHON_PATH}" ]]; then
-    log.error "Managed target Python not found at ${MANAGED_TARGET_PYTHON_PATH}."
-    log.error "Run the baseline bootstrap first, then rerun this feature."
-    exit 1
-  fi
-
-  if [[ ! -f "${MANAGED_TARGET_HANDOFF_MARKER}" ]]; then
-    log.error "Baseline handoff marker not found at ${MANAGED_TARGET_HANDOFF_MARKER}."
-    log.error "Run the baseline bootstrap first, then rerun this feature."
-    exit 1
-  fi
-
+require.host.network.ready() {
   if [[ ! -f /etc/network/interfaces ]]; then
     log.error "/etc/network/interfaces is missing."
     exit 1
@@ -950,7 +932,7 @@ main() {
   require.apt
   require.proxmox
   require.valid.mode
-  require.baseline.ready
+  require.host.network.ready
   ensure.managed.ansible
   prepare.feature.files
   run.vlan.feature

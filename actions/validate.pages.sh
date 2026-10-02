@@ -565,6 +565,48 @@ check_published_samba_runner_policy() {
   fi
 }
 
+check_published_vlan_runtime_policy() {
+  local published_runner="${TMPDIR}/setup.vlan.sh"
+  local published_common="${TMPDIR}/release.common.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup.vlan.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'require.host.network.ready()' \
+    'ensure.managed.ansible' \
+    'ansible.runtime.run'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup.vlan.sh is missing canonical runtime marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  for needle in \
+    'MANAGED_TARGET_HANDOFF_MARKER' \
+    'Run the baseline bootstrap first' \
+    'PROXMOX_FEATURE_SKIP_BASELINE_CHECK'; do
+    if grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup.vlan.sh retains stale runtime blocker: ${needle}"
+      rc=1
+    fi
+  done
+  if grep -Eq '\[\[[^]]*MANAGED_TARGET_PYTHON_PATH' "${published_runner}"; then
+    echo "[validate.pages][error] published setup.vlan.sh gates execution on a provisional managed Python path"
+    rc=1
+  fi
+
+  if [[ ! -f "${published_common}" ]] \
+    || ! grep -Fq 'provisional fallback values only' "${published_common}"; then
+    echo "[validate.pages][error] published release.common.sh does not define managed Python defaults as provisional"
+    rc=1
+  fi
+}
+
 check_published_release91_bootstrap_policy() {
   local published_bootstrap="${TMPDIR}/9.1.sh"
   local published_common="${TMPDIR}/release.common.sh"
@@ -925,6 +967,7 @@ check_published_network_playbook_policy() {
 }
 
 if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
+  check_published_vlan_runtime_policy
   check_published_samba_runner_policy
   check_published_release91_bootstrap_policy
   check_published_ansible_runtime_policy

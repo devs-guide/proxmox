@@ -66,6 +66,29 @@ case.pve9.native() {
   assert.eq 3.13.5 "${PYTHON_VERSION}" "PVE 9 fallback pin"
 }
 
+case.pve9.reuse.without.managed.handoff() {
+  reset.policy
+  ANSIBLE_RUNTIME_CONTEXT="pve_host"
+  ANSIBLE_RUNTIME_PVE_PRESENT=1
+  ANSIBLE_RUNTIME_PVE_VERSION="9.2.21"
+  ANSIBLE_RUNTIME_PVE_MAJOR="9"
+  ANSIBLE_RUNTIME_DEBIAN_VERSION="13"
+  ANSIBLE_RUNTIME_DEBIAN_CODENAME="trixie"
+  ANSIBLE_RUNTIME_SYSTEM_PYTHON_VERSION="3.13.5"
+  ANSIBLE_RUNTIME_SYSTEM_PYTHON_COMPATIBLE=1
+  ANSIBLE_RUNTIME_SYSTEM_VENV_READY=1
+  ANSIBLE_RUNTIME_MANAGED_PYTHON="/opt/ansible/py312/bin/python"
+  ANSIBLE_RUNTIME_MANAGED_PYTHON_READY=0
+  ANSIBLE_RUNTIME_ANSIBLE_READY=1
+  ANSIBLE_RUNTIME_ANSIBLE_VERSION="ansible-playbook [core ${ANSIBLE_CORE_VERSION}]"
+  ansible.runtime.select.fallback
+  ansible.runtime.resolve.policy
+  assert.eq existing_venv "${ANSIBLE_RUNTIME_PYTHON_STRATEGY}" "PVE 9 existing Ansible strategy without managed handoff"
+  assert.eq reuse "${ANSIBLE_RUNTIME_ANSIBLE_ACTION}" "PVE 9 existing Ansible action without managed handoff"
+  assert.eq 0 "${ANSIBLE_RUNTIME_BUILD_PYTHON}" "PVE 9 existing Ansible build decision without managed handoff"
+  assert.eq /usr/bin/python3 "${ANSIBLE_RUNTIME_TARGET_PYTHON}" "PVE 9 target interpreter without managed handoff"
+}
+
 case.old.release() {
   local pve_major="$1" codename="$2" debian_version="$3"
   reset.policy
@@ -181,6 +204,8 @@ case.generated.vars() {
   grep -Fq 'build_python: false' "${ANSIBLE_RUNTIME_VARS_PATH}" || fail "runtime build decision is missing"
   grep -Fq "ansible_python_interpreter_managed: '/usr/bin/python3'" "${ANSIBLE_RUNTIME_VARS_PATH}" \
     || fail "runtime managed-interpreter alias is missing"
+  grep -Fq "managed_target_handoff_marker: ''" "${ANSIBLE_RUNTIME_VARS_PATH}" \
+    || fail "native system Python runtime must not advertise a managed handoff prerequisite"
 }
 
 case.cleanup.guard() {
@@ -197,6 +222,7 @@ case.cleanup.guard() {
 }
 
 case.pve9.native
+case.pve9.reuse.without.managed.handoff
 case.old.release 8 bookworm 12
 case.old.release 7 bullseye 11
 case.old.release 6 buster 10

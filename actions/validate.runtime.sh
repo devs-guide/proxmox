@@ -1339,6 +1339,47 @@ for runner in \
     exit 1
   fi
 done
+for runner in \
+  setup/vlan.sh \
+  setup/network.sh \
+  setup/cli.codex.sh \
+  setup/lxc/debian.sh \
+  setup/lxc/samba.sh \
+  setup/lxc/network.sh \
+  setup/lxc/codex.sh \
+  setup/lxc/users.sh; do
+  if grep -Fq 'MANAGED_TARGET_HANDOFF_MARKER' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} treats a managed Python handoff marker as a feature prerequisite"
+    exit 1
+  fi
+  if grep -Eq '\[\[[^]]*MANAGED_TARGET_PYTHON_PATH' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} directly gates execution on a provisional managed Python path"
+    exit 1
+  fi
+  if grep -Fq 'Run the baseline bootstrap first' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} retains a blanket baseline-bootstrap blocker"
+    exit 1
+  fi
+  if grep -Fq 'PROXMOX_FEATURE_SKIP_BASELINE_CHECK' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} retains the obsolete baseline readiness bypass"
+    exit 1
+  fi
+done
+for runner in \
+  setup/firewall.sh \
+  setup/lxc/storage.sh \
+  setup/lxc/egress.sh; do
+  if grep -Eq 'source\.release\.common|ensure\.(managed|container)\.ansible|ansible\.runtime\.' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] shell-only runner ${runner} unexpectedly depends on the Ansible/Python bootstrap"
+    exit 1
+  fi
+done
+if grep -Eq '(^|[^[:alnum:]_])lsb(_release)?([^[:alnum:]_]|$)' \
+  "${ROOT}/bootstrap/ansible.runtime.sh" \
+  "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] canonical runtime detection must use /etc/os-release and must not require LSB tooling"
+  exit 1
+fi
 if grep -Fq 'meta: end_play' "${ROOT}/ansible/debian/ansible.venv.yml"; then
   echo "[validate.runtime][error] ansible.venv.yml still terminates the caller play"
   exit 1
