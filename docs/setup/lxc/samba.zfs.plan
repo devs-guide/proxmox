@@ -1,0 +1,152 @@
+# Release 0.0.7: ZFS-backed LXC and LAN-only Samba plan
+
+Release 0.0.7 will compose the existing Debian LXC, LXC networking, mountpoint,
+user, and Samba features around an already accepted host ZFS dataset. It does
+not recreate or modify the pool topology delivered by release 0.0.6.
+
+The feature must remain independent of hostname, IP address, interface,
+bridge, VLAN, CTID, pool, dataset, mountpoint, account, and subnet. Target-host
+values belong in operator-reviewed runtime input, not committed defaults.
+
+## Required traffic separation
+
+- Proxmox web administration and host SSH remain on the operator-selected 1GbE
+  management path.
+- The container uses a 1GbE-backed private or NAT path for its default route,
+  DNS, APT, and other outbound Internet traffic.
+- A separate 10GbE-backed bridge or VLAN carries local-LAN SMB data.
+- The SMB data interface has no default route.
+- Samba binds only to the approved data interface and TCP 445 is allowed only
+  from the configured local subnet.
+- The host and container firewalls must enforce the same boundary. Interface
+  binding alone is not the sole access control.
+
+## Gate 1: base Debian container
+
+Use `setup/lxc/debian.sh` first and stop after base-container acceptance.
+
+1. Run its preflight and review available CTIDs, storage, bridges, templates,
+   and mount candidates.
+2. Select or download the current minimal Debian template through the existing
+   template policy. Do not hardcode a dated archive name in this feature.
+3. Create an unprivileged container with conservative CPU, memory, swap, and
+   rootfs values.
+4. Do not attach the archive dataset or install Samba in this gate.
+5. Confirm console/login, DNS, package egress, time, shutdown, start, and clean
+   reboot behavior.
+6. Preserve the generated facts and selected runtime values as acceptance
+   evidence.
+
+Base-container acceptance is the first deployment milestone. Later gates must
+not hide a failure in the existing creator.
+
+## Gate 2: network model
+
+The existing Debian LXC creator currently models a single `net0`. Release
+0.0.7 must add or validate a general multi-interface contract before applying
+the split design.
+
+The reviewed configuration must express at least:
+
+- an egress interface with the only default route;
+- a data interface with an operator-selected static LAN address, bridge/VLAN,
+  MTU, and no gateway;
+- explicit interface roles rather than assumptions based on `eth0`/`eth1`;
+- validation that route selection, source address, and firewall rules match
+  those roles;
+- rollback that preserves host management connectivity.
+
+Acceptance commands must prove that package traffic leaves through the egress
+path and SMB traffic enters through the data path. Proxmox host management must
+remain reachable throughout testing.
+
+## Gate 3: dataset attachment and unprivileged identity mapping
+
+1. Re-run ZFS status and verification against the accepted configuration.
+2. Resolve the selected dataset and host mountpoint without assuming their
+   names.
+3. Select a dedicated container service UID and GID.
+4. Configure explicit unprivileged LXC ID mapping and the required subordinate
+   UID/GID ranges.
+5. Apply host ownership or POSIX ACLs to the dataset for the mapped service
+   identity. Do not use mode `0777`, root-forcing, or world-writable fallback.
+6. Add the host dataset as a reviewed LXC bind mount at an independently
+   selected container path.
+7. Verify create, read, rename, delete, xattr, and ACL behavior as the mapped
+   identity before installing Samba.
+8. Restart the container and host to prove the mount and mapping are durable.
+
+The existing mountpoint selector can discover host mountpaths, but release
+0.0.7 must validate the missing identity-mapping and permission lifecycle as a
+first-class contract.
+
+## Gate 4: Samba policy
+
+Reuse `setup/lxc/samba.sh` and
+`ansible/proxmox/container/samba.file.share.yml` only after correcting or
+explicitly separating the current access modes.
+
+Known review findings:
+
+- guest mode currently renders `guest only = yes`, which prevents the same
+  share from providing meaningful authenticated-write behavior;
+- the current runner defaults `force user` and `force group` to `root`, which
+  is not acceptable for the unprivileged mapped-service design;
+- interface binding exists, but the selected data-interface identity and LAN
+  firewall policy must come from the reviewed network plan;
+- the existing macOS VFS stack already includes `catia`, `fruit`, and
+  `streams_xattr` and should remain covered by contract tests.
+
+The accepted design should use either:
+
+1. separate guest-read-only and authenticated-write shares over the same
+   dataset, or
+2. a proven Samba configuration that implements those permissions without
+   `guest only = yes` on the authenticated path.
+
+SMB3 is required. SMB1/NT1 must remain disabled. Credentials are
+operator-managed and must not be committed or printed into public evidence.
+
+## Contract and publication work
+
+Before remote apply, release 0.0.7 should add tests for:
+
+- general two-interface LXC serialization and no-gateway data interfaces;
+- exactly one container default route;
+- bind-mount and unprivileged ID-map validation;
+- service UID/GID ownership and ACL behavior;
+- guest-read-only versus authenticated-write share rendering;
+- removal of root-forcing defaults from the accepted archive path;
+- LAN-only interface and firewall policy;
+- macOS VFS options and SMB protocol floor;
+- idempotent reruns and reboot persistence;
+- complete Pages dependency publication.
+
+Every new fetched helper, playbook, schema, or runner must be added to the
+Pages builder and both local and published dependency validation in the same
+change.
+
+## Human acceptance sequence
+
+1. Accept the base unprivileged Debian container.
+2. Accept the 1GbE egress route without archive storage or Samba.
+3. Add the 10GbE data interface and prove it has no default route.
+4. Attach the dataset with mapped permissions and test it locally in the
+   container.
+5. Apply Samba and verify TCP 445 is reachable only from the configured LAN
+   through the data address.
+6. From macOS, test browse, guest read, authenticated write, rename, delete,
+   xattrs/resource forks, reconnect, and a sustained large-file transfer.
+7. Confirm the Proxmox web UI and host SSH still use management networking.
+8. Confirm container DNS and package traffic still use the egress path.
+9. Reboot the container and host, then repeat route, mount, permission, SMB,
+   and ZFS health checks.
+10. Preserve private facts, checksums, network evidence, mount configuration,
+    Samba validation, and post-load ZFS status for release review.
+
+## Release boundary
+
+Only general fixes and features required for this LXC/Samba workflow belong in
+0.0.7. The requested address or any other target-specific value is not a
+release default. GPU passthrough remains release 0.0.8. Local Model Inventory
+remains release 0.0.9.
