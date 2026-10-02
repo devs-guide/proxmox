@@ -25,6 +25,15 @@ See [the 0.0.6 release notes](RELEASE_NOTES.md) for the complete scope and
 acceptance evidence. ZFS-backed LXC/Samba delivery is planned for `0.0.7`,
 whole-GPU passthrough for `0.0.8`, and Local Model Inventory for `0.0.9`.
 
+## Release Publication
+
+Every existing and future GitHub release page follows the
+[release publication policy](docs/release/publication.md) and its
+[review template](docs/release/template.md). The exact title and body require
+human approval before publication or editing. Before a new release is
+published, older release pages must be audited and reconciled with the same
+structure without changing their tags, source commits, or assets.
+
 ## ZFS Provisioning
 
 The 0.0.6 feature discovers local disks and writes an editable
