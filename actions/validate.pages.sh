@@ -124,6 +124,37 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   done
 fi
 
+extract.runner.array.items() {
+  local runner_path="$1"
+  local array_name="$2"
+
+  awk -v array_name="${array_name}" '
+    function emit_quoted(line, value) {
+      while (match(line, /"[^"]+"/)) {
+        value = substr(line, RSTART + 1, RLENGTH - 2)
+        print value
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+
+    $0 ~ "^[[:space:]]*" array_name "[[:space:]]*=[[:space:]]*\\(" {
+      in_array = 1
+      emit_quoted($0)
+      if (index($0, ")") > 0) {
+        in_array = 0
+      }
+      next
+    }
+
+    in_array {
+      emit_quoted($0)
+      if (index($0, ")") > 0) {
+        in_array = 0
+      }
+    }
+  ' "${runner_path}"
+}
+
 read.runner.array() {
   local runner_path="$1"
   local array_name="$2"
@@ -146,11 +177,7 @@ read.runner.array() {
       continue
     fi
     RUNNER_ARRAY_REFS+=("${feature_ref}")
-  done < <(
-    sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner_path}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
+  done < <(extract.runner.array.items "${runner_path}" "${array_name}")
 
   if ((${#RUNNER_ARRAY_REFS[@]} == 0)) && [[ "${required}" == "1" ]]; then
     echo "[validate.pages][error] ${runner_path#${WORKDIR}/} has empty or missing ${array_name} array"
@@ -246,7 +273,7 @@ check_setup_feature_refs() {
     return
   fi
 
-  if ! read.runner.array "${runner_path}" "FEATURE_PLAYBOOKS" "1"; then
+  if ! read.runner.array "${runner_path}" "FEATURE_PLAYBOOKS" "0"; then
     return
   fi
   playbook_refs=( "${RUNNER_ARRAY_REFS[@]}" )
@@ -359,14 +386,8 @@ check_feature_manifest() {
       echo "[validate.pages][ok] ${source} matches ${compare_hint}"
     fi
     if [[ "${policy}" == feature ]]; then
-      if sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${WORKDIR}/${source}" \
-        | grep -Eq '"[^"]+"'; then
-        check_setup_feature_refs "${source}"
-      fi
-      if sed -n '/^[[:space:]]*FEATURE_CLI_FILES=(/,/^[[:space:]]*)/p' "${WORKDIR}/${source}" \
-        | grep -Eq '"[^"]+"'; then
-        check_setup_cli_refs "${source}"
-      fi
+      check_setup_feature_refs "${source}"
+      check_setup_cli_refs "${source}"
     elif [[ "${policy}" != plain ]]; then
       echo "[validate.pages][error] invalid dependency policy for ${source}: ${policy}"
       rc=1

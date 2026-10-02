@@ -132,6 +132,37 @@ load.whitelist.ansible() {
   PKGS[ansible]="${_ansible_items[*]}"  # space-separated string, of playbook files
 }
 
+extract.runner.array.items() {
+  local runner="$1"
+  local array_name="$2"
+
+  awk -v array_name="${array_name}" '
+    function emit_quoted(line, value) {
+      while (match(line, /"[^"]+"/)) {
+        value = substr(line, RSTART + 1, RLENGTH - 2)
+        print value
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+
+    $0 ~ "^[[:space:]]*" array_name "[[:space:]]*=[[:space:]]*\\(" {
+      in_array = 1
+      emit_quoted($0)
+      if (index($0, ")") > 0) {
+        in_array = 0
+      }
+      next
+    }
+
+    in_array {
+      emit_quoted($0)
+      if (index($0, ")") > 0) {
+        in_array = 0
+      }
+    }
+  ' "${runner}"
+}
+
 load.runner.array_from_script() {
   local runner="$1"
   local array_name="$2"
@@ -140,11 +171,7 @@ load.runner.array_from_script() {
   local -a runner_items=()
   local runner_item=""
 
-  mapfile -t runner_items < <(
-    sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
+  mapfile -t runner_items < <(extract.runner.array.items "${runner}" "${array_name}")
 
   if ((${#runner_items[@]} == 0)); then
     if [[ "${required}" == "1" ]]; then
