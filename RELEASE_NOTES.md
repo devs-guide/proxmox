@@ -1,130 +1,134 @@
-# 0.0.5 - Proxmox Runtime, Networking, LXC, and VM Restore
+# 0.0.6 - General Local ZFS Provisioning
 
-Release `0.0.5` promotes the Proxmox runtime, networking, LXC, and VM restore
-work completed after `0.0.4`. It keeps the published Proxmox VE 6.4/Buster
-compatibility lane while making Proxmox VE 9.1/Trixie the current host setup
-lane.
+Release `0.0.6` adds an opt-in, host-local ZFS workflow to the Proxmox toolkit.
+It discovers disks, writes an operator-editable configuration, validates that
+declaration against current hardware, generates an immutable reviewed plan,
+creates only after explicit authorization, and verifies the resulting pool and
+datasets.
+
+The feature is general. It does not depend on a hostname, IP address, fixed
+disk count, transport, pool name, dataset name, mountpoint, or chassis layout.
+Samba, LXC, networking, GPU passthrough, and model inventory are outside this
+release.
 
 ## Scope
 
-- Release range: `0.0.4..0.0.5`
-- Supported release lanes:
+- Release range: `0.0.5..0.0.6`
+- Supported host lanes remain:
   - Proxmox VE 6.4 / Debian Buster
   - Proxmox VE 9.1 / Debian Trixie
-- Mainline implementation before release metadata: 57 commits, 52 files,
-  13,849 insertions, and 264 deletions
-- Published host and workload workflows:
-  - Proxmox bootstrap and managed Ansible runtime
-  - host network discovery, planning, apply, and verification
-  - Debian LXC creation, users, network access, Samba, Node, and Codex
-  - local and remote QEMU VM restore
+- New published feature entrypoint:
+  - `setup/storage/zfs.sh`
+- New published configuration helper:
+  - `setup/storage/zpool.config.sh`
+- New reviewed implementation helper:
+  - `cli/storage/zfs.pool.sh`
 
-Whole-GPU passthrough is intentionally excluded from `0.0.5` and remains the
-separately reviewed `0.0.6` candidate.
+Release `0.0.5` remains the baseline for managed Proxmox runtime, networking,
+LXC, and VM restore behavior. This release adds the separately invoked storage
+workflow without changing the automatic bootstrap playlists.
 
 ## Highlights
 
-- Updated the PVE 9.1 bootstrap to prefer native Trixie Python for the
-  controller while retaining a managed Python 3.13 target runtime and pinned
-  `ansible-core==2.20.5`.
-- Added discovery-led Proxmox networking with persisted preflight evidence,
-  explicit plans, apply-time checks, and post-apply verification.
-- Split LXC setup into reusable common, Debian, users, network, Samba, Node,
-  and Codex layers.
-- Added recoverable VM restore tooling for SSH synchronization, archive
-  inspection, transfer, temporary storage, local restore, remote restore, and
-  interrupted-stage recovery.
-- Added exact-candidate release validation, immutable Pages artifacts,
-  explicitly confirmed feature publication, and live post-publication checks.
+- Uses native Debian/Linux, smartmontools, LVM, mdraid, and OpenZFS tooling to
+  inventory local disks and active-use hazards.
+- Records stable by-id path, WWN, serial, exact bytes, transport, sector sizes,
+  health context, signatures, HBA, SCSI HCTL, and slot-derived evidence.
+- Presents pretty-printed JSON for candidate, exclusion, and ordered-device
+  review before writing `zpool.config`.
+- Supports repeatable model filters and ordered serial selection through a
+  bracketed list or one-serial-per-line text file.
+- Treats `6TB` as decimal and `5.5TiB` as binary while rejecting ambiguous
+  size syntax such as `5.5T`.
+- Supports equal-width mirror, RAIDZ1, RAIDZ2, and RAIDZ3 data vdevs.
+- Orders by unique numeric slot evidence when available and refuses ambiguous
+  automatic ordering instead of silently grouping by transient disk names.
+- Keeps SMART and optional BHT evidence advisory unless the operator selects a
+  stricter health policy.
+- Separates signature wiping from creation and never adds `zpool create -f`.
+- Generates an immutable plan ID with exact commands, capacity estimates,
+  topology, and a `zpool create -n` dry run.
+- Verifies data-vdev topology, membership, properties, datasets, and mounts
+  after creation.
 
-## Added
+## Configuration and review
 
-- `setup/network.sh` with check/apply modes backed by network preflight,
-  intent, plan, update, and verification artifacts.
-- `setup/lxc/users.sh`, `setup/lxc/network.sh`, and `setup/lxc/codex.sh` for
-  separately managed container capabilities.
-- `setup/cli.codex.sh` and its Debian playbook for the host-side Codex CLI
-  installation lane.
-- `setup/vm/restore.sh` for staged local or remote QEMU restore with durable
-  JSON state and explicit recovery controls.
-- `cli/ssh/sync.sh` for dedicated SSH key setup and guarded key rotation.
-- `cli/rsync/fetch.sh` for remote archive inspection and transfer.
-- `cli/storage/temp.sh` for temporary restore-storage lifecycle management.
-- Release, VM restore, Pages, and runtime validators used by the publication
-  workflow.
+The interactive configuration flow filters eligible disks, asks the operator
+to confirm each candidate with `y`, `n`, `all`, or `none`, displays selected
+order, and writes mode-`0600` JSON in the current working directory. Operators
+may edit grouping, properties, datasets, and mountpoints before validation.
 
-## Changed
+Generated defaults use pool `zfspool`, dataset `zfspool/archive`, and
+mountpoint `/media/zfspool/archive`. These names describe storage rather than a
+future consumer. Every value can be overridden.
 
-- PVE 9.1 now configures Debian Trixie and Proxmox no-subscription repositories
-  before the first package update and removes conflicting enterprise or Ceph
-  source definitions.
-- The PVE 9.1 controller uses native Python when it satisfies policy, while
-  Ansible modules retain the release-managed target-interpreter contract.
-- LXC creation uses a shared baseline and supports current Debian template
-  policy through Trixie.
-- The default Proxmox guest data-network strategy is high-speed-only, using
-  `vmbr1` and VLAN tag `1` unless the operator selects other values.
-- Published Bash helpers use explicit `.sh` paths and can bootstrap their
-  declared shared dependencies.
-- Pages validation and deployment are separated so pull requests and ordinary
-  feature pushes validate without changing the live site.
+The schema records exact identity and size expectations for each selected
+device. Validation and preflight reject duplicate paths, non-whole-disk input,
+identity or sector drift, unsafe active usage, unexpected signatures, and an
+existing or importable pool with the requested name.
 
-## Fixed
+## Whole-disk behavior
 
-- Disabled conflicting PVE enterprise sources before the first PVE 9 update.
-- Corrected PVE 9 bootstrap publication paths and native-Python handoff.
-- Corrected LXC network variable serialization, SFTP policy, user separation,
-  sudo membership, and container runtime imports.
-- Corrected network runner default detection and validation behavior.
-- Added missing Ansible password-hash and network-collection dependencies to
-  the validation environment.
-- Hardened restore state transitions, incomplete-stage recovery, check-mode
-  service behavior, and runner-Python selection.
-- Ensured Pages builds validate an exact candidate and publish only the
-  immutable artifact produced by that validation.
+The reviewed input is a complete disk through a stable
+`/dev/disk/by-id/...` path without a partition suffix. OpenZFS owns the Linux
+GPT and aligned ZFS-member layout; operators should not manually partition
+selected devices. Configuration, validation, preflight, and planning do not
+write disks. `apply` is the destructive boundary, but it is not a full-device
+overwrite or secure erase and does not invoke `zpool initialize`.
 
-## Operator-managed defaults
+After OpenZFS creation, Linux may display the main ZFS member as partition 1
+and a small reserved partition 9. That uniform layout is expected. Changing
+partitions or signatures after planning invalidates the reviewed plan.
 
-The repository provides editable LAN-oriented examples. Unless overridden,
-the baseline account passwords match the account names:
+## Property compatibility
 
-- `app` / `app`
-- `agent` / `agent`
-- `proxmox` / `proxmox`
-- `root` / `root`
+Generated configurations use OpenZFS's canonical `acltype=posix` value.
+Previously reviewed configurations containing the accepted `posixacl` alias
+remain valid: verification normalizes both representations to `posix` while
+continuing to reject `off`, `nfsv4`, and other mismatches.
 
-The default network policy assumes `10.0.0.0/24`, enables the RDP allowance,
-and permits SSH and the Proxmox web UI from the configured LAN. Operators are
-expected to update accounts, passwords, allowed users, subnets, ports, and
-repository policy for their own environment.
+The storage defaults include `ashift=12`, `autotrim=off`, `compression=lz4`,
+`atime=off`, `xattr=sa`, `dnodesize=auto`, an unmounted pool root, and a
+mounted dataset with `recordsize=1M` and `dedup=off`.
 
-No `nvidia` account is created by this release. GPU-oriented service accounts
-remain optional, operator-defined configuration for the later GPU workflow.
+## Human acceptance
 
-## Validation requirements
+The accepted deployment created an ONLINE pool from 18 reviewed SAS HDDs as
+two nine-member RAIDZ2 data vdevs. Members were grouped by observed slots 0–8
+and 9–17 and referenced through stable WWN paths. OpenZFS produced a uniform
+GPT/ZFS layout on all selected disks, the archive dataset mounted at its
+declared path, and the pool reported no known data errors.
 
-The accepted release must have evidence for both supported lanes:
+This topology is evidence, not a product default. The observed single-HBA
+condition remains a documented physical-topology advisory. Numeric ordering
+improves serviceability but does not prove expander, backplane, or power-domain
+isolation.
 
-- exact-candidate CI validation and Pages dependency-graph validation;
-- successful candidate Pages publication and remote validation;
-- PVE 6.4 bootstrap, LAN access, disposable LXC, Samba/SFTP, and local/remote
-  restore acceptance;
-- PVE 9.1 bootstrap, LAN access, network preflight, disposable Trixie LXC,
-  Samba/SFTP, and local/remote restore acceptance;
-- interrupted and resumed remote restore coverage;
-- successful second bootstrap runs on both lanes.
+## Safety boundaries
 
-## Deferred to 0.0.6
+- Planning and destructive actions require a downloaded regular script; they
+  are refused from a streamed shell.
+- Creation requires the reviewed plan file, its SHA-256 plan ID, mode
+  `create`, the exact pool name, and a final confirmation.
+- Signature wiping requires its own plan, mode, pool confirmation, and device
+  review. A wipe plan cannot be reused for creation.
+- Health is advisory by default; stricter SMART or BHT enforcement is
+  explicitly operator-selected.
+- No pool is automatically destroyed, exported, recreated, or initialized.
+- Private configuration, plan, checksum, and verification evidence remains
+  operator-owned.
 
-The following existing feature-branch work is not part of this tag:
+## Deferred work
 
-- whole-GPU inventory, preflight, preparation, verification, and rollback;
-- exact-BDF and multi-GPU host-driver selection;
-- QEMU GPU attach/detach and display-field restoration;
-- PVE 6.4 and PVE 9.1 GPU adapters, schemas, fixtures, and runbooks.
+- `0.0.7`: ZFS-backed Debian LXC creation, split management/egress/data
+  networking, mapped dataset permissions, and LAN-restricted Samba.
+- `0.0.8`: whole-GPU passthrough inventory, preparation, attachment,
+  verification, and rollback.
+- `0.0.9`: Local Model Inventory.
 
 ## Release artifacts
 
-- GitHub-generated source archives for tag `0.0.5`
-- Published Pages bootstrap and feature runners
+- GitHub-generated source archives for tag `0.0.6`
+- Published Pages ZFS runner and helper graph, with design and acceptance
+  documentation in the source release
 - No additional binary assets

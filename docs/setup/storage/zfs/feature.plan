@@ -1,0 +1,202 @@
+# Release 0.0.6: general local ZFS provisioning
+
+Release 0.0.6 adds an opt-in, locally executed ZFS workflow. It discovers
+whole disks, helps an operator select and group them, writes an editable
+`zpool.config`, validates that declaration against current hardware, and
+creates only the exact reviewed plan.
+
+The feature has no hostname, IP address, fixed disk count, fixed transport, or
+fixed pool-topology dependency. It is not part of the automatic Proxmox
+bootstrap playlist.
+
+## Configuration workflow
+
+The streamed entry point defaults to the non-destructive configuration action
+when its first argument is a flag:
+
+```bash
+mkdir -p /root/zfs-setup
+cd /root/zfs-setup
+wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh \
+  | bash -s -- --type sas --size 6TB
+```
+
+The default selection review is pretty-printed JSON containing the active
+filters, summary counts, candidate disks, and excluded disks with their
+reasons. Each record includes kernel and stable paths, model, serial, WWN,
+transport, media type, exact byte size, SMART/effective health, signatures,
+eligibility, and discoverable controller/enclosure evidence. A legacy table is
+available with `--review-format table`.
+
+Eligible candidates are confirmed with `y`, `n`, `all`, or `none`. Before each
+prompt, the current candidate is rendered as a small JSON object with its
+position in the candidate set. The selected order is also rendered as valid
+JSON before the operator optionally supplies a complete CSV index ordering.
+The operator then confirms the vdev type and equal-width vdev count.
+
+Inventory records a normalized numeric slot index, its discovery source, its
+controller/enclosure scope, and the raw SCSI HCTL address. Native sysfs
+enclosure slots are preferred when available; directly exposed SCSI/SAS disks
+fall back to the numeric target in `host:channel:target:lun`. This provides the
+same numeric-controller-target ordering used by the earlier drive-inventory
+workflow without depending on another project at runtime.
+
+`--device-order auto|slot|selection|stable-path` controls topology ordering.
+`auto` is the default: ordered `--serial`/`--device` input remains authoritative,
+while discovered candidates use ascending numeric slots only when every disk
+has a unique slot in one unambiguous scope. `slot` makes those requirements
+strict. `selection` preserves the reviewed operator order, and `stable-path`
+is an explicit compatibility mode. Missing, duplicate, or multi-scope slot
+evidence never silently falls back to WWN ordering. Interactive use requires a
+complete CSV order when automatic ordering is ambiguous; non-interactive use
+fails until an explicit order is supplied.
+
+The ordered list is divided contiguously into equal-width vdevs. Generated
+configuration records requested/effective ordering, evidence source,
+`topology.grouping: contiguous`, and each member's observed slot metadata.
+
+The naming defaults separate storage from its eventual consumers: the pool is
+`zfspool`, the mounted dataset is `zfspool/archive`, and its mountpoint is
+`/media/zfspool/archive`. The pool root remains unmounted with
+`mountpoint=none` and `canmount=off`. If the operator supplies another dataset
+but omits `--mountpoint`, the filesystem path is derived by prefixing the full
+dataset hierarchy with `/media/` (for example, `tank/archive` becomes
+`/media/tank/archive`). Explicit legacy names remain valid because the schema
+has not changed.
+
+SMART health is normalized to exactly one value: `passed`, `failed`, or
+`unknown`. It is advisory by default and does not override the hard safety
+checks for active usage, stable identity, whole-disk status, or signatures.
+Operators may explicitly choose `smart-required` or attach BHT inventory as
+advisory context. `bht-required` and evidence-package checksum verification are
+also available, but both are opt-in and are not part of the normal workflow.
+
+For deterministic automation, combine an ordered `--serial` array/file,
+repeatable `--device`, or
+`--all-matches` with `--non-interactive`, `--vdev-type`, and either
+`--vdev-count` or `--drives-per-vdev`. A filtered result larger than the
+requested topology is never silently truncated.
+
+Exact normalized model filters can be repeated with `--model`. `--serial`
+accepts either `[SERIAL_01,SERIAL_02,...]` or a text file containing one serial
+per line; supplied order becomes vdev member order without relying on
+transient `/dev/sdX` names.
+
+Supported data-vdev types are `mirror`, `raidz1`, `raidz2`, and `raidz3`.
+Unmirrored stripes, special vdevs, cache, log, and hot-spare creation are out of
+scope for this release.
+
+Size units are explicit. `6TB` is decimal while `5.5TiB` is binary. Ambiguous
+forms such as `5.5T` are rejected. The generated filter stores minimum and
+maximum bytes, while each selected device records its exact expected byte size,
+WWN, serial, transport, and sector sizes.
+
+## Manual review and planning
+
+The generator writes `./zpool.config` with mode `0600` and stops. Edit that
+JSON before continuing if device ordering, grouping, properties, datasets, or
+mountpoints need adjustment.
+
+Download the runner before planning or performing any destructive action:
+
+```bash
+wget -qO zfs.sh https://devs-guide.github.io/proxmox/setup/storage/zfs.sh
+chmod 0700 zfs.sh
+./zfs.sh validate-config --config ./zpool.config
+./zfs.sh preflight --config ./zpool.config
+./zfs.sh plan --config ./zpool.config --plan-file ./zpool.plan
+```
+
+Validation enforces supported equal-width topology, unique stable by-id paths,
+whole disks, matching identities and sizes, safe property allow-lists, and
+valid datasets. Slot-ordered configurations must remain numerically ordered,
+unique, and scoped to one controller/enclosure namespace. Live preflight also
+rejects slot, slot-source, slot-scope, or HCTL drift in addition to mounted
+filesystems, swap, LVM, mdraid, Ceph, imported ZFS members, device holders,
+identity drift, and an existing or importable pool with the requested name.
+
+Planning prints the topology, conservative capacity estimates, exact commands,
+and a physical fault-domain warning. It runs `zpool create -n`, then writes a
+canonical `zpool.plan` and SHA-256 plan ID. Editing the configuration or changing
+resolved hardware invalidates that plan.
+
+### Whole-disk and GPT behavior
+
+The preferred input is each complete disk through a stable
+`/dev/disk/by-id/...` path, without a `-partN` suffix. OpenZFS recommends whole
+disks and, on Linux, automatically creates its standard GPT and aligned ZFS
+partition layout when a whole disk is supplied. Operators must not manually
+create one partition per disk. `ashift=12` is the appropriate minimum for disks
+that report 4096-byte physical sectors.
+
+Configuration, validation, preflight, and `zpool create -n` planning do not
+modify disks. `apply` is the destructive boundary: its reviewed `zpool create`
+writes the GPT and ZFS labels/layout to every selected whole disk. This replaces
+the prior usable layout, but it is not a full-device overwrite or secure erase.
+OpenZFS provides the separate `zpool initialize` operation for writing all
+unallocated regions; this feature does not invoke it.
+
+After planning, do not run `sgdisk`, `parted`, `wipefs`, or manually create
+partitions. Any such change invalidates the reviewed hardware state and requires
+fresh inventory, preflight, and planning. After creation, Linux tools may show
+more than one OpenZFS-managed GPT entry, including a small reserved entry; this
+is expected and should not be replaced with a manually forced single-partition
+layout.
+
+Generated configurations use the canonical OpenZFS `acltype=posix` value.
+Existing reviewed configurations that contain the accepted `posixacl` alias
+remain valid: post-creation verification compares both representations as
+`posix`, but does not relax checks for `off`, `nfsv4`, or any other mismatch.
+
+Authoritative references:
+
+- [OpenZFS pool concepts](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolconcepts.7.html)
+- [OpenZFS performance guidance](https://openzfs.github.io/openzfs-docs/Project%20and%20Community/FAQ.html)
+- [OpenZFS whole disks versus partitions](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Workload%20Tuning.html#whole-disks-versus-partitions)
+- [OpenZFS `zpool initialize`](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-initialize.8.html)
+- [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf)
+
+The generated configuration records observed HBAs and emits a `single-hba`
+advisory when applicable. Numeric slot order improves serviceability, but an
+HCTL target is still controller-derived evidence rather than proof of a
+chassis label. Human review must confirm expanders, backplanes, enclosure
+slots, and power domains; contiguous ordering is not fault-domain isolation.
+
+## Explicit destructive actions
+
+Detected signatures stop ordinary planning. Setting
+`allow_signature_wipe: true` permits a separate signature-wipe plan; it does
+not permit creation to erase anything automatically.
+
+```bash
+./zfs.sh wipe-signatures \
+  --plan-file ./zpool.plan --plan-id PLAN_ID \
+  --mode wipe-signatures --confirm-wipe POOL_NAME
+```
+
+Without `--yes`, the wipe workflow confirms every affected stable path. After
+wiping, inventory and planning must run again.
+
+Creation requires the fresh create-plan ID, explicit mode, exact pool name, and
+an interactive final confirmation. Non-interactive creation additionally
+requires `--yes`:
+
+```bash
+./zfs.sh apply \
+  --plan-file ./zpool.plan --plan-id PLAN_ID \
+  --mode create --confirm-create POOL_NAME
+```
+
+The tool never adds `zpool create -f`. After creation it verifies data-vdev
+type, width, device membership, pool properties, datasets, and mounted state.
+
+## Release boundary
+
+This release contains only the general ZFS tooling. Samba and LXC provisioning,
+network attachment, SSH access, Node.js, and server-specific storage choices
+remain separate tasks built from existing features. ZFS-backed LXC and Samba
+work is planned for release 0.0.7, GPU work for 0.0.8, and Local Model
+Inventory for 0.0.9.
+
+The step-by-step review gates are documented in the
+[human acceptance procedure](human.acceptance.md).

@@ -1,0 +1,379 @@
+# Human ZFS acceptance procedure
+
+Run this procedure from a root shell on the target Proxmox host. Discovery,
+configuration, validation, and planning are safe review stages. Stop before
+`wipe-signatures` or `apply` unless a human has separately approved that exact
+destructive action and plan ID.
+
+Disk health is advisory by default. A SMART result of `failed` or `unknown` is
+shown prominently but does not, by itself, make an otherwise-safe disk
+ineligible. Mounted filesystems, swap, LVM, mdraid, Ceph, ZFS membership,
+holders, non-whole disks, missing stable identity, and unapproved signatures
+remain hard blockers.
+
+## 1. Download the reviewed runner
+
+```bash
+umask 077
+mkdir -p /root/zfs-0.0.6-acceptance
+cd /root/zfs-0.0.6-acceptance
+
+wget -qO ./zfs.sh https://devs-guide.github.io/proxmox/setup/storage/zfs.sh
+chmod 0700 ./zfs.sh
+./zfs.sh --help
+```
+
+Planning and destructive actions require this downloaded regular file. Do not
+stream those actions into Bash.
+
+If an earlier candidate generated a configuration ordered by WWN rather than
+slot, preserve it only as evidence and do not plan or create from it:
+
+```bash
+mv ./zpool.config ./zpool.config.pre-slot-order
+```
+
+## 2. Collect and review inventory
+
+No health-policy or evidence options are needed for the normal workflow:
+
+```bash
+./zfs.sh inventory \
+  --install-deps \
+  --output json \
+  --output-file ./inventory.json
+
+jq . ./inventory.json | less
+```
+
+Confirm all of the following:
+
+- System and boot devices are excluded.
+- Intended pool members are whole disks with unique stable
+  `/dev/disk/by-id/...` paths, WWNs, and serials.
+- Model, transport, exact byte size, logical sector size, and physical sector
+  size agree with the physical labels and controller inventory.
+- No intended disk reports a mounted filesystem, swap, LVM, mdraid, Ceph,
+  imported ZFS membership, holders, or an unexpected signature.
+- SMART warnings are reviewed as advisory information alongside the
+  operator's prior burn-in records.
+- The reported HBA, enclosure, slot, and fault-domain information is plausible.
+- `observed_slot_index`, `observed_slot_source`, `observed_slot_scope`, and
+  `observed_hctl` agree with the controller or enclosure inventory.
+
+Stop if identity, current usage, or signature results are unexpected.
+
+## 3. Generate the proposed configuration
+
+Use model and hardware filters to obtain a short candidate list, then answer
+`y` or `n` for each displayed disk:
+
+```bash
+./zfs.sh configure \
+  --type sas \
+  --media hdd \
+  --size 6TB \
+  --model ST6000NM0034 \
+  --device-order slot \
+  --pool zfspool \
+  --vdev-type raidz2 \
+  --vdev-count 2 \
+  --dataset zfspool/archive \
+  --mountpoint /media/zfspool/archive
+```
+
+These storage names are deliberately independent of Samba. `zfspool` is the
+unmounted ZFS storage root; `zfspool/archive` is the mounted data-bearing
+dataset; `/media/zfspool/archive` mirrors that hierarchy in the host
+filesystem. A later Samba or LXC task may consume the mounted dataset without
+making the pool itself Samba-specific. These are also the defaults, so the
+three naming flags may be omitted when this hierarchy is desired.
+
+The default review is pretty-printed JSON. It shows active filters, candidate
+and exclusion counts, every candidate's stable identity and health context,
+normalized slot index/source/scope, and excluded disks with their reasons.
+Before each `y/n/all/none` prompt, the current candidate is shown as a smaller
+JSON object with its index and total. Use `--review-format table` only when the
+legacy inventory table is preferred.
+
+`--device-order slot` is deliberately strict for this acceptance run. It
+requires one unambiguous controller/enclosure scope and a unique numeric slot
+for every selected disk. The normal `auto` default preserves ordered serial or
+device input and otherwise makes the same slot choice when it is unambiguous.
+It refuses non-interactive generation when slot evidence is ambiguous. The
+explicit alternatives are `selection` and `stable-path`; neither should be
+used merely to bypass unexpected slot data.
+
+At the prompts:
+
+- Use `y` or `n` to review disks individually.
+- Use `none` to stop selection.
+- Use `all` only after every remaining displayed disk has been positively
+  identified.
+- Review the selected-device-order JSON before typing `WRITE`. Press Enter to
+  keep the verified numeric slot order, or enter every displayed index once as
+  comma-separated values to create an explicitly reviewed manual order.
+- Confirm that contiguous vdev grouping matches the intended slot ranges.
+
+For a deterministic, already-reviewed selection, pass one ordered serial array:
+
+```bash
+./zfs.sh configure \
+  --type sas \
+  --media hdd \
+  --size 6TB \
+  --model ST6000NM0034 \
+  --serial='[SERIAL_01,SERIAL_02,SERIAL_03,SERIAL_04]' \
+  --non-interactive \
+  --pool zfspool \
+  --vdev-type raidz2 \
+  --vdev-count 1 \
+  --dataset zfspool/archive \
+  --mountpoint /media/zfspool/archive
+```
+
+For a longer list, put one serial on each line in the desired order (blank
+lines and lines beginning with `#` are ignored), then use:
+
+```bash
+./zfs.sh configure \
+  --type sas \
+  --model ST6000NM0034 \
+  --serial ./archive.serials.txt \
+  --non-interactive \
+  --pool zfspool \
+  --vdev-type raidz2 \
+  --vdev-count 2 \
+  --dataset zfspool/archive \
+  --mountpoint /media/zfspool/archive
+```
+
+Set the requested vdev count for the real topology. Do not use `--all-matches`
+merely to avoid reviewing the inventory.
+
+The command writes `./zpool.config` with mode `0600`. It does not create or
+modify a pool.
+
+## 4. Manually review `zpool.config`
+
+```bash
+jq . ./zpool.config | less
+
+jq -r '
+  .vdevs[] |
+  "\(.name) \(.type)",
+  (.devices[] |
+    "  \(.label) slot=\(.observed_slot_index) source=\(.observed_slot_source) hctl=\(.observed_hctl) \(.path) serial=\(.expected_serial) wwn=\(.expected_wwn) bytes=\(.expected_size_bytes) domain=\(.observed_fault_domain)")
+' ./zpool.config
+```
+
+Confirm:
+
+- Pool, dataset, mountpoint, vdev type, vdev count, and vdev width are correct.
+- Every stable path, WWN, serial, byte size, transport, and sector size matches
+  the approved inventory.
+- `selection.ordering` records the requested/effective mode and source, and
+  `topology.grouping` is `contiguous`.
+- Slot indexes are unique and numerically ordered across the complete vdev
+  sequence; each contiguous vdev slice matches the approved bay layout.
+- No device occurs twice.
+- `ashift=12`, `compression=lz4`, `atime=off`, `xattr=sa`,
+  `acltype=posix`, `recordsize=1M`, and `dedup=off` are appropriate. Older
+  reviewed configurations may contain the accepted OpenZFS compatibility alias
+  `posixacl`; verification canonicalizes both values to `posix` while still
+  rejecting a genuinely different ACL mode.
+- `allow_signature_wipe` remains `false` unless a separate wipe has been
+  explicitly approved.
+- A `single-hba` advisory, if present, has been reviewed against the actual
+  HBA, expander, backplane, enclosure, and power layout. Logical ordering is
+  not fault-domain isolation.
+- HCTL/controller target numbering has been independently matched to the
+  physical chassis labels. The tooling cannot prove that mapping by itself.
+
+Edit the JSON before continuing if grouping or properties need adjustment.
+
+## 5. Validate against current hardware
+
+Run these immediately before planning:
+
+```bash
+./zfs.sh validate-config --config ./zpool.config
+./zfs.sh preflight --config ./zpool.config
+```
+
+Both must pass. Stop on identity, byte-size, sector-size, transport, slot,
+slot-source, slot-scope, HCTL, active usage, signature, existing-pool, or
+importable-pool drift. An advisory SMART warning alone is not a preflight
+failure under the default policy.
+
+## 6. Generate and review the immutable plan
+
+```bash
+./zfs.sh plan \
+  --config ./zpool.config \
+  --plan-file ./zpool.plan
+
+jq '{
+  plan_id,
+  plan_kind,
+  requires_signature_wipe,
+  capacity,
+  zpool_create: .commands.zpool_create,
+  dataset_creates: .commands.dataset_creates
+}' ./zpool.plan
+
+jq -e '
+  .plan_kind == "create" and
+  .requires_signature_wipe == false
+' ./zpool.plan
+
+jq -e '
+  (.commands.zpool_create | index("-f")) == null
+' ./zpool.plan
+
+jq -r '
+  .configuration.vdevs[] |
+  .name + " " + .type,
+  (.devices[] |
+    "  slot=\(.observed_slot_index) label=\(.label) path=\(.path) serial=\(.expected_serial)")
+' ./zpool.plan
+
+jq -r '
+  .commands.zpool_create |
+  map(@sh) |
+  join(" ")
+' ./zpool.plan
+
+sha256sum ./zpool.config ./zpool.plan
+```
+
+Record and review the configuration checksum, plan ID, complete device list,
+slot-to-vdev topology, estimated capacity, and exact proposed `zpool create`
+and `zfs create` commands. Confirm that no unexpected property or vdev is
+present, both Boolean checks return `true`, and the create command does not
+contain `-f`. Every member path must be a stable whole-disk
+`/dev/disk/by-id/...` path without a `-partN` suffix.
+
+### Whole-disk/GPT acceptance record
+
+The approved best-practice input is each complete stable disk, not a manually
+created partition. OpenZFS recommends whole disks and, on Linux, creates its
+standard GPT and aligned ZFS partition layout automatically. When the physical
+sector size is 4096 bytes, `ashift=12` preserves the required alignment.
+
+Record these operational distinctions with the acceptance evidence:
+
+- Inventory, configuration, validation, preflight, and planning have not
+  modified or erased a disk. Planning uses `zpool create -n`.
+- `apply` is the destructive boundary. The reviewed `zpool create` writes a
+  fresh GPT and ZFS labels/layout to every selected whole disk.
+- Creation replaces the prior usable disk layout, but it is not a full-capacity
+  overwrite or secure erase.
+- `zpool initialize` is a separate OpenZFS operation that writes unallocated
+  regions; this feature does not invoke it.
+- Do not run `sgdisk`, `parted`, `wipefs`, or manually create partitions after
+  planning. A changed disk requires new inventory, preflight, and planning.
+- More than one OpenZFS-managed GPT entry, including a small reserved entry,
+  may be visible after creation. Do not replace it with a manually forced
+  single-partition layout.
+
+References:
+
+- [OpenZFS pool concepts](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolconcepts.7.html)
+- [OpenZFS performance guidance](https://openzfs.github.io/openzfs-docs/Project%20and%20Community/FAQ.html)
+- [OpenZFS whole disks versus partitions](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Workload%20Tuning.html#whole-disks-versus-partitions)
+- [OpenZFS `zpool initialize`](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-initialize.8.html)
+- [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf)
+
+Stop here for candidate testing. Reaching a reviewed create plan is sufficient
+to validate the published tooling without changing any disk.
+
+## 7. Optional health policies
+
+The default `advisory` policy requires no extra flags or log files. Operators
+who intentionally want live SMART to block selection may add:
+
+```bash
+--health-policy smart-required
+```
+
+Previously generated BHT evidence can also be attached for display without
+making it a blocker:
+
+```bash
+--health-evidence /path/to/bht-drive-reference.latest.json \
+--evidence-server SERVER_NAME
+```
+
+Only use the following when BHT evidence is deliberately required for every
+selected disk:
+
+```bash
+--health-policy bht-required \
+--health-evidence /path/to/bht-drive-reference.latest.json \
+--evidence-server SERVER_NAME
+```
+
+`--health-evidence-root DIRECTORY` additionally verifies each referenced
+evidence package's `SHA256SUMS`. It is optional. Evidence matching uses serial
+and normalized model, not historical `/dev/sdX` names. When evidence is part of
+the reviewed configuration, supply the same evidence options to `preflight`,
+`plan`, and any later plan revalidation.
+
+## 8. Separately authorized destructive branch
+
+If signatures are detected, ordinary creation remains blocked. A separately
+approved wipe requires `allow_signature_wipe: true`, a fresh signature-wipe
+plan, its exact plan ID, `--mode wipe-signatures`, the exact pool name, and
+interactive confirmation for each path. After wiping, discard that plan and
+repeat inventory, validation, preflight, and planning.
+
+Pool creation likewise requires explicit human authorization that records the
+exact plan ID, topology, and stable paths. Only then may the operator run:
+
+```bash
+CREATE_ZFS_PLAN_ID="$(jq -er '.plan_id' ./zpool.plan)"
+printf 'Creating zfspool with plan: %s\n' "${CREATE_ZFS_PLAN_ID}"
+
+./zfs.sh apply \
+  --plan-file ./zpool.plan \
+  --plan-id "${CREATE_ZFS_PLAN_ID}" \
+  --mode create \
+  --confirm-create zfspool
+```
+
+Do not add `--yes` during human acceptance. Read the final prompt and type
+`yes` manually only after matching its pool name and plan ID to the signed
+authorization. Parse the ID directly from the reviewed plan; do not hard-code
+the hash or place a command substitution or hash on a line by itself. OpenZFS
+then creates its GPT/ZFS layout from the reviewed whole-disk paths; no
+preliminary manual partitioning is required.
+
+## 9. Post-creation verification
+
+After an independently authorized creation:
+
+```bash
+./zfs.sh status --pool zfspool --output text
+./zfs.sh verify --config ./zpool.config
+zpool status -P zfspool
+zpool list -v zfspool
+zfs list -r -o name,used,available,recordsize,mountpoint zfspool
+findmnt /media/zfspool/archive
+
+while IFS= read -r disk; do
+  resolved="$(readlink -f "${disk}")"
+  printf '\n%s -> %s\n' "${disk}" "${resolved}"
+  lsblk -o NAME,PATH,TYPE,SIZE,PTTYPE,PARTTYPE,FSTYPE "${resolved}"
+done < <(
+  jq -r '.configuration.vdevs[].devices[].path' ./zpool.plan
+)
+```
+
+Confirm that the pool is `ONLINE`, both RAIDZ2 vdevs have the approved width
+and members, the dataset is mounted at its declared mountpoint, and every
+member now has the expected OpenZFS-managed GPT/ZFS layout.
+
+Preserve `inventory.json`, `zpool.config`, `zpool.plan`, checksums, plan ID, and
+verification output as private acceptance evidence. Samba and LXC setup begin
+only after ZFS acceptance is signed off.

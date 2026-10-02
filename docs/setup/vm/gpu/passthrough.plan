@@ -1,4 +1,4 @@
-# PLAN: Version-Aware Proxmox GPU Passthrough — Release 0.0.6
+# PLAN: Version-Aware Proxmox GPU Passthrough — Release 0.0.8
 
 > Historical design input retained for provenance. The implemented contract is
 > `master.plan` and the operator contract is `manual.md`. Any PCI address,
@@ -20,29 +20,24 @@ configuration, host-driver isolation, reboot state, four Proxmox generations, an
 transactional VM configuration. Release-specific differences will therefore live in thin
 adapters rather than accumulating conditional branches in the main runner.
 
-This review draft is not yet saved to disk.
+This historical review draft is saved for provenance; `master.plan` and
+`manual.md` remain authoritative for the implemented workflow.
 
 ## 1. Release and Branch Sequence
 
-- Complete release 0.0.5 from feature/vm/restore before beginning GPU implementation:
-    - Finish documentation and GitHub Actions validation.
-    - Merge the restore branch into main.
-    - Confirm Pages publication.
-    - Create the annotated 0.0.5 tag and GitHub release.
-    - Delete the merged local and remote feature/vm/restore branches.
-
-- Create feature/vm/gpu from the exact accepted 0.0.5 release commit.
-- Save this approved plan as prompt/vm/attach.gpu.plan as the first GPU-feature planning
-  artifact.
-
-- Create the new setup/vm/gpu.sh on that branch; do not carry the current empty placeholder
-  into 0.0.5.
-
-- Develop and validate GPU support on feature/vm/gpu.
+- Release 0.0.5 established the branch base and kept GPU work outside the VM
+  restore tag.
+- Release 0.0.6 delivered general local ZFS provisioning. Its annotated tag
+  has been merged into the GPU integration history without rebasing.
+- Release 0.0.7 is reserved for the ZFS-backed LXC and LAN-only Samba workflow.
+  The GPU branch must absorb that accepted base before final 0.0.8 release
+  review.
+- Continue development and validation on `feature/vm/gpu`; do not move GPU
+  behavior into the 0.0.7 LXC/Samba boundary.
 - Do not replace the stable Pages content with feature-branch artifacts. Pre-release target
   testing must use commit-pinned feature artifacts.
 
-- After all 0.0.6 gates pass, merge into main, publish Pages, create the annotated 0.0.6
+- After all 0.0.8 gates pass, merge into main, publish Pages, create the annotated 0.0.8
   tag and GitHub release, and then delete feature/vm/gpu.
 
 ## 2. Architecture and Version Dispatch
@@ -340,7 +335,7 @@ refused.
 
 - Verify deployed artifacts against the merged commit by checksum.
 
-Release 0.0.6 does not include:
+Release 0.0.8 does not include:
 
 - GPU detach or host-unprepare automation.
 - Intel iGPU passthrough.
@@ -382,7 +377,7 @@ Add a GPU validation workflow covering:
 - JSON schema, stdout/stderr separation, and every terminal state.
 - Pages publication of every declared .sh path with no extensionless Bash artifacts.
 
-Before releasing 0.0.6, collect approved remote evidence:
+Before releasing 0.0.8, collect approved remote evidence:
 
 - Inventory, audit, and dry-run on representative PVE 6, 7, 8, and 9 nodes.
 - Host preparation, manual reboot, verification, and attachment on each supported major.
@@ -398,7 +393,7 @@ Before releasing 0.0.6, collect approved remote evidence:
 - Confirmation that repeated runs are idempotent.
 
 Only after those gates pass may the feature merge to main, publish through Pages, and be
-released as 0.0.6.
+released as 0.0.8.
 
 ### Assumptions
 

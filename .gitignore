@@ -33,5 +33,10 @@ prompt/
 
 refresh.sh
 
+# Local ZFS provisioning declarations and immutable plans
+zpool.config
+zpool.config.bak.*
+zpool.plan
+
 # local private prompt repo symlink
 /prompt

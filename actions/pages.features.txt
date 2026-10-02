@@ -9,4 +9,6 @@ setup/lxc/network.sh|setup/lxc/network.sh|feature
 setup/lxc/codex.sh|setup/lxc/codex.sh|feature
 setup/lxc/users.sh|setup/lxc/users.sh|feature
 setup/vm/restore.sh|setup/vm/restore.sh|feature
+setup/storage/zfs.sh|setup/storage/zfs.sh|feature
+setup/storage/zpool.config.sh|setup/storage/zpool.config.sh|feature
 setup/vm/gpu.sh|setup/vm/gpu.sh|feature

@@ -1,12 +1,16 @@
-# PLAN — Whole-GPU passthrough for selected Proxmox VMs
+# PLAN — Whole-GPU passthrough for selected Proxmox VMs — Release 0.0.8
 
 > Earlier approved scope retained for traceability. `master.plan` records the
 > implemented runner/playbook architecture and any deliberate scope changes.
 
 ## Summary
 
-- Keep 0.0.5 unchanged on current main at bd5bbc3; GPU work is post-0.0.5 and must not merge before
-  that tag.
+- Keep released tags `0.0.5` and `0.0.6` unchanged. GPU work remains isolated
+  on `feature/vm/gpu` and targets `0.0.8`.
+
+- Release `0.0.7` is the separate ZFS-backed LXC and LAN-only Samba boundary.
+  Merge its accepted release base into the GPU branch before final `0.0.8`
+  candidate review; do not rebase or mix the feature scopes.
 
 - After human approval, save this plan as /Users/x/Desktop/devs.guide/prompts/proxmox/vm/
   gpu.passthrough.plan.md, preserving all existing prompt-workspace changes.
@@ -132,7 +136,11 @@ Stable flags:
 
 ## Release and persistence assumptions
 
-- The official 0.0.5 tag remains based on main, not the checked-out GPU branch.
-- GPU commits do not modify the 0.0.5 release plan or enter its tag.
+- The official `0.0.5` and `0.0.6` tags remain based on main, not the
+  checked-out GPU branch.
+- GPU commits do not modify completed release tags or enter the `0.0.7`
+  LXC/Samba release.
+- The GPU feature target is `0.0.8`; Local Model Inventory is deferred to
+  `0.0.9`.
 - Saving the approved plan adds only the new plan file; existing dirty prompt-repository files are
   neither staged nor changed.

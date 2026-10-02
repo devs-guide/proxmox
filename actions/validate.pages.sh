@@ -359,8 +359,14 @@ check_feature_manifest() {
       echo "[validate.pages][ok] ${source} matches ${compare_hint}"
     fi
     if [[ "${policy}" == feature ]]; then
-      check_setup_feature_refs "${source}"
-      check_setup_cli_refs "${source}"
+      if sed -n '/^[[:space:]]*FEATURE_PLAYBOOKS=(/,/^[[:space:]]*)/p' "${WORKDIR}/${source}" \
+        | grep -Eq '"[^"]+"'; then
+        check_setup_feature_refs "${source}"
+      fi
+      if sed -n '/^[[:space:]]*FEATURE_CLI_FILES=(/,/^[[:space:]]*)/p' "${WORKDIR}/${source}" \
+        | grep -Eq '"[^"]+"'; then
+        check_setup_cli_refs "${source}"
+      fi
     elif [[ "${policy}" != plain ]]; then
       echo "[validate.pages][error] invalid dependency policy for ${source}: ${policy}"
       rc=1
