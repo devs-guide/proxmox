@@ -1,152 +1,190 @@
-# Release 0.0.7: ZFS-backed LXC and LAN-only Samba plan
+# Feature 0.0.7: discovery-led ZFS-backed Samba ingest
 
-Release 0.0.7 will compose the existing Debian LXC, LXC networking, mountpoint,
-user, and Samba features around an already accepted host ZFS dataset. It does
-not recreate or modify the pool topology delivered by release 0.0.6.
+Release 0.0.7 is the complete LXC/Samba feature boundary. It composes the
+existing Debian LXC, host networking, ZFS, container networking, and Samba
+features around an already accepted host dataset. The release includes
+discovery-led untagged or VLAN-backed data networking, mapped dataset
+permissions, a hardened two-share Samba role, static-destination egress, and
+the later proxy-backed egress extension. Whole-GPU passthrough remains 0.0.8
+and Local Model Inventory remains 0.0.9.
 
-The feature must remain independent of hostname, IP address, interface,
-bridge, VLAN, CTID, pool, dataset, mountpoint, account, and subnet. Target-host
-values belong in operator-reviewed runtime input, not committed defaults.
+The feature must remain independent of hostname, IP address, interface name,
+bridge name, VLAN, CTID, pool, dataset, mountpoint, account, and subnet. Values
+observed on dragonfruit are an acceptance fixture, not repository defaults.
 
 ## Required traffic separation
 
-- Proxmox web administration and host SSH remain on the operator-selected 1GbE
-  management path.
-- The container uses a 1GbE-backed private or NAT path for its default route,
-  DNS, APT, and other outbound Internet traffic.
-- A separate 10GbE-backed bridge or VLAN carries local-LAN SMB data.
-- The SMB data interface has no default route.
-- Samba binds only to the approved data interface and TCP 445 is allowed only
-  from the configured local subnet.
-- The host and container firewalls must enforce the same boundary. Interface
-  binding alone is not the sole access control.
+- Proxmox web administration and host SSH stay on a discovered management
+  path and are accepted only from operator-selected management CIDRs.
+- A container egress interface owns the only default route. Its bridge,
+  address method, interface name, and Proxmox net slot are discovered live.
+- A separate data interface uses an operator-selected bridge and static local
+  address with no gateway.
+- The data bridge may be untagged or VLAN-aware. Untagged mode writes no VLAN
+  attributes and gives the Proxmox host no data-network address.
+- Samba binds only to the selected data-role interface. TCP 445 is accepted
+  only from selected local data CIDRs.
+- The Proxmox firewall protects the host and virtual NIC boundary. UFW inside
+  the container is the container firewall authority.
+- Container SSH and SFTP are disabled for the accepted ingest role. Operators
+  use the Proxmox console or `pct exec`.
 
-## Gate 1: base Debian container
+## Gate 1: discovery and immutable network intent
 
-Use `setup/lxc/debian.sh` first and stop after base-container acceptance.
+Preflight is read-only and must inventory:
 
-1. Run its preflight and review available CTIDs, storage, bridges, templates,
-   and mount candidates.
-2. Select or download the current minimal Debian template through the existing
-   template policy. Do not hardcode a dated archive name in this feature.
-3. Create an unprivileged container with conservative CPU, memory, swap, and
-   rootfs values.
-4. Do not attach the archive dataset or install Samba in this gate.
-5. Confirm console/login, DNS, package egress, time, shutdown, start, and clean
-   reboot behavior.
-6. Preserve the generated facts and selected runtime values as acceptance
-   evidence.
+- default routes, bridges, bonds, VLANs, host addresses, and cluster links;
+- every physical NIC's current name, aliases, MAC, PCI identity, driver,
+  supported/current speed, carrier, state, routes, addresses, and master;
+- every LXC/VM NIC slot, configured MAC, bridge, address mode, tag/trunks,
+  firewall flag, and runtime guest interface/route state;
+- existing Samba binding and firewall state when discoverable.
 
-Base-container acceptance is the first deployment milestone. Later gates must
-not hide a failure in the existing creator.
+Management is derived from the active default route and the physical members
+behind it. A data candidate must be physical, outside management/cluster/
+storage roles, unaddressed, unrouted, and unused by another bridge or bond.
+Candidates may be ranked by driver, PCI label, and supported speed, but the
+operator must select one. The reviewed selection stores MAC and PCI identity;
+the interface name is resolved again immediately before apply.
 
-## Gate 2: network model
+The dragonfruit fixture contains management `nic0` behind `vmbr0`, unused
+`nic1`, a down candidate `nic2`, and virtual `veth`/`fw*` devices. Tests must
+exclude all virtual devices, classify `nic0` as management, and refuse to
+select `nic2` merely because its fixture name or MAC is familiar.
 
-The existing Debian LXC creator currently models a single `net0`. Release
-0.0.7 must add or validate a general multi-interface contract before applying
-the split design.
+Network execution is split into explicit stages:
 
-The reviewed configuration must express at least:
+1. `preflight`: read-only inventory and risk report.
+2. `probe-link`: temporarily bring one unused candidate up, wait for carrier,
+   inspect it with ethtool, then restore its prior state unless applying.
+3. `write`: save a checksummed backup, stage the reviewed bridge block, and
+   require `ifreload -a -s` to pass.
+4. `apply`: revalidate identity and management invariants, reload networking,
+   and activate the selected data link.
+5. `verify`: recollect facts and compare them to immutable intent.
+6. `rollback`: restore the exact prior interfaces file from local console.
 
-- an egress interface with the only default route;
-- a data interface with an operator-selected static LAN address, bridge/VLAN,
-  MTU, and no gateway;
-- explicit interface roles rather than assumptions based on `eth0`/`eth1`;
-- validation that route selection, source address, and firewall rules match
-  those roles;
-- rollback that preserves host management connectivity.
+Untagged bridge mode renders a manual physical port and a manual Linux bridge
+with no host IP, gateway, VLAN awareness, or bridge VID list. The bridge name
+is discovered and confirmed; `vmbr1` is only a suggestion when unused.
 
-Acceptance commands must prove that package traffic leaves through the egress
-path and SMB traffic enters through the data path. Proxmox host management must
-remain reachable throughout testing.
+Apply fails if management identity or route changes, selected hardware drifts,
+the target bridge conflicts, a selected NIC becomes used/addressed, dry-run
+reload fails, or carrier is absent without explicit disconnected-link
+authorization.
 
-## Gate 3: dataset attachment and unprivileged identity mapping
+## Gate 2: role-based LXC networking
 
-1. Re-run ZFS status and verification against the accepted configuration.
-2. Resolve the selected dataset and host mountpoint without assuming their
-   names.
-3. Select a dedicated container service UID and GID.
-4. Configure explicit unprivileged LXC ID mapping and the required subordinate
-   UID/GID ranges.
-5. Apply host ownership or POSIX ACLs to the dataset for the mapped service
-   identity. Do not use mode `0777`, root-forcing, or world-writable fallback.
-6. Add the host dataset as a reviewed LXC bind mount at an independently
-   selected container path.
-7. Verify create, read, rename, delete, xattr, and ACL behavior as the mapped
-   identity before installing Samba.
-8. Restart the container and host to prove the mount and mapping are durable.
+The feature must not assume `net0`, `net1`, `eth0`, `eth1`, DHCP, CTID 100, or
+any bridge name. It selects a container from inventory, maps PVE NIC slots to
+runtime guest names by MAC, and identifies egress from the live default route.
 
-The existing mountpoint selector can discover host mountpaths, but release
-0.0.7 must validate the missing identity-mapping and permission lifecycle as a
-first-class contract.
+The operator confirms the existing egress role. The tool discovers a free PVE
+slot and collision-free guest interface name for the data role. It may suggest
+a data address by combining the selected subnet with the Proxmox management
+address's final octet, but it must require confirmation and duplicate-address
+probing. The serialized data NIC has a static address, firewall enabled, no
+gateway, and no tag in untagged mode.
+
+After `pct set`, the tool first verifies hot-apply. It requests a controlled
+restart only when pending/runtime evidence proves one is required. Acceptance
+requires exactly one default route, egress traffic on the selected egress
+role, and local data traffic on the selected data role.
+
+## Gate 3: dataset attachment and mapped identity
+
+1. Verify the accepted ZFS pool, dataset, properties, health, and mountpoint.
+2. Select the host mount and independent container mount from live inventory.
+3. Create a locked, non-login service identity inside the unprivileged LXC.
+4. Resolve the identity's effective host UID/GID from the actual LXC mapping.
+5. Preserve existing `root:root` ownership. Apply service ACLs to existing
+   content in restartable batches and default ACLs to new content.
+6. Never use recursive ownership replacement, mode 0777, host-root mapping,
+   or Samba root-forcing as a fallback.
+7. Verify read, create, rename, delete, POSIX ACL, and xattr behavior as the
+   mapped identity before starting Samba.
+8. Reboot the container and host to prove mount and mapping persistence.
 
 ## Gate 4: Samba policy
 
-Reuse `setup/lxc/samba.sh` and
-`ansible/proxmox/container/samba.file.share.yml` only after correcting or
-explicitly separating the current access modes.
+One selected dataset is exported through two shares:
 
-Known review findings:
+- guest read-only, forced to the mapped service identity;
+- authenticated read/write, restricted to the selected Samba account.
 
-- guest mode currently renders `guest only = yes`, which prevents the same
-  share from providing meaningful authenticated-write behavior;
-- the current runner defaults `force user` and `force group` to `root`, which
-  is not acceptable for the unprivileged mapped-service design;
-- interface binding exists, but the selected data-interface identity and LAN
-  firewall policy must come from the reviewed network plan;
-- the existing macOS VFS stack already includes `catia`, `fruit`, and
-  `streams_xattr` and should remain covered by contract tests.
+The accepted policy uses SMB3, file mode 0660, directory mode 0770, and the
+`catia`, `fruit`, and `streams_xattr` VFS stack. It disables SMB1, printers,
+Avahi, WSDD, broad private-network allowances, world-write modes, and root
+forcing. `interfaces`, `hosts allow`, and firewall rules are derived from the
+reviewed data role and CIDRs.
 
-The accepted design should use either:
+The initial compatibility policy may derive the Samba password from the
+selected account/hostname, with a prominent warning. Secrets are never
+committed or printed in public evidence. A later 0.0.7 credential helper may
+replace that policy without changing storage or networking.
 
-1. separate guest-read-only and authenticated-write shares over the same
-   dataset, or
-2. a proven Samba configuration that implements those permissions without
-   `guest only = yes` on the authenticated path.
+## Gate 5: container hardening and egress
 
-SMB3 is required. SMB1/NT1 must remain disabled. Credentials are
-operator-managed and must not be committed or printed into public evidence.
+The ingest role installs only required runtime packages. It stops, disables,
+and masks SSH services and sockets; locks temporary login accounts; disables
+unneeded discovery and client tooling; and keeps nesting/FUSE disabled.
 
-## Contract and publication work
+UFW defaults to deny incoming and outgoing. It permits DHCP and selected DNS
+through the egress role, SMB responses and TCP 445 on the data role, and only
+reviewed outbound destination IP/CIDR and port tuples. IPv6 remains disabled
+until an equivalent policy is supplied.
 
-Before remote apply, release 0.0.7 should add tests for:
+Approved URL metadata is validated by a download helper, but static firewall
+enforcement remains IP/port based. All resolved and redirected destinations
+must be explicitly approved. The proxy-backed 0.0.7 extension will later
+provide hostname policy, exact-URL broker downloads, checksums, size limits,
+approval windows, and audit logs without changing the network role model.
 
-- general two-interface LXC serialization and no-gateway data interfaces;
-- exactly one container default route;
-- bind-mount and unprivileged ID-map validation;
-- service UID/GID ownership and ACL behavior;
-- guest-read-only versus authenticated-write share rendering;
-- removal of root-forcing defaults from the accepted archive path;
-- LAN-only interface and firewall policy;
-- macOS VFS options and SMB protocol floor;
-- idempotent reruns and reboot persistence;
-- complete Pages dependency publication.
+## Public interfaces and publication
 
-Every new fetched helper, playbook, schema, or runner must be added to the
-Pages builder and both local and published dependency validation in the same
-change.
+All runners consume one schema-versioned, operator-reviewed YAML policy whose
+site values begin unset. Discovery writes facts separately from intent. Plans
+include source snapshot hashes and cannot apply after hardware, management,
+container, or configuration drift.
+
+Every new runner, helper, playbook, schema, and support file is added to the
+Pages manifest and local/published dependency validation in the same change.
+Intermediate feature commits may publish to Pages for remote acceptance, but
+no official 0.0.7 tag is created until every gate, including proxy egress,
+passes review.
+
+## Contract tests
+
+Automated coverage includes:
+
+- arbitrary physical/virtual interface names and the dragonfruit link fixture;
+- down high-speed candidates, explicit probing, and MAC/PCI drift;
+- management bridges, bonds, direct interfaces, and ambiguous default routes;
+- bridge conflicts, failed reload dry runs, and carrier failures;
+- arbitrary LXC net slots, guest names, DHCP/static egress, and one-route
+  enforcement;
+- untagged data NIC serialization with no tag or gateway;
+- duplicate-address rejection and hot-apply versus restart detection;
+- unprivileged UID/GID translation and resumable ACL application;
+- guest-read/authenticated-write rendering, SMB3, xattrs, and no root force;
+- stopped/masked SSH and default-deny static egress;
+- idempotent reruns, rollback artifacts, reboot persistence, and complete
+  Pages publication.
 
 ## Human acceptance sequence
 
-1. Accept the base unprivileged Debian container.
-2. Accept the 1GbE egress route without archive storage or Samba.
-3. Add the 10GbE data interface and prove it has no default route.
-4. Attach the dataset with mapped permissions and test it locally in the
-   container.
-5. Apply Samba and verify TCP 445 is reachable only from the configured LAN
-   through the data address.
-6. From macOS, test browse, guest read, authenticated write, rename, delete,
-   xattrs/resource forks, reconnect, and a sustained large-file transfer.
-7. Confirm the Proxmox web UI and host SSH still use management networking.
-8. Confirm container DNS and package traffic still use the egress path.
-9. Reboot the container and host, then repeat route, mount, permission, SMB,
+1. Accept host/runtime compatibility and read-only network inventory.
+2. Select and probe the physical data NIC; do not infer it from its name.
+3. Review, write, apply, and verify the host data bridge while management stays
+   reachable through an out-of-band console.
+4. Discover and confirm the LXC egress role, then add the no-gateway data role.
+5. Accept mapped storage permissions and xattrs without changing ownership.
+6. Apply the two-share Samba role and container firewall/hardening policy.
+7. From a data-network client, prove guest read denial of writes,
+   authenticated create/rename/delete/xattr, reconnect, and sustained transfer.
+8. Prove host SSH/web access is management-CIDR-only, LXC SSH is unavailable,
+   unapproved egress fails, and the data bridge has no host address.
+9. Reboot the container and host, then repeat route, mount, ACL, SMB, firewall,
    and ZFS health checks.
-10. Preserve private facts, checksums, network evidence, mount configuration,
-    Samba validation, and post-load ZFS status for release review.
-
-## Release boundary
-
-Only general fixes and features required for this LXC/Samba workflow belong in
-0.0.7. The requested address or any other target-specific value is not a
-release default. GPU passthrough remains release 0.0.8. Local Model Inventory
-remains release 0.0.9.
+10. Preserve private plans, checksums, facts, rollback files, and acceptance
+    evidence for release review.
