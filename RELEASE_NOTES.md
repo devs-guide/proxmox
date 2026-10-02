@@ -129,5 +129,6 @@ isolation.
 ## Release artifacts
 
 - GitHub-generated source archives for tag `0.0.6`
-- Published Pages ZFS runner, helper graph, and documentation
+- Published Pages ZFS runner and helper graph, with design and acceptance
+  documentation in the source release
 - No additional binary assets
