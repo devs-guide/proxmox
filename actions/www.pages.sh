@@ -210,7 +210,7 @@ load.setup.runner.refs() {
     return 0
   }
 
-  load.runner.array_from_script "${runner}" "FEATURE_PLAYBOOKS" "${pkg_key}" "1"
+  load.runner.array_from_script "${runner}" "FEATURE_PLAYBOOKS" "${pkg_key}" "0"
   load.runner.array_from_script "${runner}" "FEATURE_SUPPORT_FILES" "${pkg_key}_support" "0"
 }
 
