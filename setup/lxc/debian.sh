@@ -71,17 +71,7 @@ ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
 ANSIBLE_CORE_VERSION="${PROXMOX_BOOTSTRAP_ANSIBLE_CORE_VERSION:-2.20.5}"
 ANSIBLE_CORE_SPEC="ansible-core==${ANSIBLE_CORE_VERSION}"
-PYTHON_VERSION="${PROXMOX_BOOTSTRAP_PYTHON_VERSION:-3.12.3}"
-PYTHON_MAJOR_MINOR="${PYTHON_VERSION%.*}"
-PYTHON_SOURCE_PREFIX="${PROXMOX_BOOTSTRAP_PYTHON_SOURCE_PREFIX:-/usr/local}"
-PYTHON_BIN="${PYTHON_SOURCE_PREFIX}/bin/python${PYTHON_MAJOR_MINOR}"
-PYTHON_SRC_DIR="${PYTHON_SOURCE_PREFIX}/src/Python-${PYTHON_VERSION}"
-PYTHON_SRC_ARCHIVE="${PYTHON_SRC_DIR}.tgz"
-PYTHON_SRC_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
-MANAGED_TARGET_PYTHON_HOME="${PROXMOX_BOOTSTRAP_MANAGED_TARGET_PYTHON_HOME:-/opt/ansible/py312}"
-MANAGED_TARGET_PYTHON_PATH="${MANAGED_TARGET_PYTHON_HOME}/bin/python"
-MANAGED_TARGET_HANDOFF_MARKER="${MANAGED_TARGET_PYTHON_HOME}/.handoff-ready"
-PYTHON_BOOTSTRAP_BIN=""
+PROXMOX_RUNTIME_CONTEXT="host"
 FACTS_DIR="${PROXMOX_LXC_DEBIAN_FACTS_DIR:-/etc/ansible/proxmox/facts}"
 CONTAINERS_TSV_PATH="${PROXMOX_LXC_DEBIAN_CONTAINERS_TSV:-${FACTS_DIR}/lxc.debian.containers.tsv}"
 TEMPLATES_TSV_PATH="${PROXMOX_LXC_DEBIAN_TEMPLATES_TSV:-${FACTS_DIR}/lxc.debian.templates.tsv}"
@@ -1766,6 +1756,7 @@ run.debian.feature() {
   write.selection.file
   write.debian.extra.vars.file
 
+  ensure.managed.ansible
   log "Running Proxmox Debian LXC feature in mode=${FEATURE_MODE}..."
   run.feature.playbook "${DEBIAN_LXC_PLAYBOOK_PATH}" -e "@${DEBIAN_LXC_EXTRA_VARS_PATH}"
 
@@ -1781,7 +1772,6 @@ main() {
   require.apt
   require.valid.mode
   require.proxmox.host
-  ensure.managed.ansible
   prepare.feature.files
   run.debian.feature
 }

@@ -66,9 +66,9 @@ log() { log.info "$@"; }
 TMP_DIR="/tmp/proxmox-metal"
 PAGES_BASE_URL="${GITHUB[url]}"
 COMMON_HELPER_PATH="${TMP_DIR}/release.common.sh"
-PREFER_SYSTEM_PYTHON_FOR_ANSIBLE="1"
 SYSTEM_PYTHON_MIN_MAJOR="3"
 SYSTEM_PYTHON_MIN_MINOR="12"
+PROXMOX_RUNTIME_CONTEXT="host"
 
 source.release.common() {
   local script_dir=""
