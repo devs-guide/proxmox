@@ -19,6 +19,7 @@ files=(
   "bootstrap/release.common.sh"
   "bootstrap/ansible.runtime.sh"
   "tests/unit/ansible_runtime_policy_test.sh"
+  "tests/unit/debian_lxc_template_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network.sh"
@@ -698,32 +699,24 @@ if grep -q 'ultra-lean samba-only' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must not present Samba-specific hardening labels"
   exit 1
 fi
-if ! grep -q 'debian-10-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 10 policy template"
-  exit 1
-fi
-if ! grep -q 'debian-11-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 11 policy template"
-  exit 1
-fi
-if ! grep -q 'debian-12-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 12 policy template"
-  exit 1
-fi
-if ! grep -q 'debian-13-standard_' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must carry the Debian 13 policy template"
+if ! grep -q 'DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must support the PVE 6-9 Debian major matrix"
   exit 1
 fi
 if ! grep -q 'pveam available --section system' "${ROOT}/setup/lxc/debian.sh"; then
   echo "[validate.runtime][error] setup/lxc/debian.sh must query live templates via pveam available --section system"
   exit 1
 fi
-if ! grep -q 'DEBIAN_LXC_TEMPLATE_BASE_URL' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must define an official Proxmox template base URL fallback"
+if ! grep -q 'DEBIAN_LXC_TEMPLATE_FILENAME_REGEX' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must validate live Debian template filenames"
   exit 1
 fi
-if ! grep -q 'official URL fallback' "${ROOT}/setup/lxc/debian.sh"; then
-  echo "[validate.runtime][error] setup/lxc/debian.sh must expose URL fallback policy entries when pveam hides older Debian templates"
+if ! grep -q 'template.remote.latest.from.major' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must select the latest live template per supported Debian major"
+  exit 1
+fi
+if grep -q 'official URL fallback' "${ROOT}/setup/lxc/debian.sh"; then
+  echo "[validate.runtime][error] setup/lxc/debian.sh must not advertise direct URL fallback downloads"
   exit 1
 fi
 if ! grep -q 'download_method:' "${ROOT}/setup/lxc/debian.sh"; then
@@ -1232,28 +1225,16 @@ if ! grep -q 'template_policy:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
   echo "[validate.runtime][error] ansible/group_vars/proxmox.yml must define proxmox_lxc_debian.template_policy"
   exit 1
 fi
-if ! grep -q 'debian-10-standard_10.7-1_amd64.tar.gz' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 10/Buster template"
+if ! grep -q 'filename_regex:' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy must define the dynamic Debian filename contract"
   exit 1
 fi
-if ! grep -q 'debian-11-standard_11.7-1_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 11/Bullseye template"
+if ! grep -q 'selection: "latest_version_per_supported_major"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy must select the latest version per supported major"
   exit 1
 fi
-if ! grep -q 'debian-12-standard_12.12-1_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 12/Bookworm template"
-  exit 1
-fi
-if ! grep -q 'debian-13-standard_13.1-2_amd64.tar.zst' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy missing Debian 13/Trixie template"
-  exit 1
-fi
-if ! grep -q 'base_url: "https://download.proxmox.com/images/system"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy must include the official Proxmox images/system base_url"
-  exit 1
-fi
-if ! grep -q 'fallback_download_method: "url"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
-  echo "[validate.runtime][error] proxmox template policy must declare URL fallback download behavior"
+if ! grep -q 'allow_direct_url_fallback: false' "${ROOT}/ansible/group_vars/proxmox.yml"; then
+  echo "[validate.runtime][error] proxmox template policy must fail closed instead of using direct URL downloads"
   exit 1
 fi
 if ! grep -q 'access_profile: "local_only"' "${ROOT}/ansible/group_vars/proxmox.yml"; then
@@ -1369,6 +1350,7 @@ fi
 echo "[validate.runtime][ok] production runners use the canonical managed Ansible runtime"
 echo "[validate.runtime] running platform/runtime policy matrix..."
 bash "${ROOT}/tests/unit/ansible_runtime_policy_test.sh"
+bash "${ROOT}/tests/unit/debian_lxc_template_policy_test.sh"
 if ! bash -u -c '
   log() { :; }
   log.error() { :; }
@@ -1421,12 +1403,12 @@ if [[ "$(grep -Ec '^[[:space:]]+when: not proxmox_users_skip_container_safety_ch
   echo "[validate.runtime][error] users.yml must apply the effective container safety flag to all nine host safety tasks"
   exit 1
 fi
-if ! grep -q 'get_url:' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must support official URL fallback template downloads"
+if ! grep -q 'Require a catalog-backed template download method' "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must enforce catalog-backed template downloads"
   exit 1
 fi
-if ! grep -q "proxmox_lxc_debian_template_download_method == 'url'" "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
-  echo "[validate.runtime][error] debian.lxc.yml must branch URL fallback downloads by template.download_method"
+if grep -q "proxmox_lxc_debian_template_download_method == 'url'" "${ROOT}/ansible/proxmox/container/debian.lxc.yml"; then
+  echo "[validate.runtime][error] debian.lxc.yml must not retain the direct URL fallback path"
   exit 1
 fi
 echo "[validate.runtime][ok] Debian LXC host/base playbooks include template, pct, SSH, and light-hardening safeguards"

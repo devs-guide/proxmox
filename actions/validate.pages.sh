@@ -760,12 +760,11 @@ check_published_debian_lxc_policy() {
   fi
 
   for needle in \
-    'debian-10-standard_10.7-1_amd64.tar.gz' \
-    'debian-11-standard_11.7-1_amd64.tar.zst' \
-    'debian-12-standard_12.12-1_amd64.tar.zst' \
-    'debian-13-standard_13.1-2_amd64.tar.zst' \
-    'DEBIAN_LXC_TEMPLATE_BASE_URL' \
-    'official URL fallback' \
+    'DEBIAN_LXC_TEMPLATE_MAJOR=(10 11 12 13)' \
+    'DEBIAN_LXC_TEMPLATE_FILENAME_REGEX' \
+    'template.remote.latest.from.major' \
+    'A refreshed pveam catalog is required' \
+    'latest live pveam catalog' \
     'show Debian ISO + web reference context' \
     'Detected host mountpoint passthrough candidates:' \
     'Select mountpoints: single `4`, range `2-4`, CSV `1,3,4`, `ALL`, or `NONE`' \
@@ -781,6 +780,14 @@ check_published_debian_lxc_policy() {
 
   if grep -q 'show Debian web references' "${published_runner}"; then
     echo "[validate.pages][error] published setup/lxc/debian.sh still has stale menu label: show Debian web references"
+    rc=1
+  fi
+  if grep -q 'official URL fallback' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/debian.sh still exposes direct URL fallback downloads"
+    rc=1
+  fi
+  if grep -q 'debian-13-standard_13.1-2_amd64.tar.zst' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/lxc/debian.sh still treats Trixie 13.1-2 as an operational pin"
     rc=1
   fi
 }
@@ -806,7 +813,8 @@ check_published_debian_lxc_playbook_policy() {
     'Append default /24 when static IPv4 selection is a bare address' \
     'Report effective static IPv4 payload before pct create' \
     'Assert effective static IPv4 and gateway syntax before pct create' \
-    'Report effective pct net0 string before pct create'; do
+    'Report effective pct net0 string before pct create' \
+    'Require a catalog-backed template download method'; do
     if ! grep -q -- "${needle}" "${published_lxc}"; then
       echo "[validate.pages][error] published debian.lxc.yml is stale or missing mountpoint marker: ${needle}"
       rc=1
@@ -820,6 +828,10 @@ check_published_debian_lxc_playbook_policy() {
 
   if grep -Fq "regex_search(\"'([^']+)'\", '\\1')" "${published_lxc}"; then
     echo "[validate.pages][error] published debian.lxc.yml still has list-prone rootfs capture-group regex path derivation"
+    rc=1
+  fi
+  if grep -q "proxmox_lxc_debian_template_download_method == 'url'" "${published_lxc}"; then
+    echo "[validate.pages][error] published debian.lxc.yml still includes direct URL template downloads"
     rc=1
   fi
 }
