@@ -209,7 +209,7 @@ request=""
 result=""
 for arg in "$@"; do
   case "${arg}" in
-    @*) request="${arg#@}" ;;
+    @*) [[ -n "${request}" ]] || request="${arg#@}" ;;
     gpu_result_path=*) result="${arg#gpu_result_path=}" ;;
   esac
 done
@@ -245,6 +245,7 @@ GPU_ENV=(
   "PROXMOX_GPU_PLAYBOOK_ROOT=${ROOT}/ansible"
   "PROXMOX_ANSIBLE_RUNTIME_HELPER=${ROOT}/bootstrap/ansible.runtime.sh"
   "PROXMOX_ANSIBLE_VENV=${ANSIBLE_VENV_ROOT}"
+  "PROXMOX_RUNTIME_OS_RELEASE_PATH=${ETC_ROOT}/os-release"
   "GPU_TEST_VM_CONFIG=${VM_CONFIG}"
   "GPU_TEST_REQUEST_CAPTURE=${REQUEST_CAPTURE}"
 )
