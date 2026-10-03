@@ -1,0 +1,39 @@
+---
+- name: "[proxmox]: install remote VM restore CLI dependencies"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+
+  vars:
+    proxmox_vm_restore_packages:
+      - rsync
+      - openssh-client
+      - lvm2
+      - e2fsprogs
+      - findutils
+      - util-linux
+      - udev
+      - zstd
+      - jq
+
+  pre_tasks:
+    - name: Confirm this host is a Proxmox node
+      ansible.builtin.command:
+        argv:
+          - pveversion
+      changed_when: false
+
+  tasks:
+    - name: Install restore transport and filesystem dependencies
+      ansible.builtin.apt:
+        name: "{{ proxmox_vm_restore_packages }}"
+        state: present
+        update_cache: "{{ proxmox_vm_restore_update_cache | default(false) | bool }}"
+        cache_valid_time: "{{ proxmox_vm_restore_cache_valid_time | default(3600) | int }}"
+
+    - name: Report the dependency-only safety boundary
+      ansible.builtin.debug:
+        msg: >-
+          Dependencies are installed. This playbook does not create or remove
+          logical volumes, transfer archives, alter VM state, or invoke qmrestore.

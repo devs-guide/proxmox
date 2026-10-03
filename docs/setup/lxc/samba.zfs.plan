@@ -1,0 +1,220 @@
+# Feature 0.0.7: discovery-led ZFS-backed Samba ingest
+
+Release 0.0.7 is the complete LXC/Samba feature boundary. It composes the
+existing Debian LXC, host networking, ZFS, container networking, and Samba
+features around an already accepted host dataset. The release includes
+discovery-led untagged or VLAN-backed data networking, mapped dataset
+permissions, a hardened two-share Samba role, static-destination egress, and
+the later proxy-backed egress extension. Whole-GPU passthrough remains 0.0.8
+and Local Model Inventory remains 0.0.9.
+
+The feature must remain independent of hostname, IP address, interface name,
+bridge name, VLAN, CTID, pool, dataset, mountpoint, account, and subnet.
+Acceptance fixtures use synthetic values that are never repository defaults.
+
+## DATA-Link for SMB Share Local LAN
+
+The physical-link and host-bridge work is the DATA-Link for SMB Share Local
+LAN capability. It is speed-neutral above the 1Gbps safety floor: discovery
+ranks faster interfaces when present, but neither the feature name nor its
+configuration assumes a particular Ethernet speed.
+
+## Required traffic separation
+
+- Proxmox web administration and host SSH stay on a discovered management
+  path and are accepted only from operator-selected management CIDRs.
+- A container egress interface owns the only default route. Its bridge,
+  address method, interface name, and Proxmox net slot are discovered live.
+- A separate data interface uses an operator-selected bridge and static local
+  address with no gateway.
+- The data bridge may be untagged or VLAN-aware. Untagged mode writes no VLAN
+  attributes and gives the Proxmox host no data-network address.
+- Samba binds only to the selected data-role interface. TCP 445 is accepted
+  only from selected local data CIDRs.
+- The Proxmox firewall protects the host and virtual NIC boundary. UFW inside
+  the container is the container firewall authority.
+- Container SSH and SFTP are disabled for the accepted ingest role. Operators
+  use the Proxmox console or `pct exec`.
+
+## Gate 1: discovery and immutable network intent
+
+Preflight is read-only and must inventory:
+
+- default routes, bridges, bonds, VLANs, host addresses, and cluster links;
+- every physical NIC's current name, aliases, MAC, PCI identity, driver,
+  supported/current speed, carrier, state, routes, addresses, and master;
+- every LXC/VM NIC slot, configured MAC, bridge, address mode, tag/trunks,
+  firewall flag, and runtime guest interface/route state;
+- existing Samba binding and firewall state when discoverable.
+
+Management is derived from the active default route and the physical members
+behind it. A data candidate must be physical, outside management/cluster/
+storage roles, unaddressed, unrouted, and unused by another bridge or bond.
+Candidates may be ranked by driver, PCI label, and supported speed, but the
+operator must select one. The data path requires a separate physical NIC with
+at least 1Gbps of current, advertised, or known driver capability; unknown or
+sub-gigabit candidates fail closed. The reviewed selection stores MAC and PCI
+identity; the interface name is resolved again immediately before apply.
+
+Synthetic fixtures contain a management bridge, multiple unused physical
+candidates, and virtual `veth`/`fw*` devices. Tests must exclude virtual
+devices, derive management from the default route, and refuse selection based
+on a familiar fixture name or MAC.
+
+Network execution is split into explicit stages:
+
+1. `preflight`: read-only inventory and risk report.
+2. `probe`: temporarily bring one unused candidate up, wait for carrier,
+   inspect it with ethtool, then restore its prior state unless applying.
+3. `write`: save a checksummed backup, stage the reviewed bridge block, and
+   require both `ifreload -a -s -n` parser validation and `ifreload -a -n`
+   reload-plan validation to pass without structural warnings.
+4. `apply`: revalidate identity and management invariants, reload networking,
+   and activate the selected data link.
+5. `verify`: recollect facts and compare them to immutable intent.
+6. `rollback`: restore the exact prior interfaces file from local console.
+
+Untagged bridge mode renders a manual physical port and a manual Linux bridge
+with no host IP, gateway, VLAN awareness, or bridge VID list. The bridge name
+is discovered and confirmed from currently unused bridge names.
+
+Apply fails if management identity or route changes, selected hardware drifts,
+the target bridge conflicts, a selected NIC becomes used/addressed, candidate
+parsing emits structural warnings, reload fails, or physical carrier is absent.
+Warnings from a complete feature-owned legacy block may be accepted only as
+repair input when they name the selected NIC or bridge. The canonical staged
+candidate must eliminate duplicate-interface, invalid bridge-attribute, and
+unrecognized-interface warnings before write or apply can succeed.
+
+## Gate 2: role-based LXC networking
+
+The feature must not assume network slots, guest interface names, DHCP,
+container IDs, or bridge names. It selects a container from inventory, maps PVE NIC slots to
+runtime guest names by MAC, and identifies egress from the live default route.
+
+The operator confirms the existing egress role. The tool discovers a free PVE
+slot and collision-free guest interface name for the data role. It may suggest
+a data address by combining the selected subnet with the Proxmox management
+address's final octet, but it must require confirmation and duplicate-address
+probing. The serialized data NIC has a static address, firewall enabled, no
+gateway, and no tag in untagged mode.
+
+After `pct set`, the tool first verifies hot-apply. It requests a controlled
+restart only when pending/runtime evidence proves one is required. Acceptance
+requires exactly one default route, egress traffic on the selected egress
+role, and local data traffic on the selected data role.
+
+## Gate 3: dataset attachment and mapped identity
+
+1. Verify the accepted ZFS pool, dataset, properties, health, and mountpoint.
+2. Select the host mount and independent container mount from live inventory.
+3. Create a locked, non-login service identity inside the unprivileged LXC.
+4. Resolve the identity's effective host UID/GID from the actual LXC mapping.
+5. Preserve existing `root:root` ownership. Apply service ACLs to existing
+   content in restartable batches and default ACLs to new content.
+6. Never use recursive ownership replacement, mode 0777, host-root mapping,
+   or Samba root-forcing as a fallback.
+7. Verify read, create, rename, delete, POSIX ACL, and xattr behavior as the
+   mapped identity before starting Samba.
+8. Reboot the container and host to prove mount and mapping persistence.
+
+## Gate 4: Samba policy
+
+One selected dataset is exported through two shares:
+
+- guest read-only, forced to the mapped service identity;
+- authenticated read/write, restricted to the selected Samba account.
+
+The accepted policy uses SMB3, file mode 0660, directory mode 0770, and the
+`catia`, `fruit`, and `streams_xattr` VFS stack. It disables SMB1, printers,
+Avahi, WSDD, broad private-network allowances, world-write modes, and root
+forcing. `interfaces`, `hosts allow`, and firewall rules are derived from the
+reviewed data role and CIDRs.
+
+The initial compatibility policy may derive the Samba password from the
+selected account/hostname, with a prominent warning. Secrets are never
+committed or printed in public evidence. A later 0.0.7 credential helper may
+replace that policy without changing storage or networking.
+
+## Gate 5: container hardening and egress
+
+The ingest role installs only required runtime packages. It stops, disables,
+and masks SSH services and sockets; locks temporary login accounts; disables
+unneeded discovery and client tooling; and keeps nesting/FUSE disabled.
+
+UFW defaults to deny incoming and outgoing. It permits DHCP and selected DNS
+through the egress role, SMB responses and TCP 445 on the data role, and only
+reviewed outbound destination IP/CIDR and port tuples. IPv6 remains disabled
+until an equivalent policy is supplied.
+
+Approved URL metadata is validated by a download helper, but static firewall
+enforcement remains IP/port based and redirects are refused. The final URL
+must be explicitly approved. The proxy-backed 0.0.7 extension will later
+provide hostname policy, exact-URL broker downloads, checksums, size limits,
+approval windows, and audit logs without changing the network role model.
+
+## Public interfaces and publication
+
+All runners consume one schema-versioned, operator-reviewed YAML policy whose
+site values begin unset. Discovery writes facts separately from intent. Plans
+include source snapshot hashes and cannot apply after hardware, management,
+container, or configuration drift.
+
+Every new runner, helper, playbook, schema, and support file is added to the
+Pages manifest and local/published dependency validation in the same change.
+Intermediate feature commits may publish to Pages for remote acceptance, but
+no official 0.0.7 tag is created until every gate, including proxy egress,
+passes review.
+
+## Contract tests
+
+Automated coverage includes:
+
+- arbitrary physical/virtual interface names and synthetic link fixtures;
+- down data-link candidates, explicit activation, carrier errors, and MAC/PCI drift;
+- management bridges, bonds, direct interfaces, and ambiguous default routes;
+- bridge conflicts, failed reload dry runs, and carrier failures;
+- arbitrary LXC net slots, guest names, DHCP/static egress, and one-route
+  enforcement;
+- untagged data NIC serialization with no tag or gateway;
+- duplicate-address rejection and hot-apply versus restart detection;
+- unprivileged UID/GID translation and resumable ACL application;
+- guest-read/authenticated-write rendering, SMB3, xattrs, and no root force;
+- stopped/masked SSH and default-deny static egress;
+- idempotent reruns, rollback artifacts, reboot persistence, and complete
+  Pages publication.
+
+## Parser source-of-truth rule and incident history
+
+DATA-Link preflight exposed a layered-escaping failure while reading an
+existing `iface` stanza: production captured `manual` as `ma`. Doubled escape
+sequences in a negated regex character class were interpreted as excluded
+literal letters. The CI fixture used a separately copied parser with different
+escaping, so it tested intended behavior rather than the shipped parser.
+
+The feature therefore treats
+`ansible/proxmox/tasks/data-link.candidate.yml` as the canonical parser,
+policy, renderer, and structural validator. The live VLAN playbook and test
+fixtures include that exact task. Future feature parsers follow the repository
+[feature-authoring guide](../../development/feature-authoring.md): prefer
+field parsing, execute production artifacts from tests, cover LF/CRLF and
+whitespace variants, compare complete tokens, and reject duplicated fixture
+parsers through policy checks.
+
+## Human acceptance sequence
+
+1. Accept host/runtime compatibility and read-only network inventory.
+2. Select and probe the physical data NIC; do not infer it from its name.
+3. Review, write, apply, and verify the host data bridge while management stays
+   reachable through an out-of-band console.
+4. Discover and confirm the LXC egress role, then add the no-gateway data role.
+5. Accept mapped storage permissions and xattrs without changing ownership.
+6. Apply the two-share Samba role and container firewall/hardening policy.
+7. From a data-network client, prove guest read denial of writes,
+   authenticated create/rename/delete/xattr, reconnect, and sustained transfer.
+8. Prove host SSH/web access is management-CIDR-only, LXC SSH is unavailable,
+   unapproved egress fails, and the data bridge has no host address.
+9. Reboot the container and host, then repeat route, mount, ACL, SMB, firewall,
+   and ZFS health checks.
+10. Preserve private plans, checksums, facts, rollback files, and acceptance
+    evidence for release review.

@@ -1,0 +1,7 @@
+---
+# Platform-specific defaults for Debian Trixie (Proxmox VE 9.x hosts).
+# Keep overrides minimal; merged with ansible/group_vars/all.yml and release vars.
+debian_release: "trixie"
+# Components include non-free-firmware for driver/firmware coverage; drop contrib/non-free
+# later if the package catalog no longer needs them.
+debian_components: "main contrib non-free non-free-firmware"

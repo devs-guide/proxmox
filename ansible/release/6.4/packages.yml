@@ -1,0 +1,22 @@
+---
+- name: "[pve-6.4]: release-specific packages"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    package_overrides:
+      monitoring_benchmark:
+        packages:
+          - hddtemp
+      archive_iso_tools:
+        packages:
+          - hfsutils
+      firmware:
+        packages:
+          - firmware-realtek
+
+  tasks:
+    - debug:
+        msg: "Release-specific package overrides loaded for 6.4 (buster)."
