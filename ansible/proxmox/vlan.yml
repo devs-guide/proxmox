@@ -11,11 +11,27 @@
     proxmox_feature_facts_dir: "/etc/ansible/proxmox/facts"
     proxmox_hardware_facts_path: "{{ proxmox_feature_facts_dir }}/hardware.yml"
     proxmox_vlan_selection_path: "{{ proxmox_feature_facts_dir }}/vlan.selection.yml"
+    # Stable compatibility marker only; the bridge value is always discovered/selected.
     proxmox_vlan_block_marker: "# {mark} ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1"
     proxmox_vlan_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1"
     proxmox_vlan_block_end: "# END ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1"
     proxmox_vlan_legacy_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"
-    proxmox_vlan_vmbr1_safe_defaults:
+    proxmox_vlan_10g_driver_floors:
+      - ixgbe
+      - i40e
+      - ice
+      - mlx5_core
+      - bnxt_en
+      - atlantic
+    proxmox_vlan_1g_driver_floors:
+      - igb
+      - e1000e
+      - igc
+      - tg3
+      - r8169
+      - r8152
+      - r8153_ecm
+    proxmox_vlan_safe_defaults:
       management:
         bridge: null
         nic: null
@@ -34,6 +50,7 @@
         bridge_vids: ""
         host_ip: null
       safety:
+        minimum_data_speed_mbps: 1000
         require_oob_console: true
         require_management_unchanged: true
         require_data_nic_unused: true
@@ -155,7 +172,7 @@
                     proxmox_vlan_selection.management.bridge
                     | default(
                         proxmox_hardware_discovered_effective.management.bridge
-                        | default(proxmox_vlan_vmbr1_safe_defaults.management.bridge),
+                        | default(proxmox_vlan_safe_defaults.management.bridge),
                         true
                       ),
                     true
@@ -168,7 +185,7 @@
                     proxmox_vlan_selection.management.nic
                     | default(
                         proxmox_hardware_discovered_effective.management.nic
-                        | default(proxmox_vlan_vmbr1_safe_defaults.management.nic),
+                        | default(proxmox_vlan_safe_defaults.management.nic),
                         true
                       ),
                     true
@@ -181,7 +198,7 @@
                     proxmox_vlan_selection.management.ip_cidr
                     | default(
                         proxmox_hardware_discovered_effective.management.ip_cidr
-                        | default(proxmox_vlan_vmbr1_safe_defaults.management.ip_cidr),
+                        | default(proxmox_vlan_safe_defaults.management.ip_cidr),
                         true
                       ),
                     true
@@ -194,7 +211,7 @@
                     proxmox_vlan_selection.management.gateway
                     | default(
                         proxmox_hardware_discovered_effective.management.gateway
-                        | default(proxmox_vlan_vmbr1_safe_defaults.management.gateway),
+                        | default(proxmox_vlan_safe_defaults.management.gateway),
                         true
                       ),
                     true
@@ -207,7 +224,7 @@
                     proxmox_vlan_selection.management.gui_port
                     | default(
                         proxmox_hardware_discovered_effective.management.gui_port
-                        | default(proxmox_vlan_vmbr1_safe_defaults.management.gui_port),
+                        | default(proxmox_vlan_safe_defaults.management.gui_port),
                         true
                       ),
                     true
@@ -219,7 +236,7 @@
                 proxmox_vlan.data.bridge
                 | default(
                     proxmox_vlan_selection.data.bridge
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge),
+                    | default(proxmox_vlan_safe_defaults.data.bridge),
                     true
                   )
               }}
@@ -230,7 +247,7 @@
                     proxmox_vlan_selection.data.nic
                     | default(
                         proxmox_hardware_discovered_effective.candidates.data_nic
-                        | default(proxmox_vlan_vmbr1_safe_defaults.data.nic),
+                        | default(proxmox_vlan_safe_defaults.data.nic),
                         true
                       ),
                     true
@@ -241,7 +258,7 @@
                 proxmox_vlan.data.expected_driver
                 | default(
                     proxmox_vlan_selection.data.expected_driver
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_driver),
+                    | default(proxmox_vlan_safe_defaults.data.expected_driver),
                     true
                   )
               }}
@@ -250,7 +267,7 @@
                 proxmox_vlan.data.expected_pci
                 | default(
                     proxmox_vlan_selection.data.expected_pci
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_pci),
+                    | default(proxmox_vlan_safe_defaults.data.expected_pci),
                     true
                   )
               }}
@@ -259,7 +276,7 @@
                 proxmox_vlan.data.expected_mac
                 | default(
                     proxmox_vlan_selection.data.expected_mac
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.expected_mac),
+                    | default(proxmox_vlan_safe_defaults.data.expected_mac),
                     true
                   )
               }}
@@ -268,7 +285,7 @@
                 proxmox_vlan.data.link_mode
                 | default(
                     proxmox_vlan_selection.data.link_mode
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.link_mode),
+                    | default(proxmox_vlan_safe_defaults.data.link_mode),
                     true
                   )
               }}
@@ -277,7 +294,7 @@
                 proxmox_vlan.data.bridge_vlan_aware
                 | default(
                     proxmox_vlan_selection.data.bridge_vlan_aware
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vlan_aware),
+                    | default(proxmox_vlan_safe_defaults.data.bridge_vlan_aware),
                     true
                   )
               }}
@@ -286,7 +303,7 @@
                 proxmox_vlan.data.bridge_fd
                 | default(
                     proxmox_vlan_selection.data.bridge_fd
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_fd),
+                    | default(proxmox_vlan_safe_defaults.data.bridge_fd),
                     true
                   )
               }}
@@ -295,7 +312,7 @@
                 proxmox_vlan.data.bridge_vids
                 | default(
                     proxmox_vlan_selection.data.bridge_vids
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.bridge_vids),
+                    | default(proxmox_vlan_safe_defaults.data.bridge_vids),
                     true
                   )
               }}
@@ -304,19 +321,19 @@
                 proxmox_vlan.data.host_ip
                 | default(
                     proxmox_vlan_selection.data.host_ip
-                    | default(proxmox_vlan_vmbr1_safe_defaults.data.host_ip),
+                    | default(proxmox_vlan_safe_defaults.data.host_ip),
                     true
                   )
               }}
           safety: >-
             {{
-              proxmox_vlan_vmbr1_safe_defaults.safety
+              proxmox_vlan_safe_defaults.safety
               | combine(proxmox_vlan_selection.safety | default({}), recursive=true)
               | combine(proxmox_vlan.safety | default({}), recursive=true)
             }}
           workloads: >-
             {{
-              proxmox_vlan_vmbr1_safe_defaults.workloads
+              proxmox_vlan_safe_defaults.workloads
               | combine(proxmox_vlan_selection.workloads | default({}), recursive=true)
               | combine(proxmox_vlan.workloads | default({}), recursive=true)
             }}
@@ -413,6 +430,38 @@
         fail_msg: >-
           Selected data NIC {{ proxmox_vlan_effective.data.nic }} is not present in
           discovered hardware facts.
+      when: proxmox_vlan_discovery_enabled
+
+    - name: Derive minimum physical data NIC speed evidence
+      set_fact:
+        proxmox_vlan_data_nic_speed_evidence_mbps: >-
+          {{
+            [
+              proxmox_vlan_data_nic_record.speed_mbps | default(0, true) | int,
+              proxmox_vlan_data_nic_record.supported_speed_mbps | default(0, true) | int,
+              (
+                10000
+                if (proxmox_vlan_data_nic_record.driver | default('')) in proxmox_vlan_10g_driver_floors
+                else (
+                  1000
+                  if (proxmox_vlan_data_nic_record.driver | default('')) in proxmox_vlan_1g_driver_floors
+                  else 0
+                )
+              )
+            ] | max
+          }}
+      when: proxmox_vlan_discovery_enabled
+
+    - name: Require a separate gigabit-or-faster physical data NIC
+      assert:
+        that:
+          - (proxmox_vlan_effective.safety.minimum_data_speed_mbps | int) >= 1000
+          - (proxmox_vlan_data_nic_speed_evidence_mbps | int) >= (proxmox_vlan_effective.safety.minimum_data_speed_mbps | int)
+        fail_msg: >-
+          Selected physical data NIC {{ proxmox_vlan_effective.data.nic }} has only
+          {{ proxmox_vlan_data_nic_speed_evidence_mbps | default(0) }}Mbps of speed
+          evidence; policy requires at least
+          {{ proxmox_vlan_effective.safety.minimum_data_speed_mbps }}Mbps.
       when: proxmox_vlan_discovery_enabled
 
     - name: Derive VLAN tokens for syntax validation
@@ -523,15 +572,15 @@
         - proxmox_vlan_effective.data.expected_mac is not none
         - (proxmox_vlan_effective.data.expected_mac | string) | length > 0
 
-    - name: Assert vmbr1 is not already defined outside the managed block
+    - name: Assert selected data bridge is not already defined outside the managed block
       assert:
         that:
-          - not proxmox_vmbr1_conflict_detected
+          - not proxmox_data_bridge_conflict_detected
         fail_msg: >-
           /etc/network/interfaces already defines {{ proxmox_vlan_effective.data.bridge }}
           outside the managed block. Clean that up manually before using this feature.
       vars:
-        proxmox_vmbr1_conflict_detected: >-
+        proxmox_data_bridge_conflict_detected: >-
           {{
             (
               proxmox_interfaces_file.content | b64decode
@@ -574,7 +623,7 @@
           /etc/network/interfaces already defines iface {{ proxmox_vlan_effective.data.nic }}
           with a non-manual inet method. Set it to manual or select a different data NIC.
 
-    - name: Build managed vmbr1 block
+    - name: Build managed data bridge block
       set_fact:
         proxmox_vlan_managed_block: |-
           {% if not proxmox_vlan_data_nic_iface_manual_exists %}
@@ -662,7 +711,7 @@
               ifreload stderr={{ proxmox_ifreload_baseline.stderr | default('') }}
           when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
 
-        - name: Write managed vmbr1 block
+        - name: Write managed data bridge block
           blockinfile:
             path: /etc/network/interfaces
             marker: "{{ proxmox_vlan_block_marker }}"

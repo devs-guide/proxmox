@@ -55,6 +55,7 @@ ALLOW_SAME_MANAGEMENT_AND_DATA_NIC="${PROXMOX_VLAN_ALLOW_SAME_MANAGEMENT_AND_DAT
 ALLOW_DATA_NIC_WITH_HOST_IP="${PROXMOX_VLAN_ALLOW_DATA_NIC_WITH_HOST_IP:-false}"
 ALLOW_DATA_NIC_BRIDGE_MEMBER="${PROXMOX_VLAN_ALLOW_DATA_NIC_BRIDGE_MEMBER:-false}"
 ALLOW_DISCONNECTED_DATA_LINK="${PROXMOX_VLAN_ALLOW_DISCONNECTED_DATA_LINK:-false}"
+MIN_DATA_SPEED_MBPS="${PROXMOX_VLAN_MIN_DATA_SPEED_MBPS:-1000}"
 
 declare -a NIC_IFACE=()
 declare -a NIC_ROLE=()
@@ -256,13 +257,39 @@ nic.speed.class() {
     ixgbe|i40e|ice|mlx5_core|bnxt_en|atlantic)
       printf '10GbE-class'
       ;;
-    igb|e1000e|igc|tg3|r8169)
+    igb|e1000e|igc|tg3|r8169|r8152|r8153_ecm)
       printf '1GbE-class'
       ;;
     *)
       printf 'unknown-class'
       ;;
   esac
+}
+
+nic.speed.evidence.mbps() {
+  local driver="${1:-}" speed="${2:-}" supported_speed="${3:-}" evidence=0
+  if [[ "${speed}" =~ ^[0-9]+$ ]] && ((speed > evidence)); then
+    evidence="${speed}"
+  fi
+  if [[ "${supported_speed}" =~ ^[0-9]+$ ]] && ((supported_speed > evidence)); then
+    evidence="${supported_speed}"
+  fi
+  case "${driver}" in
+    ixgbe|i40e|ice|mlx5_core|bnxt_en|atlantic)
+      ((evidence >= 10000)) || evidence=10000
+      ;;
+    igb|e1000e|igc|tg3|r8169|r8152|r8153_ecm)
+      ((evidence >= 1000)) || evidence=1000
+      ;;
+  esac
+  printf '%s\n' "${evidence}"
+}
+
+nic.meets.minimum.speed() {
+  local evidence
+  evidence="$(nic.speed.evidence.mbps "${1:-}" "${2:-}" "${3:-}")"
+  [[ "${MIN_DATA_SPEED_MBPS}" =~ ^[0-9]+$ ]] || return 1
+  ((evidence >= MIN_DATA_SPEED_MBPS))
 }
 
 nic.recommendation.label() {
@@ -602,7 +629,7 @@ validate.bridge.vids() {
 }
 
 validate.selection() {
-  local selected_index selected_ip selected_bridge_member
+  local selected_index selected_ip selected_bridge_member selected_speed_evidence
   selected_index="$(lookup.nic.index "${SELECTED_DATA_NIC}" || true)"
   [[ -n "${selected_index}" ]] || {
     log.error "Selected NIC was not found in NIC summary: ${SELECTED_DATA_NIC}"
@@ -611,6 +638,16 @@ validate.selection() {
 
   selected_ip="${NIC_IP[$selected_index]}"
   selected_bridge_member="${NIC_BRIDGE_MEMBER[$selected_index]}"
+  selected_speed_evidence="$(nic.speed.evidence.mbps "${NIC_DRIVER[$selected_index]}" "${NIC_SPEED[$selected_index]}" "${NIC_SUPPORTED_SPEED[$selected_index]}")"
+
+  [[ "${MIN_DATA_SPEED_MBPS}" =~ ^[0-9]+$ ]] && ((MIN_DATA_SPEED_MBPS >= 1000)) || {
+    log.error "PROXMOX_VLAN_MIN_DATA_SPEED_MBPS must be an integer of at least 1000."
+    exit 1
+  }
+  if ! nic.meets.minimum.speed "${NIC_DRIVER[$selected_index]}" "${NIC_SPEED[$selected_index]}" "${NIC_SUPPORTED_SPEED[$selected_index]}"; then
+    log.error "Selected NIC ${SELECTED_DATA_NIC} has only ${selected_speed_evidence}Mbps of speed evidence; data LAN policy requires at least ${MIN_DATA_SPEED_MBPS}Mbps."
+    exit 1
+  fi
 
   if [[ -n "${MGMT_NIC}" && "${SELECTED_DATA_NIC}" == "${MGMT_NIC}" ]] && ! is.true "${ALLOW_SAME_MANAGEMENT_AND_DATA_NIC}"; then
     log.error "Selected data NIC matches management NIC (${MGMT_NIC}) and policy forbids this."
@@ -657,6 +694,9 @@ choose.data.nic.interactive() {
     if [[ "${NIC_BRIDGE_MEMBER[$i]}" != "-" ]] && ! is.true "${ALLOW_DATA_NIC_BRIDGE_MEMBER}"; then
       continue
     fi
+    if ! nic.meets.minimum.speed "${NIC_DRIVER[$i]}" "${NIC_SPEED[$i]}" "${NIC_SUPPORTED_SPEED[$i]}"; then
+      continue
+    fi
 
     speed_class="$(nic.speed.class "${NIC_DRIVER[$i]}" "${NIC_SPEED[$i]}" "${NIC_SUPPORTED_SPEED[$i]}")"
     recommend_label="$(nic.recommendation.label "${NIC_ROLE[$i]}" "${NIC_SCORE[$i]}" "${NIC_DRIVER[$i]}")"
@@ -675,7 +715,7 @@ choose.data.nic.interactive() {
   menu_options+=("abort")
 
   if ((${#menu_indexes[@]} == 0)); then
-    log.error "No selectable data NICs were found in ${HARDWARE_NICS_TSV}."
+    log.error "No unused physical data NICs with at least ${MIN_DATA_SPEED_MBPS}Mbps capability were found in ${HARDWARE_NICS_TSV}."
     exit 1
   fi
 
@@ -733,6 +773,7 @@ proxmox_vlan_operator_selection:
     bridge_vids: $(yaml.quote "${SELECTED_DATA_BRIDGE_VIDS}")
     host_ip: ${SELECTED_DATA_HOST_IP}
   safety:
+    minimum_data_speed_mbps: ${MIN_DATA_SPEED_MBPS}
     oob_console_ack: ${SELECTION_OOB_ACK}
     allow_disconnected_link: $(if is.true "${ALLOW_DISCONNECTED_DATA_LINK}"; then printf true; else printf false; fi)
 EOF

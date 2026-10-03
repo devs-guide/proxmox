@@ -20,6 +20,7 @@ files=(
   "bootstrap/ansible.runtime.sh"
   "tests/unit/ansible_runtime_policy_test.sh"
   "tests/unit/debian_lxc_template_policy_test.sh"
+  "tests/unit/network_snapshot_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network.sh"
@@ -205,6 +206,34 @@ if ! grep -q 'network.plan.tsv' "${ROOT}/setup/network.sh"; then
   exit 1
 fi
 echo "[validate.runtime][ok] setup/network.sh exposes preflight/export/update/verify contract"
+
+if grep -Fq 'NR > 1 ? NR - 1 : 0' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh retains the non-portable awk row-count expression"
+  exit 1
+fi
+for marker in \
+  'tsv.data.row.count()' \
+  'network.snapshot.status.yml' \
+  'network.snapshot.ready' \
+  'latest-ready' \
+  'require.live.update.topology()' \
+  'PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS' \
+  'Data CIDR ${EXPECTED_DATA_CIDR} overlaps management CIDR'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/network.sh"; then
+    echo "[validate.runtime][error] setup/network.sh is missing fail-closed marker: ${marker}"
+    exit 1
+  fi
+done
+for marker in \
+  'PROXMOX_VLAN_MIN_DATA_SPEED_MBPS' \
+  'nic.meets.minimum.speed()' \
+  'data LAN policy requires at least'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/vlan.sh"; then
+    echo "[validate.runtime][error] setup/vlan.sh is missing dynamic gigabit data-NIC marker: ${marker}"
+    exit 1
+  fi
+done
+echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gigabit data topology"
 
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
@@ -1392,6 +1421,7 @@ echo "[validate.runtime][ok] production runners use the canonical managed Ansibl
 echo "[validate.runtime] running platform/runtime policy matrix..."
 bash "${ROOT}/tests/unit/ansible_runtime_policy_test.sh"
 bash "${ROOT}/tests/unit/debian_lxc_template_policy_test.sh"
+bash "${ROOT}/tests/unit/network_snapshot_policy_test.sh"
 if ! bash -u -c '
   log() { :; }
   log.error() { :; }

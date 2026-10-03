@@ -43,6 +43,12 @@ grep -q 'rollback.network.update.plan' "${NETWORK}" || fail 'guest NIC rollback 
 grep -q 'probe.data.ip.conflict' "${NETWORK}" || fail 'duplicate static-address probe is missing'
 grep -q 'ensure.lxc.runtime.data.role' "${NETWORK}" || fail 'running-container NIC activation verification is missing'
 grep -q 'PROXMOX_NETWORK_ALLOW_LXC_RESTART' "${NETWORK}" || fail 'operator-controlled restart gate is missing'
+! grep -Fq 'NR > 1 ? NR - 1 : 0' "${NETWORK}" || fail 'non-portable awk row-count expression remains'
+grep -Fq 'network.snapshot.status.yml' "${NETWORK}" || fail 'network snapshot status is missing'
+grep -Fq 'network.snapshot.ready' "${NETWORK}" || fail 'network update-ready marker is missing'
+grep -Fq 'latest-ready' "${NETWORK}" || fail 'update does not resolve the latest ready snapshot'
+grep -Fq 'require.live.update.topology' "${NETWORK}" || fail 'live topology revalidation is missing'
+grep -Fq 'MIN_DATA_SPEED_MBPS' "${ROOT}/setup/vlan.sh" || fail 'gigabit data-NIC floor is missing'
 ok 'role-based LXC network contract'
 
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
@@ -64,7 +70,7 @@ grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxm
 grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'
 ok 'Samba, storage, and hardening contract'
 
-for published in setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md; do
+for published in setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md; do
   grep -q "^${published}|${published}|feature$" "${ROOT}/actions/pages.features.txt" \
     || fail "Pages manifest omits ${published}"
 done

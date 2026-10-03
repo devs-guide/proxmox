@@ -44,8 +44,10 @@ Management is derived from the active default route and the physical members
 behind it. A data candidate must be physical, outside management/cluster/
 storage roles, unaddressed, unrouted, and unused by another bridge or bond.
 Candidates may be ranked by driver, PCI label, and supported speed, but the
-operator must select one. The reviewed selection stores MAC and PCI identity;
-the interface name is resolved again immediately before apply.
+operator must select one. The data path requires a separate physical NIC with
+at least 1Gbps of current, advertised, or known driver capability; unknown or
+sub-gigabit candidates fail closed. The reviewed selection stores MAC and PCI
+identity; the interface name is resolved again immediately before apply.
 
 The dragonfruit fixture contains management `nic0` behind `vmbr0`, unused
 `nic1`, a down candidate `nic2`, and virtual `veth`/`fw*` devices. Tests must

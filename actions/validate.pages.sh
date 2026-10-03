@@ -579,7 +579,9 @@ check_published_vlan_runtime_policy() {
   for needle in \
     'require.host.network.ready()' \
     'ensure.managed.ansible' \
-    'ansible.runtime.run'; do
+    'ansible.runtime.run' \
+    'PROXMOX_VLAN_MIN_DATA_SPEED_MBPS' \
+    'nic.meets.minimum.speed()'; do
     if ! grep -Fq -- "${needle}" "${published_runner}"; then
       echo "[validate.pages][error] published setup.vlan.sh is missing canonical runtime marker: ${needle}"
       rc=1
@@ -603,6 +605,41 @@ check_published_vlan_runtime_policy() {
   if [[ ! -f "${published_common}" ]] \
     || ! grep -Fq 'provisional fallback values only' "${published_common}"; then
     echo "[validate.pages][error] published release.common.sh does not define managed Python defaults as provisional"
+    rc=1
+  fi
+}
+
+check_published_host_network_runner_policy() {
+  local published_runner="${TMPDIR}/setup/network.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/network.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'tsv.data.row.count()' \
+    'network.snapshot.status.yml' \
+    'network.snapshot.ready' \
+    'latest-report' \
+    'latest-ready' \
+    'require.live.update.topology()' \
+    'PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS' \
+    'PROXMOX_NETWORK_SOURCE_ONLY'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup/network.sh is missing fail-closed marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if grep -Fq 'NR > 1 ? NR - 1 : 0' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/network.sh retains the non-portable awk row-count expression"
+    rc=1
+  fi
+  if grep -Eq 'dragonfruit|10[.]0[.]0[.](4|40)|18:66:da:73:19' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/network.sh contains acceptance-host values"
     rc=1
   fi
 }
@@ -976,6 +1013,7 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_debian_lxc_playbook_policy
   check_published_debian_base_bootstrap
   check_published_samba_playbook_policy
+  check_published_host_network_runner_policy
   check_published_network_runner_policy
   check_published_network_playbook_policy
   check_generated_file_artifacts

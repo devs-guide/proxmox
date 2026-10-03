@@ -12,6 +12,12 @@ console access available while changing host networking. Do not infer physical
 interface names, bridge names, LXC interface slots, or guest interface names;
 the runners discover them and require operator confirmation.
 
+Names and addresses shown in command output from one host are observations,
+not defaults. The VLAN runner inventories physical NICs, excludes the active
+management path and virtual devices, and offers only unused NICs with at least
+1Gbps of current, advertised, or known driver capability. It may suggest the
+first unused `vmbrN` name, but the operator confirms the bridge name.
+
 ## 1. Discover the host network
 
 ```bash
@@ -63,6 +69,18 @@ pct list
 wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash -s -- preflight
 ```
 
+Preflight now fails closed. A successful collection writes
+`network.snapshot.status.yml`; only a complete topology with a live,
+unnumbered data bridge and a physical data NIC writes
+`network.snapshot.ready`, `network.next-stage.env`, and the `latest-ready`
+pointer used by update mode.
+
+If preflight reports `missing_data_bridge` or
+`missing_physical_data_nic_member`, do not run update. Complete the VLAN
+runner's probe/write/apply sequence above and rerun preflight. The most recent
+report remains available through `latest-report`, but an incomplete report can
+never replace the last update-ready snapshot.
+
 ## 5. Add the LXC data interface
 
 ```bash
@@ -73,14 +91,17 @@ During selection:
 
 - choose the existing ingest LXC;
 - preserve its current management/Internet interface;
-- choose the discovered data bridge;
+- use the update-ready data bridge recorded by the reviewed preflight;
 - assign a unique static address and prefix for the local data network;
 - configure no gateway on the data interface; and
 - keep the Proxmox firewall flag enabled.
 
 The runner refuses replacement of a live interface slot, probes for duplicate
 IPv4 use, verifies hot activation, and asks to restart the LXC only when runtime
-evidence shows activation is still pending.
+evidence shows activation is still pending. It also rejects a data CIDR that
+overlaps the discovered management CIDR and revalidates the live management
+route, data bridge, physical bridge member, and absence of a host data address
+before check and again before apply.
 
 ## 6. Verify host and guest routes
 

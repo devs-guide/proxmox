@@ -75,6 +75,7 @@ proxmox_vlan:
     host_ip: null
 
   safety:
+    minimum_data_speed_mbps: 1000
     require_oob_console: true
     require_management_unchanged: true
     require_data_nic_unused: true

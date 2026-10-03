@@ -26,7 +26,9 @@ SNAPSHOT_DIR_OVERRIDE="${PROXMOX_NETWORK_SNAPSHOT_DIR:-}"
 EXPECTED_ADMIN_BRIDGE="${PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE:-}"
 EXPECTED_DATA_BRIDGE="${PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE:-}"
 EXPECTED_DATA_LINK_MODE="${PROXMOX_NETWORK_EXPECTED_DATA_LINK_MODE:-}"
-EXPECTED_LAN_CIDR="${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-}"
+EXPECTED_MANAGEMENT_CIDR="${PROXMOX_NETWORK_MANAGEMENT_CIDR:-${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-}}"
+EXPECTED_DATA_CIDR="${PROXMOX_NETWORK_DATA_CIDR:-}"
+MIN_DATA_SPEED_MBPS="${PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS:-1000}"
 EXPECTED_GUEST_ADMIN_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF:-}"
 EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-}"
 CTID_FILTER="${PROXMOX_NETWORK_CTIDS:-}"
@@ -85,6 +87,7 @@ NETWORK_INTENT_PATH="${PROXMOX_NETWORK_INTENT_PATH:-${FACTS_DIR}/network.intent.
 NETWORK_PLAN_PATH="${PROXMOX_NETWORK_PLAN_PATH:-${FACTS_DIR}/network.plan.tsv}"
 NETWORK_VERIFY_PATH="${PROXMOX_NETWORK_VERIFY_PATH:-${FACTS_DIR}/network.verify.tsv}"
 DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
+SYS_CLASS_NET_ROOT="${PROXMOX_NETWORK_SYS_CLASS_NET_ROOT:-/sys/class/net}"
 
 RUN_DIR=""
 RAW_DIR=""
@@ -102,6 +105,8 @@ VM_TSV_PATH=""
 GUEST_RUNTIME_TSV_PATH=""
 SAMBA_TSV_PATH=""
 RISKS_TSV_PATH=""
+SNAPSHOT_STATUS_PATH=""
+SNAPSHOT_READY_PATH=""
 
 COLLECTED_AT=""
 HOSTNAME_SHORT=""
@@ -112,14 +117,19 @@ DEFAULT_GATEWAY=""
 DEFAULT_ROUTE_DEV=""
 DISCOVERED_ADMIN_BRIDGE=""
 DISCOVERED_ADMIN_NIC=""
+DISCOVERED_ADMIN_NICS=""
 DISCOVERED_ADMIN_IP_CIDR=""
 DISCOVERED_DATA_BRIDGE=""
 DISCOVERED_DATA_NICS=""
+SNAPSHOT_COLLECTION_COMPLETE="false"
+SNAPSHOT_READY_FOR_UPDATE="false"
+SNAPSHOT_BLOCKING_CODES=""
 OPEN_TTY=0
 CURRENT_STAGE="startup"
 PARTIAL_ERROR_PATH=""
 TRACE_PATH=""
 TRACE_FD_OPEN=0
+PREFLIGHT_ACTIVE=0
 
 declare -a CT_IDS=()
 declare -a VM_IDS=()
@@ -150,7 +160,9 @@ Optional environment overrides:
   PROXMOX_NETWORK_FACTS_DIR=/etc/ansible/proxmox/facts
   PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE=<discovered-bridge>
   PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE=<operator-selected-bridge>
-  PROXMOX_NETWORK_EXPECTED_LAN_CIDR=<discovered-management-cidr>
+  PROXMOX_NETWORK_MANAGEMENT_CIDR=<discovered-management-cidr>
+  PROXMOX_NETWORK_DATA_CIDR=<derived-from-static-data-address>
+  PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS=1000
   PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF=<discovered-egress-if>
   PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF=<operator-selected-data-if>
   PROXMOX_NETWORK_CTIDS=100,101
@@ -264,7 +276,7 @@ require.commands() {
 require.update.commands() {
   local missing=0
   local cmd=""
-  for cmd in awk bash grep ip pct qm sed sort wget; do
+  for cmd in awk bash grep ip pct python3 qm sed sort wget; do
     if ! command_exists "${cmd}"; then
       log.error "Missing required update command: ${cmd}"
       missing=1
@@ -356,10 +368,100 @@ valid.interface.name() {
   [[ "${1:-}" =~ ^[a-zA-Z0-9_.-]{1,15}$ ]]
 }
 
+tsv.data.row.count() {
+  local path="${1:-}"
+  [[ -f "${path}" ]] || return 1
+  awk 'NR > 1 {count += 1} END {print count + 0}' "${path}"
+}
+
+tsv.require.header() {
+  local path="${1:-}" expected="${2:-}" actual=""
+  [[ -f "${path}" ]] || return 1
+  IFS= read -r actual < "${path}" || true
+  [[ "${actual}" == "${expected}" ]]
+}
+
+tsv.validate.schema() {
+  local path="${1:-}" expected_header="${2:-}" expected_fields="${3:-0}"
+  tsv.require.header "${path}" "${expected_header}" || return 1
+  awk -F'\t' -v fields="${expected_fields}" 'NR > 1 && NF != fields {exit 1}' "${path}"
+}
+
+append.blocking.code() {
+  local code="${1:-}"
+  [[ -n "${code}" ]] || return 0
+  case ",${SNAPSHOT_BLOCKING_CODES}," in
+    *",${code},"*) return 0 ;;
+  esac
+  if [[ -n "${SNAPSHOT_BLOCKING_CODES}" ]]; then
+    SNAPSHOT_BLOCKING_CODES+=","
+  fi
+  SNAPSHOT_BLOCKING_CODES+="${code}"
+}
+
+derive.ipv4.network.cidr() {
+  local value="${1:-}"
+  python3 -E - "${value}" <<'PY'
+import ipaddress
+import sys
+
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+}
+
+ipv4.cidrs.overlap() {
+  local left="${1:-}" right="${2:-}"
+  python3 -E - "${left}" "${right}" <<'PY'
+import ipaddress
+import sys
+
+left = ipaddress.ip_network(sys.argv[1], strict=False)
+right = ipaddress.ip_network(sys.argv[2], strict=False)
+raise SystemExit(0 if left.overlaps(right) else 1)
+PY
+}
+
+physical.nic.speed.evidence.mbps() {
+  local iface="${1:-}" driver="${2:-}" current_speed="${3:-}" supported_speed="" evidence=0
+  if [[ "${current_speed}" =~ ^[0-9]+$ ]] && ((current_speed > evidence)); then
+    evidence="${current_speed}"
+  fi
+  if command_exists ethtool && [[ -n "${iface}" ]]; then
+    supported_speed="$(
+      ethtool "${iface}" 2>/dev/null \
+        | awk '
+            /Supported link modes:/ { supported=1 }
+            /Advertised link modes:/ { supported=0 }
+            supported {
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[0-9]+base/) {
+                  split($i, value, "base")
+                  if ((value[1] + 0) > max) max = value[1] + 0
+                }
+              }
+            }
+            END { print max + 0 }
+          '
+    )"
+    if [[ "${supported_speed}" =~ ^[0-9]+$ ]] && ((supported_speed > evidence)); then
+      evidence="${supported_speed}"
+    fi
+  fi
+  case "${driver}" in
+    ixgbe|i40e|ice|mlx5_core|bnxt_en|atlantic)
+      ((evidence >= 10000)) || evidence=10000
+      ;;
+    igb|e1000e|igc|tg3|r8169|r8152|r8153_ecm)
+      ((evidence >= 1000)) || evidence=1000
+      ;;
+  esac
+  printf '%s\n' "${evidence}"
+}
+
 probe.data.ip.conflict() {
   local address carrier
   address="${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR%/*}"
-  carrier="$(cat "/sys/class/net/${EXPECTED_DATA_BRIDGE}/carrier" 2>/dev/null || true)"
+  carrier="$(cat "${SYS_CLASS_NET_ROOT}/${EXPECTED_DATA_BRIDGE}/carrier" 2>/dev/null || true)"
   if [[ "${carrier}" != "1" ]]; then
     if is.true "${PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP}"; then
       log.warn "Data bridge ${EXPECTED_DATA_BRIDGE} has no carrier; explicit override skips duplicate-address probing for ${address}."
@@ -450,8 +552,15 @@ write.partial.error() {
 on.err() {
   local line_no="${1:-unknown}"
   local exit_code="${2:-1}"
-  write.partial.error "${line_no}" "${exit_code}"
-  log.error "Preflight failed at stage=${CURRENT_STAGE} line=${line_no} exit=${exit_code}"
+  if [[ "${PREFLIGHT_ACTIVE}" -eq 1 && -n "${RUN_DIR}" ]]; then
+    write.partial.error "${line_no}" "${exit_code}"
+    SNAPSHOT_COLLECTION_COMPLETE="false"
+    SNAPSHOT_READY_FOR_UPDATE="false"
+    append.blocking.code "collection_failed"
+    write.snapshot.status || true
+    update.latest.report.pointer || true
+  fi
+  log.error "Network workflow failed at stage=${CURRENT_STAGE} line=${line_no} exit=${exit_code}"
   if [[ -n "${PARTIAL_ERROR_PATH}" ]]; then
     log.error "Partial error details saved to ${PARTIAL_ERROR_PATH}"
   fi
@@ -467,13 +576,15 @@ on.exit() {
   if [[ "${OPEN_TTY}" -eq 1 ]]; then
     exec 3>&- 3<&- || true
   fi
-  if [[ "${exit_code}" -ne 0 && -n "${RUN_DIR}" && -n "${PARTIAL_ERROR_PATH}" && ! -f "${PARTIAL_ERROR_PATH}" ]]; then
+  if [[ "${exit_code}" -ne 0 && "${PREFLIGHT_ACTIVE}" -eq 1 && -n "${RUN_DIR}" && -n "${PARTIAL_ERROR_PATH}" && ! -f "${PARTIAL_ERROR_PATH}" ]]; then
     write.partial.error "exit" "${exit_code}"
   fi
 }
 
-trap 'on.err "${LINENO}" "$?"' ERR
-trap 'on.exit "$?"' EXIT
+install.runtime.traps() {
+  trap 'on.err "${LINENO}" "$?"' ERR
+  trap 'on.exit "$?"' EXIT
+}
 
 first_line() {
   awk 'NF && $0 !~ /^#/ { print; exit }' "$1" 2>/dev/null || true
@@ -638,17 +749,27 @@ set.run.paths.from.dir() {
   GUEST_RUNTIME_TSV_PATH="${RUN_DIR}/network.guest.runtime.tsv"
   SAMBA_TSV_PATH="${RUN_DIR}/network.samba.tsv"
   RISKS_TSV_PATH="${RUN_DIR}/network.risks.tsv"
+  SNAPSHOT_STATUS_PATH="${RUN_DIR}/network.snapshot.status.yml"
+  SNAPSHOT_READY_PATH="${RUN_DIR}/network.snapshot.ready"
   TRACE_PATH="${RUN_DIR}/network.trace.log"
 }
 
-update.latest.pointer() {
+update.latest.report.pointer() {
   mkdir -p "${OUTPUT_ROOT}"
+  ln -sfn "${RUN_DIR}" "${OUTPUT_ROOT}/latest-report"
   ln -sfn "${RUN_DIR}" "${OUTPUT_ROOT}/latest"
   printf '%s\n' "${RUN_DIR}" > "${OUTPUT_ROOT}/latest.path"
 }
 
+update.latest.ready.pointer() {
+  mkdir -p "${OUTPUT_ROOT}"
+  ln -sfn "${RUN_DIR}" "${OUTPUT_ROOT}/latest-ready"
+  printf '%s\n' "${RUN_DIR}" > "${OUTPUT_ROOT}/latest-ready.path"
+}
+
 discover.basic.host.facts() {
   local candidate_bridge="" candidate_count=0 port_path=""
+  local -a admin_physical_nics=()
   set.stage "discover.basic.host.facts"
   if [[ -z "${HOSTNAME_SHORT}" ]]; then
     HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
@@ -660,30 +781,32 @@ discover.basic.host.facts() {
   DEFAULT_ROUTE_DEV="$(awk '/^default / {for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}' <<< "${DEFAULT_ROUTE_LINE}")"
 
   DISCOVERED_ADMIN_BRIDGE="${DEFAULT_ROUTE_DEV}"
-  if [[ -n "${DEFAULT_ROUTE_DEV}" && -L "/sys/class/net/${DEFAULT_ROUTE_DEV}/master" ]]; then
-    DISCOVERED_ADMIN_BRIDGE="$(readlink.basename.or.empty "/sys/class/net/${DEFAULT_ROUTE_DEV}/master")"
+  DISCOVERED_ADMIN_NIC=""
+  DISCOVERED_ADMIN_NICS=""
+  if [[ -n "${DEFAULT_ROUTE_DEV}" && -L "${SYS_CLASS_NET_ROOT}/${DEFAULT_ROUTE_DEV}/master" ]]; then
+    DISCOVERED_ADMIN_BRIDGE="$(readlink.basename.or.empty "${SYS_CLASS_NET_ROOT}/${DEFAULT_ROUTE_DEV}/master")"
   fi
-  if [[ "${DISCOVERED_ADMIN_BRIDGE}" == "${DEFAULT_ROUTE_DEV}" ]]; then
-    DISCOVERED_ADMIN_NIC="${DEFAULT_ROUTE_DEV}"
-  else
-    DISCOVERED_ADMIN_NIC=""
-    if [[ -d "/sys/class/net/${DISCOVERED_ADMIN_BRIDGE}/brif" ]]; then
-      for port_path in /sys/class/net/"${DISCOVERED_ADMIN_BRIDGE}"/brif/*; do
-        [[ -e "${port_path}" ]] || continue
-        if [[ -e "/sys/class/net/$(basename "${port_path}")/device" ]]; then
-          DISCOVERED_ADMIN_NIC="$(basename "${port_path}")"
-          break
-        fi
-      done
-    fi
+  if [[ -n "${DISCOVERED_ADMIN_BRIDGE}" && -d "${SYS_CLASS_NET_ROOT}/${DISCOVERED_ADMIN_BRIDGE}/brif" ]]; then
+    for port_path in "${SYS_CLASS_NET_ROOT}/${DISCOVERED_ADMIN_BRIDGE}"/brif/*; do
+      [[ -e "${port_path}" ]] || continue
+      if [[ -e "${SYS_CLASS_NET_ROOT}/$(basename "${port_path}")/device" ]]; then
+        admin_physical_nics+=("$(basename "${port_path}")")
+      fi
+    done
+  elif [[ -n "${DEFAULT_ROUTE_DEV}" && -e "${SYS_CLASS_NET_ROOT}/${DEFAULT_ROUTE_DEV}/device" ]]; then
+    admin_physical_nics+=("${DEFAULT_ROUTE_DEV}")
+  fi
+  if ((${#admin_physical_nics[@]} > 0)); then
+    DISCOVERED_ADMIN_NIC="${admin_physical_nics[0]}"
+    DISCOVERED_ADMIN_NICS="$(join.by ',' "${admin_physical_nics[@]}")"
   fi
   DISCOVERED_ADMIN_IP_CIDR="$(ip -o -4 addr show dev "${DISCOVERED_ADMIN_BRIDGE}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
 
   if [[ -z "${EXPECTED_ADMIN_BRIDGE}" ]]; then
     EXPECTED_ADMIN_BRIDGE="${DISCOVERED_ADMIN_BRIDGE}"
   fi
-  if [[ -z "${EXPECTED_LAN_CIDR}" ]]; then
-    EXPECTED_LAN_CIDR="$(ip -4 route show dev "${DISCOVERED_ADMIN_BRIDGE}" proto kernel scope link 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ -z "${EXPECTED_MANAGEMENT_CIDR}" ]]; then
+    EXPECTED_MANAGEMENT_CIDR="$(ip -4 route show dev "${DISCOVERED_ADMIN_BRIDGE}" proto kernel scope link 2>/dev/null | awk 'NR==1 {print $1}')"
   fi
 
   if [[ -z "${EXPECTED_DATA_BRIDGE}" && -r "${DATA_BRIDGE_SELECTION_PATH}" ]]; then
@@ -718,13 +841,13 @@ discover.basic.host.facts() {
   fi
 
   if [[ -z "${EXPECTED_DATA_BRIDGE}" ]]; then
-    for candidate_path in /sys/class/net/*/bridge; do
+    for candidate_path in "${SYS_CLASS_NET_ROOT}"/*/bridge; do
       [[ -d "${candidate_path}" ]] || continue
       candidate_bridge="$(basename "$(dirname "${candidate_path}")")"
       [[ "${candidate_bridge}" != "${DISCOVERED_ADMIN_BRIDGE}" ]] || continue
-      for port_path in /sys/class/net/"${candidate_bridge}"/brif/*; do
+      for port_path in "${SYS_CLASS_NET_ROOT}/${candidate_bridge}"/brif/*; do
         [[ -e "${port_path}" ]] || continue
-        if [[ -e "/sys/class/net/$(basename "${port_path}")/device" ]]; then
+        if [[ -e "${SYS_CLASS_NET_ROOT}/$(basename "${port_path}")/device" ]]; then
           DISCOVERED_DATA_BRIDGE="${candidate_bridge}"
           candidate_count=$((candidate_count + 1))
           break
@@ -736,11 +859,14 @@ discover.basic.host.facts() {
     else
       DISCOVERED_DATA_BRIDGE=""
     fi
-  else
+  elif [[ -d "${SYS_CLASS_NET_ROOT}/${EXPECTED_DATA_BRIDGE}/bridge" ]] \
+    && ip link show dev "${EXPECTED_DATA_BRIDGE}" >/dev/null 2>&1; then
     DISCOVERED_DATA_BRIDGE="${EXPECTED_DATA_BRIDGE}"
+  else
+    DISCOVERED_DATA_BRIDGE=""
   fi
-  log "Discovered admin bridge=${DISCOVERED_ADMIN_BRIDGE:-unknown} admin_nic=${DISCOVERED_ADMIN_NIC:-unknown} admin_ip=${DISCOVERED_ADMIN_IP_CIDR:-none} gateway=${DEFAULT_GATEWAY:-none}"
-  log "Resolved data bridge=${DISCOVERED_DATA_BRIDGE:-operator-selection-required} link_mode=${EXPECTED_DATA_LINK_MODE:-unknown} management CIDR=${EXPECTED_LAN_CIDR:-operator-selection-required}"
+  log "Discovered admin route_dev=${DEFAULT_ROUTE_DEV:-unknown} bridge=${DISCOVERED_ADMIN_BRIDGE:-unknown} physical_nics=${DISCOVERED_ADMIN_NICS:-none} admin_ip=${DISCOVERED_ADMIN_IP_CIDR:-none} gateway=${DEFAULT_GATEWAY:-none}"
+  log "Selected data bridge=${EXPECTED_DATA_BRIDGE:-operator-selection-required} live_data_bridge=${DISCOVERED_DATA_BRIDGE:-missing} link_mode=${EXPECTED_DATA_LINK_MODE:-unknown} management_cidr=${EXPECTED_MANAGEMENT_CIDR:-unknown}"
 }
 
 collect.host.raw() {
@@ -786,10 +912,11 @@ collect.nics.tsv() {
   local master=""
   local ipv4=""
   local ipv6=""
+  local collected_count=""
   local physical_data_nics=()
   local physical_admin_nics=()
 
-  for iface_path in /sys/class/net/*; do
+  for iface_path in "${SYS_CLASS_NET_ROOT}"/*; do
     [[ -d "${iface_path}" ]] || continue
 
     iface="$(basename "${iface_path}")"
@@ -801,25 +928,25 @@ collect.nics.tsv() {
 
     if [[ "${iface}" == "lo" ]]; then
       kind="loopback"
-    elif [[ -d "/sys/class/net/${iface}/bridge" ]]; then
+    elif [[ -d "${SYS_CLASS_NET_ROOT}/${iface}/bridge" ]]; then
       kind="bridge"
-    elif [[ -e "/sys/class/net/${iface}/device" ]]; then
+    elif [[ -e "${SYS_CLASS_NET_ROOT}/${iface}/device" ]]; then
       kind="physical"
     else
       kind="virtual"
     fi
 
-    mac="$(cat "/sys/class/net/${iface}/address" 2>/dev/null || true)"
-    mtu="$(cat "/sys/class/net/${iface}/mtu" 2>/dev/null || true)"
-    operstate="$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || true)"
-    carrier="$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || true)"
-    speed="$(cat "/sys/class/net/${iface}/speed" 2>/dev/null || true)"
-    duplex="$(cat "/sys/class/net/${iface}/duplex" 2>/dev/null || true)"
-    driver="$(readlink.basename.or.empty "/sys/class/net/${iface}/device/driver")"
-    pci_slot="$(readlink.basename.or.empty "/sys/class/net/${iface}/device")"
+    mac="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/address" 2>/dev/null || true)"
+    mtu="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/mtu" 2>/dev/null || true)"
+    operstate="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/operstate" 2>/dev/null || true)"
+    carrier="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/carrier" 2>/dev/null || true)"
+    speed="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/speed" 2>/dev/null || true)"
+    duplex="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/duplex" 2>/dev/null || true)"
+    driver="$(readlink.basename.or.empty "${SYS_CLASS_NET_ROOT}/${iface}/device/driver")"
+    pci_slot="$(readlink.basename.or.empty "${SYS_CLASS_NET_ROOT}/${iface}/device")"
     master=""
-    if [[ -L "/sys/class/net/${iface}/master" ]]; then
-      master="$(readlink.basename.or.empty "/sys/class/net/${iface}/master")"
+    if [[ -L "${SYS_CLASS_NET_ROOT}/${iface}/master" ]]; then
+      master="$(readlink.basename.or.empty "${SYS_CLASS_NET_ROOT}/${iface}/master")"
     fi
     ipv4="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, - || true)"
     ipv6="$(ip -o -6 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, - || true)"
@@ -848,8 +975,12 @@ collect.nics.tsv() {
   if [[ -z "${DISCOVERED_ADMIN_NIC}" && "${#physical_admin_nics[@]}" -gt 0 ]]; then
     DISCOVERED_ADMIN_NIC="${physical_admin_nics[0]}"
   fi
+  if [[ -z "${DISCOVERED_ADMIN_NICS}" && "${#physical_admin_nics[@]}" -gt 0 ]]; then
+    DISCOVERED_ADMIN_NICS="$(join.by ',' "${physical_admin_nics[@]}")"
+  fi
   DISCOVERED_DATA_NICS="$(join.by ',' "${physical_data_nics[@]}")"
-  log "Collected NIC facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${NICS_TSV_PATH}") interfaces; data_nics=${DISCOVERED_DATA_NICS:-none}"
+  collected_count="$(tsv.data.row.count "${NICS_TSV_PATH}")"
+  log "Collected NIC facts: ${collected_count} interfaces; data_nics=${DISCOVERED_DATA_NICS:-none}"
 }
 
 collect.bridges.tsv() {
@@ -861,19 +992,21 @@ collect.bridges.tsv() {
   local members=""
   local ipv4=""
   local ipv6=""
+  local collected_count=""
 
-  for iface in /sys/class/net/*; do
+  for iface in "${SYS_CLASS_NET_ROOT}"/*; do
     iface="$(basename "${iface}")"
-    [[ -d "/sys/class/net/${iface}/bridge" ]] || continue
+    [[ -d "${SYS_CLASS_NET_ROOT}/${iface}/bridge" ]] || continue
 
-    vlan_filtering="$(cat "/sys/class/net/${iface}/bridge/vlan_filtering" 2>/dev/null || true)"
+    vlan_filtering="$(cat "${SYS_CLASS_NET_ROOT}/${iface}/bridge/vlan_filtering" 2>/dev/null || true)"
     members="$(bridge link show master "${iface}" 2>/dev/null | sed -n 's/^[0-9]\+: \([^:@[:space:]]*\).*/\1/p' | paste -sd, -)"
     ipv4="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
     ipv6="$(ip -o -6 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
 
     append.tsv.row "${BRIDGES_TSV_PATH}" "${iface}" "${vlan_filtering}" "${members}" "${ipv4}" "${ipv6}"
   done
-  log "Collected bridge facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${BRIDGES_TSV_PATH}") bridge rows"
+  collected_count="$(tsv.data.row.count "${BRIDGES_TSV_PATH}")"
+  log "Collected bridge facts: ${collected_count} bridge rows"
 }
 
 collect.vlans.tsv() {
@@ -966,6 +1099,7 @@ collect.lxc.data() {
   printf 'guest_type\tguest_id\tguest_name\tstatus\tnet_slot\tguest_if\tbridge\tvlan_tag\ttrunks\tfirewall\tmtu\tip_hint\tgw_hint\traw\n' > "${LXC_TSV_PATH}"
 
   local id=""
+  local collected_count=""
   local status=""
   local conf_path=""
   local runtime_dir=""
@@ -1125,9 +1259,9 @@ collect.lxc.data() {
         append.risk "warn" "samba" "${id}" "${name}" "legacy_broad_hosts_allow" \
           "Samba hosts allow still includes 192.168.0.0/16."
       fi
-      if [[ "${service_present}" == "yes" && "${testparm_hosts_allow}" != *"${EXPECTED_LAN_CIDR}"* ]]; then
+      if [[ "${service_present}" == "yes" && -n "${EXPECTED_DATA_CIDR}" && "${testparm_hosts_allow}" != *"${EXPECTED_DATA_CIDR}"* ]]; then
         append.risk "warn" "samba" "${id}" "${name}" "expected_lan_missing_from_hosts_allow" \
-          "Samba hosts allow does not clearly include ${EXPECTED_LAN_CIDR}."
+          "Samba hosts allow does not clearly include data CIDR ${EXPECTED_DATA_CIDR}."
       fi
     else
       append.tsv.row "${GUEST_RUNTIME_TSV_PATH}" \
@@ -1136,7 +1270,8 @@ collect.lxc.data() {
         "lxc" "${id}" "${name}" "${status}" "unknown" "-" "-" "-" "-" "-"
     fi
   done
-  log "Collected LXC facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${LXC_TSV_PATH}") NIC rows"
+  collected_count="$(tsv.data.row.count "${LXC_TSV_PATH}")"
+  log "Collected LXC facts: ${collected_count} NIC rows"
 }
 
 collect.vm.data() {
@@ -1144,6 +1279,7 @@ collect.vm.data() {
   printf 'guest_type\tguest_id\tguest_name\tstatus\tnet_slot\tmodel\tmac\tbridge\tvlan_tag\ttrunks\tfirewall\tmtu\traw\n' > "${VM_TSV_PATH}"
 
   local id=""
+  local collected_count=""
   local status=""
   local conf_path=""
   local runtime_dir=""
@@ -1218,7 +1354,8 @@ collect.vm.data() {
         "vm" "${id}" "${name}" "${status}" "unavailable" "-" "-" "-" "-"
     fi
   done
-  log "Collected VM facts: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${VM_TSV_PATH}") NIC rows"
+  collected_count="$(tsv.data.row.count "${VM_TSV_PATH}")"
+  log "Collected VM facts: ${collected_count} NIC rows"
 }
 
 classify.host.risks() {
@@ -1229,6 +1366,7 @@ classify.host.risks() {
   local data_members=""
   local data_ipv4=""
   local data_vlan_filtering=""
+  local collected_count=""
 
   data_bridge_row="$(awk -F'\t' -v bridge="${EXPECTED_DATA_BRIDGE}" '$1 == bridge {print $0; exit}' "${BRIDGES_TSV_PATH}" 2>/dev/null || true)"
   if [[ -z "${EXPECTED_DATA_BRIDGE}" ]]; then
@@ -1281,7 +1419,114 @@ classify.host.risks() {
     append.risk "warn" "host" "-" "${HOSTNAME_SHORT}" "data_nic_has_host_ip" \
       "Physical data NIC ${iface} under ${EXPECTED_DATA_BRIDGE} has host IPv4 address(es): ${ipv4}."
   done
-  log "Classified risks: $(awk 'END {print NR > 1 ? NR - 1 : 0}' "${RISKS_TSV_PATH}") findings"
+  collected_count="$(tsv.data.row.count "${RISKS_TSV_PATH}")"
+  log "Classified risks: ${collected_count} findings"
+}
+
+validate.collection.artifacts() {
+  set.stage "validate.collection.artifacts"
+  tsv.validate.schema "${NICS_TSV_PATH}" $'iface\tkind\tmac\tmtu\toperstate\tcarrier\tspeed\tduplex\tdriver\tpci_slot\tmaster\tipv4\tipv6' 13
+  tsv.validate.schema "${BRIDGES_TSV_PATH}" $'bridge\tvlan_filtering\tmembers\tipv4\tipv6' 5
+  tsv.validate.schema "${VLANS_TSV_PATH}" $'port\tvlan_detail' 2
+  tsv.validate.schema "${LXC_TSV_PATH}" $'guest_type\tguest_id\tguest_name\tstatus\tnet_slot\tguest_if\tbridge\tvlan_tag\ttrunks\tfirewall\tmtu\tip_hint\tgw_hint\traw' 14
+  tsv.validate.schema "${VM_TSV_PATH}" $'guest_type\tguest_id\tguest_name\tstatus\tnet_slot\tmodel\tmac\tbridge\tvlan_tag\ttrunks\tfirewall\tmtu\traw' 13
+  tsv.validate.schema "${GUEST_RUNTIME_TSV_PATH}" $'guest_type\tguest_id\tguest_name\tstatus\truntime_source\tipv4_interfaces\tdefault_route\tlisten_summary\tsysctl_summary' 9
+  tsv.validate.schema "${SAMBA_TSV_PATH}" $'guest_type\tguest_id\tguest_name\tstatus\tservice_present\tinterfaces\tbind_interfaces_only\thosts_allow\tsmb_ports\tufw_summary' 10
+  tsv.validate.schema "${RISKS_TSV_PATH}" $'severity\tscope\tguest_id\tguest_name\tcode\tdetail' 6
+  (( $(tsv.data.row.count "${NICS_TSV_PATH}") > 0 )) || return 1
+  (( $(tsv.data.row.count "${BRIDGES_TSV_PATH}") > 0 )) || return 1
+}
+
+evaluate.snapshot.readiness() {
+  local data_ipv4="" id="" risk_errors="0" data_nic="" data_nic_row="" data_nic_speed="" data_nic_driver="" speed_evidence=""
+  SNAPSHOT_COLLECTION_COMPLETE="true"
+  SNAPSHOT_READY_FOR_UPDATE="false"
+  SNAPSHOT_BLOCKING_CODES=""
+
+  [[ -n "${DISCOVERED_ADMIN_BRIDGE}" ]] || append.blocking.code "missing_management_bridge"
+  [[ -n "${DISCOVERED_ADMIN_NICS}" ]] || append.blocking.code "missing_management_physical_nic"
+  [[ -n "${EXPECTED_MANAGEMENT_CIDR}" ]] || append.blocking.code "missing_management_cidr"
+  if [[ -n "${EXPECTED_MANAGEMENT_CIDR}" ]] && ! valid.ipv4.cidr "${EXPECTED_MANAGEMENT_CIDR}"; then
+    append.blocking.code "invalid_management_cidr"
+  fi
+  [[ -n "${EXPECTED_DATA_BRIDGE}" ]] || append.blocking.code "data_bridge_selection_required"
+  [[ -n "${DISCOVERED_DATA_BRIDGE}" ]] || append.blocking.code "missing_data_bridge"
+  [[ -n "${DISCOVERED_DATA_NICS}" ]] || append.blocking.code "missing_physical_data_nic_member"
+  if [[ ! "${MIN_DATA_SPEED_MBPS}" =~ ^[0-9]+$ ]] || ((MIN_DATA_SPEED_MBPS < 1000)); then
+    append.blocking.code "invalid_minimum_data_speed"
+  fi
+
+  while IFS= read -r data_nic; do
+    [[ -n "${data_nic}" ]] || continue
+    data_nic_row="$(awk -F'\t' -v iface="${data_nic}" '$1 == iface && $2 == "physical" {print; exit}' "${NICS_TSV_PATH}")"
+    data_nic_speed="$(awk -F'\t' '{print $7}' <<< "${data_nic_row}")"
+    data_nic_driver="$(awk -F'\t' '{print $9}' <<< "${data_nic_row}")"
+    speed_evidence="$(physical.nic.speed.evidence.mbps "${data_nic}" "${data_nic_driver}" "${data_nic_speed}")"
+    if [[ ! "${MIN_DATA_SPEED_MBPS}" =~ ^[0-9]+$ ]] \
+      || [[ ! "${speed_evidence}" =~ ^[0-9]+$ ]] \
+      || ((speed_evidence < MIN_DATA_SPEED_MBPS)); then
+      append.blocking.code "data_nic_below_minimum_speed"
+    fi
+  done < <(printf '%s' "${DISCOVERED_DATA_NICS}" | tr ',' '\n')
+
+  if [[ -n "${DISCOVERED_DATA_BRIDGE}" ]]; then
+    data_ipv4="$(awk -F'\t' -v bridge="${DISCOVERED_DATA_BRIDGE}" '$1 == bridge {print $4; exit}' "${BRIDGES_TSV_PATH}")"
+    [[ -z "${data_ipv4}" ]] || append.blocking.code "data_bridge_has_host_ipv4"
+  fi
+
+  if ((${#CT_IDS[@]} == 0)); then
+    append.blocking.code "no_selected_lxc"
+  else
+    for id in "${CT_IDS[@]}"; do
+      if ! awk -F'\t' -v target="${id}" 'NR > 1 && $2 == target {found=1} END {exit(found ? 0 : 1)}' "${LXC_TSV_PATH}"; then
+        append.blocking.code "selected_lxc_missing_network_rows"
+      fi
+    done
+  fi
+
+  risk_errors="$(awk -F'\t' '$1 == "error" {count++} END {print count + 0}' "${RISKS_TSV_PATH}")"
+  ((risk_errors == 0)) || append.blocking.code "risk_errors_present"
+  if [[ -z "${SNAPSHOT_BLOCKING_CODES}" ]]; then
+    SNAPSHOT_READY_FOR_UPDATE="true"
+  fi
+}
+
+write.snapshot.status() {
+  local code=""
+  [[ -n "${SNAPSHOT_STATUS_PATH:-}" ]] || return 0
+  mkdir -p "$(dirname "${SNAPSHOT_STATUS_PATH}")"
+  {
+    printf '%s\n' '---'
+    printf '%s\n' 'proxmox_network_snapshot:'
+    printf '%s\n' '  schema_version: 1'
+    printf '  hostname: %s\n' "$(yaml.quote "${HOSTNAME_SHORT:-unknown}")"
+    printf '  collected_at: %s\n' "$(yaml.quote "${COLLECTED_AT:-unknown}")"
+    printf '  run_dir: %s\n' "$(yaml.quote "${RUN_DIR:-}")"
+    printf '  collection_complete: %s\n' "${SNAPSHOT_COLLECTION_COMPLETE}"
+    printf '  ready_for_update: %s\n' "${SNAPSHOT_READY_FOR_UPDATE}"
+    printf '  selected_data_bridge: %s\n' "$(yaml.quote "${EXPECTED_DATA_BRIDGE:-}")"
+    printf '  live_data_bridge: %s\n' "$(yaml.quote "${DISCOVERED_DATA_BRIDGE:-}")"
+    printf '  management_cidr: %s\n' "$(yaml.quote "${EXPECTED_MANAGEMENT_CIDR:-}")"
+    printf '  minimum_data_speed_mbps: %s\n' "${MIN_DATA_SPEED_MBPS}"
+    if [[ -z "${SNAPSHOT_BLOCKING_CODES}" ]]; then
+      printf '%s\n' '  blocking_codes: []'
+    else
+      printf '%s\n' '  blocking_codes:'
+      while IFS= read -r code; do
+        [[ -n "${code}" ]] && printf '    - %s\n' "$(yaml.quote "${code}")"
+      done < <(printf '%s' "${SNAPSHOT_BLOCKING_CODES}" | tr ',' '\n')
+    fi
+  } > "${SNAPSHOT_STATUS_PATH}"
+}
+
+mark.snapshot.ready() {
+  [[ "${SNAPSHOT_COLLECTION_COMPLETE}" == "true" && "${SNAPSHOT_READY_FOR_UPDATE}" == "true" ]] || return 1
+  {
+    printf 'schema_version=1\n'
+    printf 'hostname=%s\n' "${HOSTNAME_SHORT}"
+    printf 'selected_data_bridge=%s\n' "${EXPECTED_DATA_BRIDGE}"
+    printf 'live_data_bridge=%s\n' "${DISCOVERED_DATA_BRIDGE}"
+  } > "${SNAPSHOT_READY_PATH}"
 }
 
 write.host.yaml() {
@@ -1297,7 +1542,8 @@ proxmox_network_preflight:
     admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
     data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
     data_link_mode: $(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
-    lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+    management_cidr: $(yaml.quote "${EXPECTED_MANAGEMENT_CIDR}")
+    data_cidr: $(yaml.quote "${EXPECTED_DATA_CIDR}")
     guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
     guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
   discovered:
@@ -1307,8 +1553,10 @@ proxmox_network_preflight:
     default_gateway: $(yaml.quote "${DEFAULT_GATEWAY}")
     admin_bridge: $(yaml.quote "${DISCOVERED_ADMIN_BRIDGE}")
     admin_nic: $(yaml.quote "${DISCOVERED_ADMIN_NIC}")
+    admin_nics: $(yaml.quote "${DISCOVERED_ADMIN_NICS}")
     admin_ip_cidr: $(yaml.quote "${DISCOVERED_ADMIN_IP_CIDR}")
-    data_bridge: $(yaml.quote "${DISCOVERED_DATA_BRIDGE}")
+    selected_data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
+    live_data_bridge: $(yaml.quote "${DISCOVERED_DATA_BRIDGE}")
     data_nics: $(yaml.quote "${DISCOVERED_DATA_NICS}")
   artifacts:
     summary: $(yaml.quote "${SUMMARY_PATH}")
@@ -1321,6 +1569,8 @@ proxmox_network_preflight:
     guest_runtime_tsv: $(yaml.quote "${GUEST_RUNTIME_TSV_PATH}")
     samba_tsv: $(yaml.quote "${SAMBA_TSV_PATH}")
     risks_tsv: $(yaml.quote "${RISKS_TSV_PATH}")
+    snapshot_status: $(yaml.quote "${SNAPSHOT_STATUS_PATH}")
+    snapshot_ready: $(yaml.quote "${SNAPSHOT_READY_PATH}")
 EOF
 }
 
@@ -1332,11 +1582,13 @@ export PROXMOX_NETWORK_REPORT_DIR=$(yaml.quote "${RUN_DIR}")
 export PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE=$(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
 export PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE=$(yaml.quote "${EXPECTED_DATA_BRIDGE}")
 export PROXMOX_NETWORK_EXPECTED_DATA_LINK_MODE=$(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
-export PROXMOX_NETWORK_EXPECTED_LAN_CIDR=$(yaml.quote "${EXPECTED_LAN_CIDR}")
+export PROXMOX_NETWORK_MANAGEMENT_CIDR=$(yaml.quote "${EXPECTED_MANAGEMENT_CIDR}")
+export PROXMOX_NETWORK_DATA_CIDR=$(yaml.quote "${EXPECTED_DATA_CIDR}")
 export PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF=$(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
 export PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF=$(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
 export PROXMOX_NETWORK_DISCOVERED_ADMIN_BRIDGE=$(yaml.quote "${DISCOVERED_ADMIN_BRIDGE}")
 export PROXMOX_NETWORK_DISCOVERED_ADMIN_NIC=$(yaml.quote "${DISCOVERED_ADMIN_NIC}")
+export PROXMOX_NETWORK_DISCOVERED_ADMIN_NICS=$(yaml.quote "${DISCOVERED_ADMIN_NICS}")
 export PROXMOX_NETWORK_DISCOVERED_ADMIN_IP_CIDR=$(yaml.quote "${DISCOVERED_ADMIN_IP_CIDR}")
 export PROXMOX_NETWORK_DISCOVERED_DATA_BRIDGE=$(yaml.quote "${DISCOVERED_DATA_BRIDGE}")
 export PROXMOX_NETWORK_DISCOVERED_DATA_NICS=$(yaml.quote "${DISCOVERED_DATA_NICS}")
@@ -1359,13 +1611,16 @@ proxmox_network_preflight_latest:
     admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
     data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
     data_link_mode: $(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
-    lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+    management_cidr: $(yaml.quote "${EXPECTED_MANAGEMENT_CIDR}")
+    data_cidr: $(yaml.quote "${EXPECTED_DATA_CIDR}")
     guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
     guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
   discovered:
     admin_bridge: $(yaml.quote "${DISCOVERED_ADMIN_BRIDGE}")
     admin_nic: $(yaml.quote "${DISCOVERED_ADMIN_NIC}")
+    admin_nics: $(yaml.quote "${DISCOVERED_ADMIN_NICS}")
     admin_ip_cidr: $(yaml.quote "${DISCOVERED_ADMIN_IP_CIDR}")
+    live_data_bridge: $(yaml.quote "${DISCOVERED_DATA_BRIDGE}")
     data_nics: $(yaml.quote "${DISCOVERED_DATA_NICS}")
     default_gateway: $(yaml.quote "${DEFAULT_GATEWAY}")
   artifacts:
@@ -1380,6 +1635,8 @@ proxmox_network_preflight_latest:
     guest_runtime_tsv: $(yaml.quote "${GUEST_RUNTIME_TSV_PATH}")
     samba_tsv: $(yaml.quote "${SAMBA_TSV_PATH}")
     risks_tsv: $(yaml.quote "${RISKS_TSV_PATH}")
+    snapshot_status: $(yaml.quote "${SNAPSHOT_STATUS_PATH}")
+    snapshot_ready: $(yaml.quote "${SNAPSHOT_READY_PATH}")
 EOF
 
   cp -f "${LXC_TSV_PATH}" "${FACTS_DIR}/network.lxc.latest.tsv"
@@ -1390,7 +1647,7 @@ EOF
   cp -f "${SUMMARY_PATH}" "${FACTS_DIR}/network.summary.latest.txt"
 
   cat > "${ANSIBLE_PREFLIGHT_FACTS_JSON}" <<EOF
-{"proxmox_network_preflight_latest":{"generated_by":"setup/network.sh","generated_at":"${COLLECTED_AT}","hostname":"${HOSTNAME_SHORT}","run_dir":"${RUN_DIR}","expected":{"admin_bridge":"${EXPECTED_ADMIN_BRIDGE}","data_bridge":"${EXPECTED_DATA_BRIDGE}","lan_cidr":"${EXPECTED_LAN_CIDR}","guest_admin_if":"${EXPECTED_GUEST_ADMIN_IF}","guest_data_if":"${EXPECTED_GUEST_DATA_IF}"},"discovered":{"admin_bridge":"${DISCOVERED_ADMIN_BRIDGE}","admin_nic":"${DISCOVERED_ADMIN_NIC}","admin_ip_cidr":"${DISCOVERED_ADMIN_IP_CIDR}","data_nics":"${DISCOVERED_DATA_NICS}","default_gateway":"${DEFAULT_GATEWAY}"}}}
+{"proxmox_network_preflight_latest":{"generated_by":"setup/network.sh","generated_at":"${COLLECTED_AT}","hostname":"${HOSTNAME_SHORT}","run_dir":"${RUN_DIR}","expected":{"admin_bridge":"${EXPECTED_ADMIN_BRIDGE}","data_bridge":"${EXPECTED_DATA_BRIDGE}","management_cidr":"${EXPECTED_MANAGEMENT_CIDR}","data_cidr":"${EXPECTED_DATA_CIDR}","guest_admin_if":"${EXPECTED_GUEST_ADMIN_IF}","guest_data_if":"${EXPECTED_GUEST_DATA_IF}"},"discovered":{"admin_bridge":"${DISCOVERED_ADMIN_BRIDGE}","admin_nic":"${DISCOVERED_ADMIN_NIC}","admin_nics":"${DISCOVERED_ADMIN_NICS}","admin_ip_cidr":"${DISCOVERED_ADMIN_IP_CIDR}","live_data_bridge":"${DISCOVERED_DATA_BRIDGE}","data_nics":"${DISCOVERED_DATA_NICS}","default_gateway":"${DEFAULT_GATEWAY}"}}}
 EOF
   log "Exported preflight facts for Ansible: ${ANSIBLE_PREFLIGHT_FACTS_YAML}"
 }
@@ -1398,29 +1655,33 @@ EOF
 write.summary() {
   set.stage "write.summary"
   local ct_count vm_count nic_count bridge_count risk_total risk_error risk_warn risk_info
-  ct_count="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${LXC_TSV_PATH}" 2>/dev/null || printf '0')"
-  vm_count="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${VM_TSV_PATH}" 2>/dev/null || printf '0')"
-  nic_count="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${NICS_TSV_PATH}" 2>/dev/null || printf '0')"
-  bridge_count="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${BRIDGES_TSV_PATH}" 2>/dev/null || printf '0')"
-  risk_total="$(awk 'END {print NR > 1 ? NR - 1 : 0}' "${RISKS_TSV_PATH}" 2>/dev/null || printf '0')"
-  risk_error="$(awk -F'\t' '$1 == "error" {count++} END {print count + 0}' "${RISKS_TSV_PATH}" 2>/dev/null || printf '0')"
-  risk_warn="$(awk -F'\t' '$1 == "warn" {count++} END {print count + 0}' "${RISKS_TSV_PATH}" 2>/dev/null || printf '0')"
-  risk_info="$(awk -F'\t' '$1 == "info" {count++} END {print count + 0}' "${RISKS_TSV_PATH}" 2>/dev/null || printf '0')"
+  ct_count="$(tsv.data.row.count "${LXC_TSV_PATH}")"
+  vm_count="$(tsv.data.row.count "${VM_TSV_PATH}")"
+  nic_count="$(tsv.data.row.count "${NICS_TSV_PATH}")"
+  bridge_count="$(tsv.data.row.count "${BRIDGES_TSV_PATH}")"
+  risk_total="$(tsv.data.row.count "${RISKS_TSV_PATH}")"
+  risk_error="$(awk -F'\t' '$1 == "error" {count++} END {print count + 0}' "${RISKS_TSV_PATH}")"
+  risk_warn="$(awk -F'\t' '$1 == "warn" {count++} END {print count + 0}' "${RISKS_TSV_PATH}")"
+  risk_info="$(awk -F'\t' '$1 == "info" {count++} END {print count + 0}' "${RISKS_TSV_PATH}")"
 
   {
     printf 'Proxmox Network Preflight Summary\n'
     printf 'Host: %s\n' "${HOSTNAME_SHORT}"
     printf 'Collected: %s\n' "${COLLECTED_AT}"
     printf 'Run Directory: %s\n' "${RUN_DIR}"
-    printf 'Next-Stage Env: %s\n' "${ENV_PATH}"
+    printf 'Collection Complete: %s\n' "${SNAPSHOT_COLLECTION_COMPLETE}"
+    printf 'Ready For Update: %s\n' "${SNAPSHOT_READY_FOR_UPDATE}"
+    printf 'Blocking Codes: %s\n' "${SNAPSHOT_BLOCKING_CODES:-none}"
     printf '\n'
     printf 'Expected Admin Bridge: %s\n' "${EXPECTED_ADMIN_BRIDGE}"
     printf 'Expected Data Bridge: %s\n' "${EXPECTED_DATA_BRIDGE}"
-    printf 'Expected LAN CIDR: %s\n' "${EXPECTED_LAN_CIDR}"
+    printf 'Management CIDR: %s\n' "${EXPECTED_MANAGEMENT_CIDR}"
+    printf 'Data CIDR: %s\n' "${EXPECTED_DATA_CIDR:-not-selected}"
     printf '\n'
     printf 'Discovered Admin Bridge: %s\n' "${DISCOVERED_ADMIN_BRIDGE}"
-    printf 'Discovered Admin NIC: %s\n' "${DISCOVERED_ADMIN_NIC}"
+    printf 'Discovered Admin Physical NICs: %s\n' "${DISCOVERED_ADMIN_NICS:-none}"
     printf 'Discovered Admin IP/CIDR: %s\n' "${DISCOVERED_ADMIN_IP_CIDR}"
+    printf 'Live Data Bridge: %s\n' "${DISCOVERED_DATA_BRIDGE:-missing}"
     printf 'Discovered Data NICs On %s: %s\n' "${EXPECTED_DATA_BRIDGE}" "${DISCOVERED_DATA_NICS:-none}"
     printf 'Default Gateway: %s\n' "${DEFAULT_GATEWAY}"
     printf '\n'
@@ -1444,11 +1705,21 @@ write.summary() {
     printf '  - %s\n' "${GUEST_RUNTIME_TSV_PATH}"
     printf '  - %s\n' "${SAMBA_TSV_PATH}"
     printf '  - %s\n' "${RISKS_TSV_PATH}"
-    printf '  - %s\n' "${ANSIBLE_PREFLIGHT_FACTS_YAML}"
-    printf '  - %s\n' "${ANSIBLE_PREFLIGHT_FACTS_JSON}"
+    printf '  - %s\n' "${SNAPSHOT_STATUS_PATH}"
+    if [[ "${SNAPSHOT_READY_FOR_UPDATE}" == "true" ]]; then
+      printf '  - %s\n' "${SNAPSHOT_READY_PATH}"
+      printf '  - %s\n' "${ENV_PATH}"
+      printf '  - %s\n' "${ANSIBLE_PREFLIGHT_FACTS_YAML}"
+      printf '  - %s\n' "${ANSIBLE_PREFLIGHT_FACTS_JSON}"
+    fi
     printf '\n'
     printf 'Suggested Next Step:\n'
-    printf '  source %s\n' "${ENV_PATH}"
+    if [[ "${SNAPSHOT_READY_FOR_UPDATE}" == "true" ]]; then
+      printf '  source %s\n' "${ENV_PATH}"
+      printf '  wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash -s -- update\n'
+    else
+      printf '  Resolve the blocking codes above. For a missing data bridge, run setup.vlan.sh preflight/apply first, then rerun this preflight.\n'
+    fi
   } > "${SUMMARY_PATH}"
 }
 
@@ -1458,13 +1729,14 @@ print.discovery.preview() {
   printf '  host: %s\n' "${HOSTNAME_SHORT}" >&3
   printf '  output root: %s\n' "${OUTPUT_ROOT}" >&3
   printf '  admin bridge: %s\n' "${DISCOVERED_ADMIN_BRIDGE:-${EXPECTED_ADMIN_BRIDGE}}" >&3
-  printf '  admin nic: %s\n' "${DISCOVERED_ADMIN_NIC:-unknown}" >&3
+  printf '  admin physical nics: %s\n' "${DISCOVERED_ADMIN_NICS:-unknown}" >&3
   printf '  admin ip: %s\n' "${DISCOVERED_ADMIN_IP_CIDR:-none}" >&3
   printf '  default gateway: %s\n' "${DEFAULT_GATEWAY:-none}" >&3
-  printf '  data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
+  printf '  selected data bridge: %s\n' "${EXPECTED_DATA_BRIDGE:-selection-required}" >&3
+  printf '  live data bridge: %s\n' "${DISCOVERED_DATA_BRIDGE:-missing}" >&3
   printf '  guest admin if: %s\n' "${EXPECTED_GUEST_ADMIN_IF}" >&3
   printf '  guest data if: %s\n' "${EXPECTED_GUEST_DATA_IF}" >&3
-  printf '  expected LAN CIDR: %s\n' "${EXPECTED_LAN_CIDR}" >&3
+  printf '  management CIDR: %s\n' "${EXPECTED_MANAGEMENT_CIDR}" >&3
   printf '  discovered LXC IDs: %s\n' "$(join.discovered.ids DISCOVERED_CT_IDS)" >&3
   printf '  discovered VM IDs: %s\n' "$(join.discovered.ids DISCOVERED_VM_IDS)" >&3
   printf '\n' >&3
@@ -1492,7 +1764,7 @@ collect.operator.selection() {
       OUTPUT_ROOT="$(prompt.tty "Enter output root directory" "${OUTPUT_ROOT}")"
       EXPECTED_ADMIN_BRIDGE="$(prompt.tty "Enter expected admin bridge" "${DISCOVERED_ADMIN_BRIDGE:-${EXPECTED_ADMIN_BRIDGE}}")"
       EXPECTED_DATA_BRIDGE="$(prompt.tty "Enter expected data bridge" "${EXPECTED_DATA_BRIDGE}")"
-      EXPECTED_LAN_CIDR="$(prompt.tty "Enter expected LAN CIDR" "${EXPECTED_LAN_CIDR}")"
+      EXPECTED_MANAGEMENT_CIDR="$(prompt.tty "Enter management CIDR" "${EXPECTED_MANAGEMENT_CIDR}")"
       EXPECTED_GUEST_ADMIN_IF="$(prompt.tty "Enter guest admin interface name" "${EXPECTED_GUEST_ADMIN_IF}")"
       EXPECTED_GUEST_DATA_IF="$(prompt.tty "Enter guest data interface name" "${EXPECTED_GUEST_DATA_IF}")"
       CTID_FILTER="$(trim.space "$(prompt.tty "Enter LXC IDs to inspect (blank = all discovered)" "${CTID_FILTER}")")"
@@ -1501,7 +1773,7 @@ collect.operator.selection() {
       printf '  output root: %s\n' "${OUTPUT_ROOT}" >&3
       printf '  expected admin bridge: %s\n' "${EXPECTED_ADMIN_BRIDGE}" >&3
       printf '  expected data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
-      printf '  expected LAN CIDR: %s\n' "${EXPECTED_LAN_CIDR}" >&3
+      printf '  management CIDR: %s\n' "${EXPECTED_MANAGEMENT_CIDR}" >&3
       printf '  guest admin if: %s\n' "${EXPECTED_GUEST_ADMIN_IF}" >&3
       printf '  guest data if: %s\n' "${EXPECTED_GUEST_DATA_IF}" >&3
       printf '  selected LXC IDs: %s\n' "${CTID_FILTER:-${discovered_ctids}}" >&3
@@ -1521,18 +1793,18 @@ resolve.snapshot.dir() {
     resolved="${SNAPSHOT_DIR_OVERRIDE}"
   elif [[ -n "${REPORT_DIR_OVERRIDE}" ]]; then
     resolved="${REPORT_DIR_OVERRIDE}"
-  elif [[ -L "${OUTPUT_ROOT}/latest" ]]; then
-    resolved="$(readlink "${OUTPUT_ROOT}/latest")"
+  elif [[ -L "${OUTPUT_ROOT}/latest-ready" ]]; then
+    resolved="$(readlink "${OUTPUT_ROOT}/latest-ready")"
     if [[ "${resolved}" != /* ]]; then
       resolved="${OUTPUT_ROOT}/${resolved}"
     fi
-  elif [[ -f "${OUTPUT_ROOT}/latest.path" ]]; then
-    resolved="$(cat "${OUTPUT_ROOT}/latest.path")"
+  elif [[ -f "${OUTPUT_ROOT}/latest-ready.path" ]]; then
+    resolved="$(cat "${OUTPUT_ROOT}/latest-ready.path")"
   fi
 
   if [[ -z "${resolved}" || ! -d "${resolved}" ]]; then
-    log.error "No saved preflight snapshot directory found for update mode."
-    log.error "Run ./setup/network.sh preflight first, or set PROXMOX_NETWORK_SNAPSHOT_DIR."
+    log.error "No update-ready preflight snapshot directory found."
+    log.error "Run setup/network.sh preflight after the data bridge exists, or set PROXMOX_NETWORK_SNAPSHOT_DIR to a ready snapshot."
     exit 1
   fi
 
@@ -1548,7 +1820,8 @@ load.snapshot.defaults() {
     EXPECTED_ADMIN_BRIDGE="${PROXMOX_NETWORK_EXPECTED_ADMIN_BRIDGE:-${EXPECTED_ADMIN_BRIDGE}}"
     EXPECTED_DATA_BRIDGE="${PROXMOX_NETWORK_EXPECTED_DATA_BRIDGE:-${EXPECTED_DATA_BRIDGE}}"
     EXPECTED_DATA_LINK_MODE="${PROXMOX_NETWORK_EXPECTED_DATA_LINK_MODE:-${EXPECTED_DATA_LINK_MODE}}"
-    EXPECTED_LAN_CIDR="${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-${EXPECTED_LAN_CIDR}}"
+    EXPECTED_MANAGEMENT_CIDR="${PROXMOX_NETWORK_MANAGEMENT_CIDR:-${PROXMOX_NETWORK_EXPECTED_LAN_CIDR:-${EXPECTED_MANAGEMENT_CIDR}}}"
+    EXPECTED_DATA_CIDR="${PROXMOX_NETWORK_DATA_CIDR:-${EXPECTED_DATA_CIDR}}"
     EXPECTED_GUEST_ADMIN_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_ADMIN_IF:-${EXPECTED_GUEST_ADMIN_IF}}"
     EXPECTED_GUEST_DATA_IF="${PROXMOX_NETWORK_EXPECTED_GUEST_DATA_IF:-${EXPECTED_GUEST_DATA_IF}}"
   fi
@@ -1558,6 +1831,11 @@ require.snapshot.artifacts() {
   local missing=0
   local path=""
   for path in \
+    "${SNAPSHOT_STATUS_PATH}" \
+    "${SNAPSHOT_READY_PATH}" \
+    "${ENV_PATH}" \
+    "${NICS_TSV_PATH}" \
+    "${BRIDGES_TSV_PATH}" \
     "${LXC_TSV_PATH}" \
     "${VM_TSV_PATH}" \
     "${RAW_LXC_DIR}" \
@@ -1568,6 +1846,74 @@ require.snapshot.artifacts() {
     fi
   done
   if [[ "${missing}" -ne 0 ]]; then
+    exit 1
+  fi
+  if [[ -f "${RUN_DIR}/network.error.txt" ]]; then
+    log.error "Snapshot contains a collection error marker: ${RUN_DIR}/network.error.txt"
+    exit 1
+  fi
+  grep -Fxq '  collection_complete: true' "${SNAPSHOT_STATUS_PATH}" || {
+    log.error "Snapshot collection is not complete: ${SNAPSHOT_STATUS_PATH}"
+    exit 1
+  }
+  grep -Fxq '  ready_for_update: true' "${SNAPSHOT_STATUS_PATH}" || {
+    log.error "Snapshot is not approved for update: ${SNAPSHOT_STATUS_PATH}"
+    exit 1
+  }
+  grep -Fxq "selected_data_bridge=${EXPECTED_DATA_BRIDGE}" "${SNAPSHOT_READY_PATH}" || {
+    log.error "Snapshot ready marker does not match selected data bridge ${EXPECTED_DATA_BRIDGE}."
+    exit 1
+  }
+  validate.collection.artifacts || {
+    log.error "Snapshot TSV schema validation failed; rerun preflight with the current runner."
+    exit 1
+  }
+}
+
+require.live.update.topology() {
+  local route_line="" route_dev="" live_admin_bridge="" member_path="" member="" member_driver="" member_speed="" speed_evidence="" member_count=0 host_ipv4=""
+  [[ "${MIN_DATA_SPEED_MBPS}" =~ ^[0-9]+$ ]] && ((MIN_DATA_SPEED_MBPS >= 1000)) || {
+    log.error "PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS must be an integer of at least 1000."
+    exit 1
+  }
+  route_line="$(ip route show default 2>/dev/null | head -n1 || true)"
+  route_dev="$(awk '/^default / {for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}' <<< "${route_line}")"
+  live_admin_bridge="${route_dev}"
+  if [[ -n "${route_dev}" && -L "${SYS_CLASS_NET_ROOT}/${route_dev}/master" ]]; then
+    live_admin_bridge="$(readlink.basename.or.empty "${SYS_CLASS_NET_ROOT}/${route_dev}/master")"
+  fi
+  if [[ "${live_admin_bridge}" != "${EXPECTED_ADMIN_BRIDGE}" ]]; then
+    log.error "Live management route changed: expected ${EXPECTED_ADMIN_BRIDGE}, found ${live_admin_bridge:-none}. Rerun preflight."
+    exit 1
+  fi
+  if [[ ! -d "${SYS_CLASS_NET_ROOT}/${EXPECTED_DATA_BRIDGE}/bridge" ]] \
+    || ! ip link show dev "${EXPECTED_DATA_BRIDGE}" >/dev/null 2>&1; then
+    log.error "Selected data bridge is not live: ${EXPECTED_DATA_BRIDGE}."
+    log.error "Run setup.vlan.sh preflight/apply to create the host data bridge, then rerun setup/network.sh preflight."
+    exit 1
+  fi
+  for member_path in "${SYS_CLASS_NET_ROOT}/${EXPECTED_DATA_BRIDGE}"/brif/*; do
+    [[ -e "${member_path}" ]] || continue
+    member="$(basename "${member_path}")"
+    if [[ -e "${SYS_CLASS_NET_ROOT}/${member}/device" ]]; then
+      member_count=$((member_count + 1))
+      member_driver="$(readlink.basename.or.empty "${SYS_CLASS_NET_ROOT}/${member}/device/driver")"
+      member_speed="$(cat "${SYS_CLASS_NET_ROOT}/${member}/speed" 2>/dev/null || true)"
+      speed_evidence="$(physical.nic.speed.evidence.mbps "${member}" "${member_driver}" "${member_speed}")"
+      if [[ ! "${speed_evidence}" =~ ^[0-9]+$ ]] || ((speed_evidence < MIN_DATA_SPEED_MBPS)); then
+        log.error "Physical data NIC ${member} has only ${speed_evidence:-0}Mbps of speed evidence; policy requires at least ${MIN_DATA_SPEED_MBPS}Mbps."
+        exit 1
+      fi
+    fi
+  done
+  if ((member_count == 0)); then
+    log.error "Data bridge ${EXPECTED_DATA_BRIDGE} has no physical NIC member."
+    exit 1
+  fi
+  host_ipv4="$(ip -o -4 addr show dev "${EXPECTED_DATA_BRIDGE}" 2>/dev/null | awk '{print $4}' | paste -sd, - || true)"
+  if [[ -n "${host_ipv4}" ]]; then
+    log.error "Data bridge ${EXPECTED_DATA_BRIDGE} has host IPv4 address(es): ${host_ipv4}."
+    log.error "The isolated ingest bridge must remain unnumbered on the Proxmox host."
     exit 1
   fi
 }
@@ -1798,7 +2144,7 @@ collect.update.selection() {
       append.unique.id UPDATE_LXC_IDS "${choice}"
     done < <(parse.id.filter "${selected_lxc}")
 
-    EXPECTED_DATA_BRIDGE="$(trim.space "$(prompt.tty "Enter discovered data bridge" "${EXPECTED_DATA_BRIDGE}")")"
+    printf '  update-ready data bridge: %s\n' "${EXPECTED_DATA_BRIDGE}" >&3
     if ((${#UPDATE_LXC_IDS[@]} == 1)); then
       selected_id="${UPDATE_LXC_IDS[0]}"
       EXPECTED_GUEST_ADMIN_IF="$(lxc.egress.if.name "${selected_id}")"
@@ -1829,6 +2175,12 @@ collect.update.selection() {
   [[ "${EXPECTED_GUEST_DATA_IF}" != "${EXPECTED_GUEST_ADMIN_IF}" ]] || { log.error "Data and egress interface names must differ."; exit 1; }
   ! lxc.guest.if.exists "${selected_id}" "${EXPECTED_GUEST_DATA_IF}" || { log.error "Container interface already exists: ${EXPECTED_GUEST_DATA_IF}"; exit 1; }
   valid.ipv4.cidr "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}" || { log.error "A valid static data IPv4/CIDR is required."; exit 1; }
+  EXPECTED_DATA_CIDR="$(derive.ipv4.network.cidr "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")"
+  if ipv4.cidrs.overlap "${EXPECTED_MANAGEMENT_CIDR}" "${EXPECTED_DATA_CIDR}"; then
+    log.error "Data CIDR ${EXPECTED_DATA_CIDR} overlaps management CIDR ${EXPECTED_MANAGEMENT_CIDR}."
+    log.error "Choose a separate local-only subnet for the 10GbE ingest network."
+    exit 1
+  fi
   [[ "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}" == "add_data_nic" ]] || { log.error "Only the non-destructive add_data_nic strategy is supported."; exit 1; }
   PROXMOX_NETWORK_UPDATE_VLAN_TAG=""
   PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
@@ -1921,7 +2273,8 @@ proxmox_network_update:
     admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
     data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
     data_link_mode: $(yaml.quote "${EXPECTED_DATA_LINK_MODE}")
-    lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+    management_cidr: $(yaml.quote "${EXPECTED_MANAGEMENT_CIDR}")
+    data_cidr: $(yaml.quote "${EXPECTED_DATA_CIDR}")
     guest_admin_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
     guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
     data_ipv4_cidr: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")
@@ -1960,7 +2313,8 @@ proxmox_network_verify_path: $(yaml.quote "${NETWORK_VERIFY_PATH}")
 proxmox_network_update_mode: $(yaml.quote "${mode}")
 proxmox_network_expected_admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
 proxmox_network_expected_data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
-proxmox_network_expected_lan_cidr: $(yaml.quote "${EXPECTED_LAN_CIDR}")
+proxmox_network_management_cidr: $(yaml.quote "${EXPECTED_MANAGEMENT_CIDR}")
+proxmox_network_data_cidr: $(yaml.quote "${EXPECTED_DATA_CIDR}")
 proxmox_network_expected_guest_egress_if: $(yaml.quote "${EXPECTED_GUEST_ADMIN_IF}")
 proxmox_network_expected_guest_data_if: $(yaml.quote "${EXPECTED_GUEST_DATA_IF}")
 proxmox_network_expected_data_ipv4_cidr: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")
@@ -2051,8 +2405,10 @@ run.network.update.flow() {
   resolve.snapshot.dir
   load.snapshot.defaults
   require.snapshot.artifacts
+  require.live.update.topology
   load.update.candidates
   collect.update.selection
+  require.live.update.topology
   probe.data.ip.conflict
   build.network.update.plan
   if ! awk 'NR > 1 {found=1} END {exit(found ? 0 : 1)}' "${NETWORK_PLAN_PATH}" 2>/dev/null; then
@@ -2088,6 +2444,7 @@ run.network.update.flow() {
     return 0
   fi
 
+  require.live.update.topology
   write.network.extra.vars.file "apply"
   if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
     rollback.network.update.plan
@@ -2143,6 +2500,7 @@ run.all.flow() {
 }
 
 run.preflight() {
+  PREFLIGHT_ACTIVE=1
   if [[ "${FEATURE_MODE}" == "debug" ]]; then
     FEATURE_DEBUG=1
     FEATURE_MODE="preflight"
@@ -2165,22 +2523,38 @@ run.preflight() {
   log "Selected scope: LXC IDs=$(join.by ',' "${CT_IDS[@]}") VM IDs=$(join.by ',' "${VM_IDS[@]}")"
   collect.lxc.data
   collect.vm.data
+  validate.collection.artifacts
+  evaluate.snapshot.readiness
   write.host.yaml
-  write.next.stage.env
+  write.snapshot.status
   write.summary
-  export.preflight.facts.for.ansible
-  update.latest.pointer
+  update.latest.report.pointer
 
-  log "Preflight complete. Saved network snapshot to ${RUN_DIR}"
+  if [[ "${SNAPSHOT_READY_FOR_UPDATE}" == "true" ]]; then
+    write.next.stage.env
+    export.preflight.facts.for.ansible
+    mark.snapshot.ready
+    update.latest.ready.pointer
+    write.summary
+    PREFLIGHT_ACTIVE=0
+    log "Preflight complete and update-ready. Saved network snapshot to ${RUN_DIR}"
+    cat "${SUMMARY_PATH}"
+    return 0
+  fi
+
+  PREFLIGHT_ACTIVE=0
+  log.error "Preflight completed but is not update-ready: ${SNAPSHOT_BLOCKING_CODES:-unknown}"
   cat "${SUMMARY_PATH}"
+  trap - ERR
+  return 2
 }
 
 resolve.report.dir() {
   local resolved=""
   if [[ -n "${REPORT_DIR_OVERRIDE}" ]]; then
     resolved="${REPORT_DIR_OVERRIDE}"
-  elif [[ -L "${OUTPUT_ROOT}/latest" ]]; then
-    resolved="$(readlink "${OUTPUT_ROOT}/latest")"
+  elif [[ -L "${OUTPUT_ROOT}/latest-report" ]]; then
+    resolved="$(readlink "${OUTPUT_ROOT}/latest-report")"
     if [[ "${resolved}" != /* ]]; then
       resolved="${OUTPUT_ROOT}/${resolved}"
     fi
@@ -2208,6 +2582,7 @@ run.report() {
 }
 
 main() {
+  install.runtime.traps
   maybe.prompt.run.stage
   require.valid.mode
 
@@ -2242,5 +2617,9 @@ main() {
       ;;
   esac
 }
+
+if [[ "${PROXMOX_NETWORK_SOURCE_ONLY:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 main "$@"
