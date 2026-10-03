@@ -22,6 +22,7 @@ ok 'shell syntax'
 HARDWARE="${ROOT}/ansible/proxmox/helper/hardware.yml"
 VLAN="${ROOT}/ansible/proxmox/vlan.yml"
 VLAN_TASKS="${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"
+VLAN_IFRELOAD_TASKS="${ROOT}/ansible/proxmox/tasks/data-link.ifreload.validate.yml"
 VLAN_TEMPLATE="${ROOT}/ansible/proxmox/templates/data-link.interfaces.j2"
 NETWORK="${ROOT}/setup/network.sh"
 UPDATE="${ROOT}/ansible/proxmox/network.update.yml"
@@ -44,7 +45,11 @@ grep -q 'bridge-ports' "${VLAN_TEMPLATE}" || fail 'canonical DATA-Link template 
 grep -q 'Collect selected physical NIC IPv4 methods by interface tokens' "${VLAN_TASKS}" || fail 'DATA-Link candidate does not use the canonical token parser'
 grep -q 'proxmox_vlan_data_nic_policy_valid' "${VLAN_TASKS}" || fail 'DATA-Link candidate does not reject non-manual IPv4 declarations'
 grep -q 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh" || fail 'candidate task is not a runner support dependency'
+grep -q 'proxmox/tasks/data-link.ifreload.validate.yml' "${ROOT}/setup/vlan.sh" || fail 'ifreload validation task is not a runner support dependency'
 grep -q 'proxmox/templates/data-link.interfaces.j2' "${ROOT}/setup/vlan.sh" || fail 'candidate template is not a runner support dependency'
+grep -q 'Run DATA-Link ifreload parser validation without mutation' "${VLAN_IFRELOAD_TASKS}" || fail 'shared syntax validation is missing'
+grep -q 'Run DATA-Link ifreload reload-plan validation without mutation' "${VLAN_IFRELOAD_TASKS}" || fail 'shared reload-plan validation is missing'
+[[ "$(grep -Ec '^[[:space:]]+- -n$' "${VLAN_IFRELOAD_TASKS}")" -eq 2 ]] || fail 'both ifreload validations must use no-action mode'
 ! grep -q 'ip link set dev.*master' "${VLAN}" || fail 'forced runtime bridge attachment remains'
 ok 'physical NIC discovery and identity contract'
 

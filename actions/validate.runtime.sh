@@ -24,6 +24,7 @@ files=(
   "tests/unit/debian_lxc_template_policy_test.sh"
   "tests/unit/network_snapshot_policy_test.sh"
   "tests/unit/data_link_policy_test.sh"
+  "tests/unit/data_link_ifreload_policy_test.sh"
   "tests/unit/ansible_regex_presence_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
@@ -52,6 +53,7 @@ files=(
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
   "ansible/proxmox/tasks/data-link.candidate.yml"
+  "ansible/proxmox/tasks/data-link.ifreload.validate.yml"
   "ansible/proxmox/templates/data-link.interfaces.j2"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/common.yml"
@@ -260,6 +262,7 @@ for marker in \
 done
 echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gigabit data topology"
 "${ROOT}/tests/unit/data_link_policy_test.sh"
+"${ROOT}/tests/unit/data_link_ifreload_policy_test.sh"
 "${ROOT}/tests/unit/ansible_regex_presence_policy_test.sh"
 
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
@@ -932,14 +935,23 @@ if ! grep -q 'tasks/data-link.candidate.yml' "${ROOT}/ansible/proxmox/vlan.yml";
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must include the canonical DATA-Link candidate task"
   exit 1
 fi
+if ! grep -q 'tasks/data-link.ifreload.validate.yml' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must include shared no-action ifreload validation"
+  exit 1
+fi
 if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansible/proxmox/vlan.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must parse the complete candidate before mutation"
   exit 1
 fi
 if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" \
   || ! grep -q 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh" \
+  || ! grep -q 'proxmox/tasks/data-link.ifreload.validate.yml' "${ROOT}/setup/vlan.sh" \
   || ! grep -q 'proxmox/templates/data-link.interfaces.j2' "${ROOT}/setup/vlan.sh"; then
-  echo "[validate.runtime][error] setup/vlan.sh must fetch and publish the DATA-Link candidate task and template"
+  echo "[validate.runtime][error] setup/vlan.sh must fetch and publish the DATA-Link task includes and template"
+  exit 1
+fi
+if [[ "$(grep -Ec '^[[:space:]]+- -n$' "${ROOT}/ansible/proxmox/tasks/data-link.ifreload.validate.yml")" -ne 2 ]]; then
+  echo "[validate.runtime][error] both DATA-Link ifreload checks must use no-action mode"
   exit 1
 fi
 if ! grep -q 'Search rendered candidate for a literal backslash-n escape' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"; then

@@ -1,0 +1,176 @@
+---
+# Shared ifupdown2 validation for the DATA-Link feature.
+#
+# Callers provide:
+#   proxmox_vlan_ifreload_validation_phase
+#   proxmox_vlan_ifreload_validation_result_key
+#   proxmox_vlan_ifreload_validation_enforce
+#   proxmox_vlan_ifreload_validation_allow_owned_legacy
+#   proxmox_vlan_fatal_parser_warning_pattern
+#   proxmox_vlan_effective.data.nic / .bridge
+#   proxmox_vlan_owned_block_count
+#
+# Tests consume this exact task file. The no-action flag is required for both
+# parser-only and reload-plan checks: ifupdown2 otherwise reports a valid new
+# auto bridge as "interface not recognized" before it has been created.
+
+- name: Validate DATA-Link ifreload task inputs
+  ansible.builtin.assert:
+    that:
+      - (proxmox_vlan_ifreload_validation_phase | default('', true) | string | length) > 0
+      - (proxmox_vlan_ifreload_validation_result_key | default('', true) | string | length) > 0
+      - (proxmox_vlan_effective.data.nic | default('', true) | string | length) > 0
+      - (proxmox_vlan_effective.data.bridge | default('', true) | string | length) > 0
+      - (proxmox_vlan_fatal_parser_warning_pattern | default('', true) | string | length) > 0
+    fail_msg: "DATA-Link ifreload validation inputs are incomplete."
+
+- name: Run DATA-Link ifreload parser validation without mutation
+  ansible.builtin.command:
+    argv:
+      - ifreload
+      - -a
+      - -s
+      - -n
+  register: proxmox_vlan_ifreload_syntax_check
+  changed_when: false
+  failed_when: false
+
+- name: Run DATA-Link ifreload reload-plan validation without mutation
+  ansible.builtin.command:
+    argv:
+      - ifreload
+      - -a
+      - -n
+  register: proxmox_vlan_ifreload_plan_check
+  changed_when: false
+  failed_when: false
+
+- name: Combine DATA-Link ifreload diagnostics
+  ansible.builtin.set_fact:
+    proxmox_vlan_ifreload_validation_output: >-
+      {{
+        (proxmox_vlan_ifreload_syntax_check.stdout | default('')) ~ '\n'
+        ~ (proxmox_vlan_ifreload_syntax_check.stderr | default('')) ~ '\n'
+        ~ (proxmox_vlan_ifreload_plan_check.stdout | default('')) ~ '\n'
+        ~ (proxmox_vlan_ifreload_plan_check.stderr | default(''))
+      }}
+
+- name: Find baseline warnings not attributable to the selected owned DATA-Link
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "nic={{ proxmox_vlan_effective.data.nic }}"
+      - -v
+      - "bridge_name={{ proxmox_vlan_effective.data.bridge }}"
+      - |-
+        function without_colon(value) {
+          sub(/:$/, "", value)
+          return value
+        }
+        function fatal(line, lowered) {
+          lowered = tolower(line)
+          return index(lowered, "duplicate interface") \
+            || index(lowered, "invalid use of bridge attribute") \
+            || index(lowered, "interface not recognized") \
+            || index(lowered, "error:") \
+            || index(lowered, "syntax error")
+        }
+        {
+          if (!fatal($0)) next
+          approved = 0
+          if ($1 == "warning:" && $2 == "duplicate" && $3 == "interface" \
+              && $4 == nic && $5 == "found") approved = 1
+          if ($1 == "warning:" && without_colon($2) == bridge_name \
+              && $3 == "invalid" && $4 == "use" && $5 == "of" \
+              && $6 == "bridge" && $7 == "attribute" \
+              && $9 == "on" && $10 == "non-bridge" && $11 == "stanza") approved = 1
+          if ($1 == "warning:" && without_colon($2) == bridge_name \
+              && $3 == "interface" && $4 == "not" && $5 == "recognized") approved = 1
+          if (!approved) print
+        }
+  args:
+    stdin: "{{ proxmox_vlan_ifreload_validation_output }}"
+    stdin_add_newline: true
+  register: proxmox_vlan_ifreload_unapproved_baseline
+  changed_when: false
+
+- name: Record DATA-Link ifreload validation result
+  ansible.builtin.set_fact:
+    proxmox_vlan_ifreload_validation_results: >-
+      {{
+        proxmox_vlan_ifreload_validation_results | default({})
+        | combine({
+            (proxmox_vlan_ifreload_validation_result_key): {
+              'phase': proxmox_vlan_ifreload_validation_phase,
+              'syntax_rc': proxmox_vlan_ifreload_syntax_check.rc | int,
+              'plan_rc': proxmox_vlan_ifreload_plan_check.rc | int,
+              'output': proxmox_vlan_ifreload_validation_output,
+              'fatal_warnings': (
+                proxmox_vlan_ifreload_validation_output
+                | regex_findall(proxmox_vlan_fatal_parser_warning_pattern)
+              ),
+              'unapproved_warnings': proxmox_vlan_ifreload_unapproved_baseline.stdout_lines | default([])
+            }
+          })
+      }}
+
+- name: Accept only selected feature-owned warnings as repairable baseline state
+  ansible.builtin.assert:
+    that:
+      - proxmox_vlan_ifreload_syntax_check.rc == 0
+      - proxmox_vlan_ifreload_plan_check.rc == 0
+      - >-
+        (
+          proxmox_vlan_ifreload_validation_output
+          | regex_findall(proxmox_vlan_fatal_parser_warning_pattern)
+          | length
+        ) == 0
+        or (proxmox_vlan_owned_block_count | default(0) | int) > 0
+      - (proxmox_vlan_ifreload_unapproved_baseline.stdout_lines | default([]) | length) == 0
+    fail_msg: >-
+      Existing interface configuration contains warnings that cannot be attributed
+      to the selected feature-owned DATA-Link block. Refusing repair.
+      phase={{ proxmox_vlan_ifreload_validation_phase }};
+      syntax_rc={{ proxmox_vlan_ifreload_syntax_check.rc }};
+      plan_rc={{ proxmox_vlan_ifreload_plan_check.rc }};
+      diagnostics={{ proxmox_vlan_ifreload_validation_output | trim }};
+      unapproved={{ proxmox_vlan_ifreload_unapproved_baseline.stdout_lines | default([]) }}.
+  when:
+    - not (proxmox_vlan_ifreload_validation_enforce | default(true) | bool)
+    - proxmox_vlan_ifreload_validation_allow_owned_legacy | default(false) | bool
+
+- name: Report repairable feature-owned DATA-Link baseline warnings
+  ansible.builtin.debug:
+    msg: >-
+      Existing feature-owned DATA-Link configuration contains repairable warnings.
+      The canonical candidate must remove every warning before write/apply succeeds.
+      diagnostics={{ proxmox_vlan_ifreload_validation_output | trim }}
+  when:
+    - not (proxmox_vlan_ifreload_validation_enforce | default(true) | bool)
+    - proxmox_vlan_ifreload_validation_allow_owned_legacy | default(false) | bool
+    - >-
+      (
+        proxmox_vlan_ifreload_validation_output
+        | regex_findall(proxmox_vlan_fatal_parser_warning_pattern)
+        | length
+      ) > 0
+
+- name: Require warning-free DATA-Link candidate validation
+  ansible.builtin.assert:
+    that:
+      - proxmox_vlan_ifreload_syntax_check.rc == 0
+      - proxmox_vlan_ifreload_plan_check.rc == 0
+      - >-
+        (
+          proxmox_vlan_ifreload_validation_output
+          | regex_findall(proxmox_vlan_fatal_parser_warning_pattern)
+          | length
+        ) == 0
+    fail_msg: >-
+      DATA-Link candidate failed no-action ifreload validation.
+      phase={{ proxmox_vlan_ifreload_validation_phase }};
+      syntax_rc={{ proxmox_vlan_ifreload_syntax_check.rc }};
+      plan_rc={{ proxmox_vlan_ifreload_plan_check.rc }};
+      diagnostics={{ proxmox_vlan_ifreload_validation_output | trim }}.
+  when: proxmox_vlan_ifreload_validation_enforce | default(true) | bool

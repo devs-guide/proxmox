@@ -47,7 +47,10 @@ for a configured switch trunk and explicitly approved VLAN IDs.
 
 The preflight runner detects feature-owned legacy blocks, revalidates stable
 PCI/MAC identity, and previews a canonical candidate. Foreign bridge
-configuration remains fail-closed.
+configuration remains fail-closed. A complete older feature-owned block may
+produce duplicate-interface or non-bridge attribute warnings in the current
+configuration; these are treated as repair evidence only when they identify
+the selected DATA-Link NIC or bridge.
 
 ## 3. Write and apply the data bridge
 
@@ -68,7 +71,10 @@ PROXMOX_VLAN_CONFIRM_OOB=YES \
 Apply delegates physical activation to the DATA-Link runner, rejects
 ifupdown2 structural warnings even when the parser returns success, reloads
 the candidate normally, and rolls back instead of forcing runtime bridge
-membership.
+membership. Before either write or apply succeeds, the installed canonical
+candidate must pass `ifreload -a -s -n` and `ifreload -a -n` without warnings.
+This lets the runner repair a recognized dirty baseline without weakening the
+zero-warning requirement for the replacement.
 
 Confirm that the management route remains intact and the data bridge remains
 unnumbered:

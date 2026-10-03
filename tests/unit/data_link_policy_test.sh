@@ -226,6 +226,7 @@ cat > "${RENDER_PLAYBOOK}" <<'EOF'
         that:
           - proxmox_vlan_candidate_results.host.methods == ['manual']
           - "'ma' not in proxmox_vlan_candidate_results.host.methods"
+          - proxmox_vlan_candidate_results.host.owned_block_count == 1
           - proxmox_vlan_candidate_results.absent.methods == []
           - proxmox_vlan_candidate_results.absent.emit_manual | bool
           - proxmox_vlan_candidate_results.manual_comment.methods == ['manual']
@@ -268,6 +269,7 @@ assert.canonical.candidate() {
 
 assert.canonical.candidate "${HOST_CANDIDATE}" data7 lanbr7
 ! grep -Fq 'ansible-proxmox-vlan-vmbr1' "${HOST_CANDIDATE}"
+! grep -Eq '^iface lanbr7 inet manual[[:space:]]+bridge-ports' "${HOST_CANDIDATE}"
 assert.canonical.candidate "${FIXTURE_DIR}/interfaces.tabs_crlf" port9 fabric10
 assert.canonical.candidate "${FIXTURE_DIR}/interfaces.metachar_name" port.7+safe fabric.7+safe
 [[ "$(grep -Fxc 'iface port7 inet6 manual' "${FIXTURE_DIR}/interfaces.dual_stack")" == 1 ]]
@@ -280,6 +282,7 @@ grep -Fq 'duplicate interface|invalid use of bridge attribute|interface not reco
 ! grep -Eq 'ip link set dev.*master' "${VLAN_PLAYBOOK}"
 
 grep -Fq 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh"
+grep -Fq 'proxmox/tasks/data-link.ifreload.validate.yml' "${ROOT}/setup/vlan.sh"
 grep -Fq 'vlan.pending.yml' "${ROOT}/setup/vlan.sh"
 grep -Fq 'vlan.applied.yml' "${ROOT}/setup/vlan.sh"
 grep -Fq 'vlan.applied.yml' "${ROOT}/setup/network.sh"

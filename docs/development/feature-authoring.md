@@ -81,3 +81,10 @@ candidate rendering, and structural validation into one production task
 include. Both the runner and tests execute that include. Repository policy now
 rejects suspicious doubled control escapes in Jinja regex calls and rejects a
 test-local DATA-Link regex parser.
+
+The later ifupdown2 repair path follows the same rule. Baseline diagnostics and
+candidate validation are separate: a warning from a complete owned legacy
+block may authorize canonical repair, but it is never ignored on the generated
+candidate. Both parser-only and reload-plan checks use ifupdown2 no-action mode,
+and hosted fixtures execute the same production validation include with dirty,
+clean, zero-exit-warning, and nonzero failure cases.

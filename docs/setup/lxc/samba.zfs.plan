@@ -67,7 +67,8 @@ Network execution is split into explicit stages:
 2. `probe`: temporarily bring one unused candidate up, wait for carrier,
    inspect it with ethtool, then restore its prior state unless applying.
 3. `write`: save a checksummed backup, stage the reviewed bridge block, and
-   require `ifreload -a -s` to pass.
+   require both `ifreload -a -s -n` parser validation and `ifreload -a -n`
+   reload-plan validation to pass without structural warnings.
 4. `apply`: revalidate identity and management invariants, reload networking,
    and activate the selected data link.
 5. `verify`: recollect facts and compare them to immutable intent.
@@ -80,6 +81,10 @@ is discovered and confirmed from currently unused bridge names.
 Apply fails if management identity or route changes, selected hardware drifts,
 the target bridge conflicts, a selected NIC becomes used/addressed, candidate
 parsing emits structural warnings, reload fails, or physical carrier is absent.
+Warnings from a complete feature-owned legacy block may be accepted only as
+repair input when they name the selected NIC or bridge. The canonical staged
+candidate must eliminate duplicate-interface, invalid bridge-attribute, and
+unrecognized-interface warnings before write or apply can succeed.
 
 ## Gate 2: role-based LXC networking
 

@@ -601,6 +601,15 @@
         fail_msg: "ifreload is required for this feature but was not found on the host."
       when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
 
+    - name: Capture and classify existing DATA-Link ifreload baseline
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/data-link.ifreload.validate.yml"
+      vars:
+        proxmox_vlan_ifreload_validation_phase: baseline
+        proxmox_vlan_ifreload_validation_result_key: baseline
+        proxmox_vlan_ifreload_validation_enforce: false
+        proxmox_vlan_ifreload_validation_allow_owned_legacy: true
+      when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
+
     - name: Parse complete DATA-Link candidate interface list
       command:
         argv:
@@ -698,32 +707,13 @@
             remote_src: true
             mode: "0644"
 
-        - name: Dry-run interface reload after writing managed block
-          command:
-            argv:
-              - ifreload
-              - -a
-              - -s
-          register: proxmox_ifreload_dry_run
-          changed_when: false
-          failed_when: false
-          when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
-
-        - name: Assert post-write ifreload dry-run passed
-          assert:
-            that:
-              - proxmox_ifreload_dry_run.rc == 0
-              - >-
-                ((
-                  (
-                    (proxmox_ifreload_dry_run.stdout | default('')) ~ '\n'
-                    ~ (proxmox_ifreload_dry_run.stderr | default(''))
-                  )
-                  | regex_findall(proxmox_vlan_fatal_parser_warning_pattern)
-                ) | length) == 0
-            fail_msg: >-
-              Post-write ifreload validation failed or emitted a structural warning.
-              ifreload stderr={{ proxmox_ifreload_dry_run.stderr | default('') }}
+        - name: Validate installed DATA-Link candidate without mutation
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/data-link.ifreload.validate.yml"
+          vars:
+            proxmox_vlan_ifreload_validation_phase: candidate
+            proxmox_vlan_ifreload_validation_result_key: candidate
+            proxmox_vlan_ifreload_validation_enforce: true
+            proxmox_vlan_ifreload_validation_allow_owned_legacy: false
           when: proxmox_vlan_effective.safety.require_ifreload_dry_run | bool
 
         - name: Report write mode completion (staged config only)

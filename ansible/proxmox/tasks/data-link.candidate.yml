@@ -45,6 +45,7 @@
         marker("BEGIN") && owned($6) {
           if (inside) nested += 1
           inside = 1
+          owned_count += 1
           owned_name = cleaned($6)
           next
         }
@@ -56,6 +57,7 @@
         !inside { print }
         END {
           if (inside || nested || orphan_end) exit 42
+          print owned_count + 0 > "/dev/stderr"
         }
   args:
     stdin: "{{ proxmox_vlan_candidate_source_text }}"
@@ -76,6 +78,7 @@
 - name: Store DATA-Link source without feature-owned blocks
   ansible.builtin.set_fact:
     proxmox_vlan_interfaces_without_owned_blocks: "{{ proxmox_vlan_owned_block_cleanup.stdout }}"
+    proxmox_vlan_owned_block_count: "{{ proxmox_vlan_owned_block_cleanup.stderr | trim | int }}"
 
 - name: Count selected bridge references outside feature-owned blocks
   ansible.builtin.command:
@@ -148,7 +151,8 @@
               'nonmanual_count': proxmox_vlan_data_nic_nonmanual_count | int,
               'emit_manual': proxmox_vlan_data_nic_emit_manual | bool,
               'policy_valid': proxmox_vlan_data_nic_policy_valid | bool,
-              'foreign_bridge_references': proxmox_vlan_foreign_bridge_reference_count | int
+              'foreign_bridge_references': proxmox_vlan_foreign_bridge_reference_count | int,
+              'owned_block_count': proxmox_vlan_owned_block_count | int
             }
           })
       }}

@@ -3,13 +3,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-python3 - "${ROOT}/ansible" "${ROOT}/tests/unit/data_link_policy_test.sh" <<'PY'
+python3 - \
+  "${ROOT}/ansible" \
+  "${ROOT}/tests/unit/data_link_policy_test.sh" \
+  "${ROOT}/tests/unit/data_link_ifreload_policy_test.sh" <<'PY'
 from pathlib import Path
 import re
 import sys
 
 root = Path(sys.argv[1])
 data_link_test = Path(sys.argv[2])
+ifreload_test = Path(sys.argv[3])
 identity_test = re.compile(
     r"\bregex_search\("
     r"(?:(?!\bregex_search\().){0,1600}?"
@@ -102,6 +106,27 @@ if missing_markers or copied_parser_markers:
         print(f"  missing marker: {marker}", file=sys.stderr)
     for marker in copied_parser_markers:
         print(f"  copied parser marker: {marker}", file=sys.stderr)
+    raise SystemExit(1)
+
+ifreload_test_text = ifreload_test.read_text(encoding="utf-8")
+required_ifreload_markers = (
+    'ansible/proxmox/tasks/data-link.ifreload.validate.yml',
+    'DATA_LINK_IFRELOAD_TASKS',
+    'baseline_dirty',
+    'candidate_warning',
+    'foreign_baseline',
+)
+missing_ifreload_markers = [
+    marker for marker in required_ifreload_markers if marker not in ifreload_test_text
+]
+if missing_ifreload_markers:
+    print(
+        "[ansible_regex_presence_policy_test][error] DATA-Link ifreload tests must "
+        "execute the production validation task for baseline and candidate cases.",
+        file=sys.stderr,
+    )
+    for marker in missing_ifreload_markers:
+        print(f"  missing marker: {marker}", file=sys.stderr)
     raise SystemExit(1)
 
 print(
