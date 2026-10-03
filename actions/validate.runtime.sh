@@ -23,6 +23,7 @@ files=(
   "tests/unit/ansible_runtime_policy_test.sh"
   "tests/unit/debian_lxc_template_policy_test.sh"
   "tests/unit/network_snapshot_policy_test.sh"
+  "tests/unit/network_update_playbook_policy_test.sh"
   "tests/unit/data_link_policy_test.sh"
   "tests/unit/data_link_ifreload_policy_test.sh"
   "tests/unit/ansible_regex_presence_policy_test.sh"
@@ -232,6 +233,21 @@ if ! grep -q 'network.plan.tsv' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh must persist network.plan.tsv"
   exit 1
 fi
+for marker in \
+  'normalize.ipv4.interface.cidr()' \
+  'PROXMOX_NETWORK_DEFAULT_DATA_PREFIX' \
+  'network.update.status.yml' \
+  'proxmox_network_update_runtime_facts_path' \
+  'Duplicate-address revalidation passed'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/network.sh"; then
+    echo "[validate.runtime][error] setup/network.sh is missing update safety marker: ${marker}"
+    exit 1
+  fi
+done
+if ! grep -Fxq '      - iputils-arping' "${ROOT}/ansible/debian/packages.yml"; then
+  echo "[validate.runtime][error] Debian networking baseline is missing iputils-arping"
+  exit 1
+fi
 echo "[validate.runtime][ok] setup/network.sh exposes preflight/export/update/verify contract"
 
 if grep -Fq 'NR > 1 ? NR - 1 : 0' "${ROOT}/setup/network.sh"; then
@@ -264,6 +280,7 @@ echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gi
 "${ROOT}/tests/unit/data_link_policy_test.sh"
 "${ROOT}/tests/unit/data_link_ifreload_policy_test.sh"
 "${ROOT}/tests/unit/ansible_regex_presence_policy_test.sh"
+"${ROOT}/tests/unit/network_update_playbook_policy_test.sh"
 
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then

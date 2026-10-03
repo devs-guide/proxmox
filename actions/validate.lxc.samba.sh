@@ -28,6 +28,7 @@ NETWORK="${ROOT}/setup/network.sh"
 UPDATE="${ROOT}/ansible/proxmox/network.update.yml"
 SAMBA="${ROOT}/ansible/proxmox/container/samba.file.share.yml"
 GROUP_VARS="${ROOT}/ansible/group_vars/proxmox.yml"
+PACKAGES="${ROOT}/ansible/debian/packages.yml"
 
 grep -q 'supported_speed_mbps' "${HARDWARE}" || fail 'supported NIC speed is not persisted'
 grep -q 'permanent_mac' "${HARDWARE}" || fail 'permanent NIC MAC is not persisted'
@@ -60,6 +61,10 @@ grep -q 'unsafe_data_route' "${UPDATE}" || fail 'gateway/DHCP rejection is missi
 grep -q 'refuse_live_slot_overwrite' "${UPDATE}" || fail 'live slot overwrite protection is missing'
 grep -q 'rollback.network.update.plan' "${NETWORK}" || fail 'guest NIC rollback is missing'
 grep -q 'probe.data.ip.conflict' "${NETWORK}" || fail 'duplicate static-address probe is missing'
+grep -q 'normalize.ipv4.interface.cidr' "${NETWORK}" || fail 'bare IPv4 normalization is missing'
+grep -q 'network.update.status.yml' "${NETWORK}" || fail 'transactional update status is missing'
+grep -q '__WOULD_CHANGE__' "${UPDATE}" || fail 'check-mode would-change reporting is missing'
+grep -Fxq '      - iputils-arping' "${PACKAGES}" || fail 'arping is not in the networking baseline'
 grep -q 'ensure.lxc.runtime.data.role' "${NETWORK}" || fail 'running-container NIC activation verification is missing'
 grep -q 'PROXMOX_NETWORK_ALLOW_LXC_RESTART' "${NETWORK}" || fail 'operator-controlled restart gate is missing'
 ! grep -Fq 'NR > 1 ? NR - 1 : 0' "${NETWORK}" || fail 'non-portable awk row-count expression remains'
@@ -72,6 +77,10 @@ grep -Fq 'vlan.pending.yml' "${ROOT}/setup/vlan.sh" || fail 'pending DATA-Link s
 grep -Fq 'vlan.applied.yml' "${ROOT}/setup/vlan.sh" || fail 'applied DATA-Link selection state is missing'
 grep -Fq 'vlan.applied.yml' "${NETWORK}" || fail 'guest handoff does not require applied DATA-Link state'
 ok 'role-based LXC network contract'
+
+bash "${ROOT}/tests/unit/network_snapshot_policy_test.sh"
+bash "${ROOT}/tests/unit/network_update_playbook_policy_test.sh"
+ok 'production DATA-Link address and check-mode fixtures'
 
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
 ! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'
@@ -101,6 +110,7 @@ ok 'Pages feature manifest'
 if command -v ansible-playbook >/dev/null 2>&1; then
   for playbook in \
     ansible/proxmox/helper/hardware.yml \
+    ansible/proxmox/helper/network.preflight.export.yml \
     ansible/proxmox/vlan.yml \
     ansible/proxmox/network.update.yml \
     ansible/proxmox/network.verify.yml \

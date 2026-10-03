@@ -63,10 +63,14 @@ fallback when the native interpreter is below the supported minimum.
 5. Run `setup/network.sh preflight`, then `setup/network.sh update`. The update
    preserves the discovered default-route/egress NIC and adds one confirmed
    static data NIC with `firewall=1`, no gateway, and no tag. It refuses live
-   slot replacement, probes the address for duplicates, verifies the running
-   guest after hot-apply, and asks before restarting only when runtime evidence
-   shows activation is pending. A declined/failed restart rolls the new NIC
-   back. Non-interactive restart requires
+   slot replacement, rejects subnet and broadcast addresses, probes the host
+   address before preview and again immediately before apply, verifies the
+   running guest after hot-apply, and asks before restarting only when runtime
+   evidence shows activation is pending. A bare host address such as
+   `10.10.0.4` becomes `10.10.0.4/24` by default and is displayed alongside
+   its derived `10.10.0.0/24` subnet. The baseline installs the required
+   `iputils-arping` package. A declined/failed restart rolls the new NIC back.
+   Non-interactive restart requires
    `PROXMOX_NETWORK_ALLOW_LXC_RESTART=1`.
 
    ```bash

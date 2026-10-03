@@ -62,6 +62,7 @@ groups:
   networking:
     description: Network tests and small utilities.
     packages:
+      - iputils-arping
       - iperf3
       - tree
       - mailutils

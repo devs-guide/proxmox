@@ -81,6 +81,17 @@ grep -Fxq '  ready_for_update: true' "${SNAPSHOT_STATUS_PATH}" || fail 'ready sn
 grep -Fxq 'selected_data_bridge=br-data' "${SNAPSHOT_READY_PATH}" || fail 'ready marker bridge is missing'
 
 assert.equal '198.51.100.0/24' "$(derive.ipv4.network.cidr '198.51.100.40/24')" 'data network derivation'
+assert.equal '198.51.100.40/24' "$(normalize.ipv4.interface.cidr '198.51.100.40')" 'bare data address default prefix'
+assert.equal '198.51.100.40/25' "$(normalize.ipv4.interface.cidr '198.51.100.40/25')" 'explicit data address prefix'
+if normalize.ipv4.interface.cidr '198.51.100.0/24' >/dev/null 2>&1; then
+  fail 'subnet identifier was accepted as a host address'
+fi
+if normalize.ipv4.interface.cidr '198.51.100.255/24' >/dev/null 2>&1; then
+  fail 'broadcast address was accepted as a host address'
+fi
+if normalize.ipv4.interface.cidr 'not-an-address' >/dev/null 2>&1; then
+  fail 'malformed data address was accepted'
+fi
 ipv4.cidrs.overlap '192.0.2.0/24' '192.0.2.128/25' || fail 'overlapping CIDRs were not detected'
 if ipv4.cidrs.overlap '192.0.2.0/24' '198.51.100.0/24'; then
   fail 'separate management and data CIDRs were treated as overlapping'

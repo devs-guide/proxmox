@@ -44,6 +44,7 @@ PROXMOX_NETWORK_UPDATE_LXCS="${PROXMOX_NETWORK_UPDATE_LXCS:-}"
 PROXMOX_NETWORK_UPDATE_VMS="${PROXMOX_NETWORK_UPDATE_VMS:-}"
 PROXMOX_NETWORK_UPDATE_LXC_STRATEGY="${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY:-add_data_nic}"
 PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR="${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR:-}"
+PROXMOX_NETWORK_DEFAULT_DATA_PREFIX="${PROXMOX_NETWORK_DEFAULT_DATA_PREFIX:-24}"
 PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP="${PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP:-0}"
 PROXMOX_NETWORK_ALLOW_LXC_RESTART="${PROXMOX_NETWORK_ALLOW_LXC_RESTART:-0}"
 
@@ -86,6 +87,8 @@ ANSIBLE_PREFLIGHT_FACTS_JSON="${PROXMOX_NETWORK_PREFLIGHT_FACTS_JSON:-${FACTS_DI
 NETWORK_INTENT_PATH="${PROXMOX_NETWORK_INTENT_PATH:-${FACTS_DIR}/network.intent.yml}"
 NETWORK_PLAN_PATH="${PROXMOX_NETWORK_PLAN_PATH:-${FACTS_DIR}/network.plan.tsv}"
 NETWORK_VERIFY_PATH="${PROXMOX_NETWORK_VERIFY_PATH:-${FACTS_DIR}/network.verify.tsv}"
+NETWORK_UPDATE_RUNTIME_FACTS_PATH="${PROXMOX_NETWORK_UPDATE_RUNTIME_FACTS_PATH:-${FACTS_DIR}/network.update.runtime.yml}"
+NETWORK_UPDATE_STATUS_PATH="${PROXMOX_NETWORK_UPDATE_STATUS_PATH:-${FACTS_DIR}/network.update.status.yml}"
 DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.applied.yml}"
 LEGACY_DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_LEGACY_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
 SYS_CLASS_NET_ROOT="${PROXMOX_NETWORK_SYS_CLASS_NET_ROOT:-/sys/class/net}"
@@ -170,8 +173,9 @@ Optional environment overrides:
   PROXMOX_NETWORK_VMIDS=200,201
   PROXMOX_NETWORK_UPDATE_MODE=check|apply
   PROXMOX_NETWORK_UPDATE_AUTO_APPLY=0|1
-  PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR=<address>/<prefix>
-  PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP=0|1
+  PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR=<address>[/<prefix>]
+  PROXMOX_NETWORK_DEFAULT_DATA_PREFIX=24
+  PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP=0|1  # carrier override only
   PROXMOX_NETWORK_ALLOW_LXC_RESTART=0|1
   PROXMOX_NETWORK_UPDATE_VLAN_TAG=<vid>   # blank means untagged
   PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=10;20;30
@@ -263,7 +267,7 @@ require.valid.mode() {
 require.commands() {
   local missing=0
   local cmd=""
-  for cmd in awk bash bridge date grep hostname ip pct pvesh qm sed uname; do
+  for cmd in arping awk bash bridge date grep hostname ip pct pvesh qm sed uname; do
     if ! command_exists "${cmd}"; then
       log.error "Missing required command: ${cmd}"
       missing=1
@@ -277,7 +281,7 @@ require.commands() {
 require.update.commands() {
   local missing=0
   local cmd=""
-  for cmd in awk bash grep ip pct python3 qm sed sort wget; do
+  for cmd in arping awk bash grep ip pct python3 qm sed sort wget; do
     if ! command_exists "${cmd}"; then
       log.error "Missing required update command: ${cmd}"
       missing=1
@@ -363,6 +367,37 @@ valid.ipv4.cidr() {
   for octet in "${octets[@]}"; do
     [[ "${octet}" =~ ^[0-9]+$ ]] && ((10#${octet} >= 0 && 10#${octet} <= 255)) || return 1
   done
+}
+
+normalize.ipv4.interface.cidr() {
+  local value="${1:-}" default_prefix="${2:-${PROXMOX_NETWORK_DEFAULT_DATA_PREFIX}}"
+  python3 -E - "${value}" "${default_prefix}" <<'PY'
+import ipaddress
+import sys
+
+value = sys.argv[1].strip()
+default_prefix = sys.argv[2].strip()
+try:
+    prefix = int(default_prefix)
+except ValueError:
+    raise SystemExit(1)
+if prefix < 1 or prefix > 30:
+    raise SystemExit(1)
+if "/" not in value:
+    value = f"{value}/{prefix}"
+try:
+    interface = ipaddress.ip_interface(value)
+except ValueError:
+    raise SystemExit(1)
+if not isinstance(interface, ipaddress.IPv4Interface):
+    raise SystemExit(1)
+network = interface.network
+if network.prefixlen < 1 or network.prefixlen > 30:
+    raise SystemExit(1)
+if interface.ip in (network.network_address, network.broadcast_address):
+    raise SystemExit(1)
+print(f"{interface.ip}/{network.prefixlen}")
+PY
 }
 
 valid.interface.name() {
@@ -470,20 +505,16 @@ probe.data.ip.conflict() {
     fi
     log.error "Data bridge ${EXPECTED_DATA_BRIDGE} has no carrier; refusing an unverifiable static address."
     log.error "Connect the data link or explicitly set PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP=1."
-    exit 1
+    return 1
   fi
   if ! command_exists arping; then
-    if is.true "${PROXMOX_NETWORK_ALLOW_UNPROBED_DATA_IP}"; then
-      log.warn "arping is unavailable; explicit override skips duplicate-address probing for ${address}."
-      return 0
-    fi
-    log.error 'arping is required for duplicate-address detection (install iputils-arping).'
-    exit 1
+    log.error 'arping is a required Proxmox baseline dependency (package: iputils-arping).'
+    return 1
   fi
   log "Probing ${address} for duplicates on ${EXPECTED_DATA_BRIDGE}."
   if ! arping -D -q -c 3 -w 4 -I "${EXPECTED_DATA_BRIDGE}" "${address}"; then
     log.error "Static address ${address} answered on ${EXPECTED_DATA_BRIDGE}; choose an unused address."
-    exit 1
+    return 1
   fi
   log "No duplicate response detected for ${address}."
 }
@@ -2131,8 +2162,48 @@ load.update.candidates() {
   done < <(candidate.vm.ids)
 }
 
+resolve.data.ipv4.selection() {
+  local candidate="${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}" normalized="" derived=""
+  local interactive=0
+  if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+    interactive=1
+  fi
+
+  while true; do
+    if ((interactive == 1)); then
+      candidate="$(trim.space "$(prompt.tty "Enter static data IPv4 address or CIDR (no gateway; /${PROXMOX_NETWORK_DEFAULT_DATA_PREFIX} assumed when omitted)" "${candidate}")")"
+    fi
+
+    if normalized="$(normalize.ipv4.interface.cidr "${candidate}" "${PROXMOX_NETWORK_DEFAULT_DATA_PREFIX}" 2>/dev/null)"; then
+      derived="$(derive.ipv4.network.cidr "${normalized}")"
+      if ! ipv4.cidrs.overlap "${EXPECTED_MANAGEMENT_CIDR}" "${derived}"; then
+        PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR="${normalized}"
+        EXPECTED_DATA_CIDR="${derived}"
+        if ((interactive == 1)); then
+          printf '  container DATA-Link address: %s\n' "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}" >&3
+          printf '  derived DATA-Link subnet:   %s\n' "${EXPECTED_DATA_CIDR}" >&3
+        else
+          log "Container DATA-Link address=${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR} derived_subnet=${EXPECTED_DATA_CIDR}"
+        fi
+        return 0
+      fi
+      log.error "Data CIDR ${derived} overlaps management CIDR ${EXPECTED_MANAGEMENT_CIDR}."
+      log.error "Choose a separate local-only subnet for the SMB DATA-Link network."
+    else
+      log.error "A usable static IPv4 host address is required; network and broadcast addresses are not assignable."
+      log.error "Enter an address such as 10.10.0.4 or 10.10.0.4/24, not the subnet identifier 10.10.0.0/24."
+    fi
+
+    if ((interactive == 0)); then
+      return 1
+    fi
+    candidate=""
+  done
+}
+
 collect.update.selection() {
-  local candidate_lxc_csv choice manual_lxc selected_lxc selected_id suggested_data_if
+  local candidate_lxc_csv choice selected_lxc selected_id suggested_data_if
+  local interactive=0
   candidate_lxc_csv="$(csv.from.id.list UPDATE_LXC_IDS)"
   UPDATE_VM_IDS=()
 
@@ -2149,6 +2220,7 @@ collect.update.selection() {
       done < <(parse.id.filter "${CTID_FILTER}")
     fi
   else
+    interactive=1
     printf '\nNetwork update candidate summary:\n' >&3
     printf '  Snapshot: %s\n' "${RUN_DIR}" >&3
     printf '  Candidate LXC IDs missing data NIC: %s\n' "${candidate_lxc_csv:-none}" >&3
@@ -2172,15 +2244,6 @@ collect.update.selection() {
       EXPECTED_GUEST_ADMIN_IF="$(lxc.egress.if.name "${selected_id}")"
       suggested_data_if="$(suggest.lxc.data.if.name "${selected_id}")"
       EXPECTED_GUEST_DATA_IF="$(trim.space "$(prompt.tty "Enter new container data interface name" "${EXPECTED_GUEST_DATA_IF:-${suggested_data_if}}")")"
-      PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR="$(trim.space "$(prompt.tty "Enter static data IPv4/CIDR (no gateway will be added)" "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")")"
-    fi
-
-    if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]]; then
-      choice="$(menu.tty "Run apply stage after check preview?" "yes" "no")"
-      [[ "${choice}" == "2" ]] && PROXMOX_NETWORK_UPDATE_MODE="check"
-    else
-      choice="$(menu.tty "Update mode:" "check only" "check then apply")"
-      [[ "${choice}" == "2" ]] && PROXMOX_NETWORK_UPDATE_MODE="apply"
     fi
   fi
 
@@ -2196,16 +2259,20 @@ collect.update.selection() {
   valid.interface.name "${EXPECTED_GUEST_DATA_IF}" || { log.error "Invalid or missing container data interface name: ${EXPECTED_GUEST_DATA_IF:-empty}"; exit 1; }
   [[ "${EXPECTED_GUEST_DATA_IF}" != "${EXPECTED_GUEST_ADMIN_IF}" ]] || { log.error "Data and egress interface names must differ."; exit 1; }
   ! lxc.guest.if.exists "${selected_id}" "${EXPECTED_GUEST_DATA_IF}" || { log.error "Container interface already exists: ${EXPECTED_GUEST_DATA_IF}"; exit 1; }
-  valid.ipv4.cidr "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}" || { log.error "A valid static data IPv4/CIDR is required."; exit 1; }
-  EXPECTED_DATA_CIDR="$(derive.ipv4.network.cidr "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")"
-  if ipv4.cidrs.overlap "${EXPECTED_MANAGEMENT_CIDR}" "${EXPECTED_DATA_CIDR}"; then
-    log.error "Data CIDR ${EXPECTED_DATA_CIDR} overlaps management CIDR ${EXPECTED_MANAGEMENT_CIDR}."
-    log.error "Choose a separate local-only subnet for the SMB DATA-Link network."
-    exit 1
-  fi
+  resolve.data.ipv4.selection || exit 1
   [[ "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}" == "add_data_nic" ]] || { log.error "Only the non-destructive add_data_nic strategy is supported."; exit 1; }
   PROXMOX_NETWORK_UPDATE_VLAN_TAG=""
   PROXMOX_NETWORK_UPDATE_VLAN_TRUNKS=""
+
+  if ((interactive == 1)); then
+    if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]]; then
+      choice="$(menu.tty "Run apply stage after check preview?" "yes" "no")"
+      [[ "${choice}" == "2" ]] && PROXMOX_NETWORK_UPDATE_MODE="check"
+    else
+      choice="$(menu.tty "Update mode:" "check only" "check then apply")"
+      [[ "${choice}" == "2" ]] && PROXMOX_NETWORK_UPDATE_MODE="apply"
+    fi
+  fi
 }
 
 build.network.update.plan() {
@@ -2315,6 +2382,23 @@ proxmox_network_update:
 EOF
 }
 
+write.network.update.status() {
+  local status="${1:-unknown}" phase="${2:-unknown}" detail="${3:-}"
+  mkdir -p "${FACTS_DIR}"
+  cat > "${NETWORK_UPDATE_STATUS_PATH}" <<EOF
+---
+proxmox_network_update_status:
+  status: $(yaml.quote "${status}")
+  phase: $(yaml.quote "${phase}")
+  detail: $(yaml.quote "${detail}")
+  snapshot_dir: $(yaml.quote "${RUN_DIR}")
+  plan_path: $(yaml.quote "${NETWORK_PLAN_PATH}")
+  intent_path: $(yaml.quote "${NETWORK_INTENT_PATH}")
+  normalized_data_ipv4_cidr: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")
+  derived_data_cidr: $(yaml.quote "${EXPECTED_DATA_CIDR}")
+EOF
+}
+
 write.network.extra.vars.file() {
   local mode="${1:-check}"
   local apply_requested="false"
@@ -2332,6 +2416,7 @@ proxmox_network_preflight_json_path: $(yaml.quote "${ANSIBLE_PREFLIGHT_FACTS_JSO
 proxmox_network_intent_path: $(yaml.quote "${NETWORK_INTENT_PATH}")
 proxmox_network_plan_path: $(yaml.quote "${NETWORK_PLAN_PATH}")
 proxmox_network_verify_path: $(yaml.quote "${NETWORK_VERIFY_PATH}")
+proxmox_network_update_runtime_facts_path: $(yaml.quote "${NETWORK_UPDATE_RUNTIME_FACTS_PATH}")
 proxmox_network_update_mode: $(yaml.quote "${mode}")
 proxmox_network_expected_admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
 proxmox_network_expected_data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
@@ -2431,7 +2516,10 @@ run.network.update.flow() {
   load.update.candidates
   collect.update.selection
   require.live.update.topology
-  probe.data.ip.conflict
+  if ! probe.data.ip.conflict; then
+    write.network.update.status "failed" "initial-address-probe" "Duplicate-address validation failed before plan generation; no guest mutation was attempted."
+    return 1
+  fi
   build.network.update.plan
   if ! awk 'NR > 1 {found=1} END {exit(found ? 0 : 1)}' "${NETWORK_PLAN_PATH}" 2>/dev/null; then
     log.warn "No actionable plan rows found. Update stage exiting without changes."
@@ -2439,14 +2527,24 @@ run.network.update.flow() {
   fi
 
   write.network.intent.file
+  write.network.update.status "prepared" "plan" "Validated plan is ready for check mode."
   log "Network update scope is limited to guest NIC config. Samba hardening stays in a separate script."
 
   ensure.network.ansible
   prepare.feature.files
 
   write.network.extra.vars.file "check"
-  run.feature.playbook "${NETWORK_EXPORT_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
-  run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"
+  set.stage "check.export.preflight.facts"
+  if ! run.feature.playbook "${NETWORK_EXPORT_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
+    write.network.update.status "failed" "check-export" "Preflight fact export failed; no guest mutation was attempted."
+    return 1
+  fi
+  set.stage "check.preview.network.update"
+  if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
+    write.network.update.status "failed" "check-preview" "Check-mode preview failed; no guest mutation was attempted."
+    return 1
+  fi
+  write.network.update.status "checked" "check-preview" "Check-mode preview passed without guest mutation."
 
   if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]] || is.true "${PROXMOX_NETWORK_UPDATE_AUTO_APPLY}"; then
     apply_requested=1
@@ -2467,25 +2565,41 @@ run.network.update.flow() {
   fi
 
   require.live.update.topology
-  write.network.extra.vars.file "apply"
-  if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
-    rollback.network.update.plan
+  if ! probe.data.ip.conflict; then
+    write.network.update.status "failed" "pre-apply-address-probe" "Duplicate-address revalidation failed immediately before apply; no guest mutation was attempted."
     return 1
   fi
+  write.network.update.status "applying" "apply" "Duplicate-address revalidation passed; apply is starting."
+  write.network.extra.vars.file "apply"
+  set.stage "apply.network.update"
+  if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
+    rollback.network.update.plan
+    write.network.update.status "failed" "apply" "Apply failed and exact-value rollback was attempted."
+    return 1
+  fi
+  set.stage "verify.network.update"
   if ! run.feature.playbook "${NETWORK_VERIFY_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
     rollback.network.update.plan
+    write.network.update.status "failed" "verify" "Verification failed and exact-value rollback was attempted."
     return 1
   fi
   if ! ensure.lxc.runtime.data.role; then
     rollback.network.update.plan
+    write.network.update.status "failed" "runtime" "Runtime activation failed and exact-value rollback was attempted."
     return 1
   fi
 
   log "Apply phase complete. Running post-apply preflight snapshot."
   prev_interactive="${FEATURE_INTERACTIVE}"
   FEATURE_INTERACTIVE=0
-  run.preflight
+  if ! run.preflight; then
+    FEATURE_INTERACTIVE="${prev_interactive}"
+    rollback.network.update.plan
+    write.network.update.status "failed" "post-apply-preflight" "Post-apply preflight failed and exact-value rollback was attempted."
+    return 1
+  fi
   FEATURE_INTERACTIVE="${prev_interactive}"
+  write.network.update.status "applied" "complete" "Apply, verification, runtime activation, and post-apply preflight passed."
 }
 
 maybe.prompt.run.stage() {

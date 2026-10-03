@@ -114,14 +114,23 @@ During selection:
 - choose the existing ingest LXC;
 - preserve its current management/Internet interface;
 - use the update-ready data bridge;
-- assign a unique static address and prefix from a separate local subnet;
+- assign a unique static host address from a separate local subnet;
 - configure no gateway on the data interface; and
 - keep the Proxmox firewall flag enabled.
 
-The runner refuses live slot replacement, duplicate addresses, management/data
-CIDR overlap, and stale snapshots. A running container is restarted only when
-runtime evidence proves activation is incomplete and the operator authorizes
-the restart.
+An address entered without a prefix, such as `10.10.0.4`, is normalized to
+`10.10.0.4/24` by default; the runner then derives and displays the containing
+subnet (`10.10.0.0/24`). Enter the assignable host address, not the subnet
+identifier or broadcast address. Set `PROXMOX_NETWORK_DEFAULT_DATA_PREFIX`
+when the local DATA-Link uses a prefix other than `/24`.
+
+The baseline package set installs `iputils-arping`. Both preflight and update
+require `arping`; update probes the normalized host address before preview and
+again immediately before mutation. The runner also refuses live slot
+replacement, management/data CIDR overlap, and stale snapshots. A running
+container is restarted only when runtime evidence proves activation is
+incomplete and the operator authorizes the restart. Check mode records a
+would-change result without reporting or performing a guest mutation.
 
 ## 6. Verify host and guest routes
 

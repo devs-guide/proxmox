@@ -68,6 +68,24 @@ For each new or changed support artifact:
 7. Keep the change unreleased until the full feature acceptance boundary is
    complete and a release is explicitly approved.
 
+## Ansible defaults and check-mode safety
+
+Do not define an overridable Ansible variable in terms of itself, including a
+seemingly guarded expression such as `value: "{{ value | default(...) }}"`.
+Recent Ansible/Jinja versions can recurse while resolving the task argument.
+Keep immutable defaults under a distinct name, then resolve caller input,
+loaded group values, and the default into an explicit `*_effective` fact.
+Fixtures must omit at least one optional override so CI executes the fallback
+path that production uses.
+
+Check mode must describe a proposed mutation without reporting a real change.
+Keep `would_change` and `changed` as separate values, and set `changed` only
+after the external mutation command returns successfully. A hosted fixture
+must execute the production playbook against fake `pct`/`qm` commands and
+prove that check mode never invokes their mutation operations. Validate all
+operator-supplied values again in the playbook so a stale or hand-edited plan
+cannot bypass the runner's normalizer.
+
 ## DATA-Link parser incident
 
 The DATA-Link preflight once parsed the method `manual` as `ma`. The
