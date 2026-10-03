@@ -249,7 +249,11 @@ DATA_LINK_TEMPLATE="${TEMPLATE}" \
 DATA_LINK_FIXTURE_DIR="${FIXTURE_DIR}" \
 DATA_LINK_SOURCE_FIXTURE="${FIXTURE}" \
 DATA_LINK_HOST_CANDIDATE="${HOST_CANDIDATE}" \
-  ansible-playbook -i localhost, -c local "${RENDER_PLAYBOOK}" >/dev/null
+  ansible-playbook -i localhost, -c local "${RENDER_PLAYBOOK}" \
+    >"${FIXTURE_DIR}/ansible.log" 2>&1 || {
+      cat "${FIXTURE_DIR}/ansible.log" >&2
+      exit 1
+    }
 
 assert.canonical.candidate() {
   local candidate="$1" nic="$2" bridge_name="$3"
