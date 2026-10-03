@@ -48,6 +48,7 @@ files=(
   "ansible/proxmox/network.update.yml"
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
+  "ansible/proxmox/templates/data-link.interfaces.j2"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/common.yml"
   "ansible/proxmox/container/debian.lxc.yml"
@@ -923,6 +924,15 @@ if ! grep -q 'proxmox_vlan_data_nic_iface_manual_exists' "${ROOT}/ansible/proxmo
 fi
 if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansible/proxmox/vlan.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must parse the complete candidate before mutation"
+  exit 1
+fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" \
+  || ! grep -q 'proxmox/templates/data-link.interfaces.j2' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh must fetch and publish the DATA-Link candidate template"
+  exit 1
+fi
+if ! grep -q 'literal_escape_count=0' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must reject literal newline escapes"
   exit 1
 fi
 if ! grep -q 'Report write mode completion (staged config only)' "${ROOT}/ansible/proxmox/vlan.yml"; then

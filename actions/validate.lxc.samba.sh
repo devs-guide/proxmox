@@ -21,6 +21,7 @@ ok 'shell syntax'
 
 HARDWARE="${ROOT}/ansible/proxmox/helper/hardware.yml"
 VLAN="${ROOT}/ansible/proxmox/vlan.yml"
+VLAN_TEMPLATE="${ROOT}/ansible/proxmox/templates/data-link.interfaces.j2"
 NETWORK="${ROOT}/setup/network.sh"
 UPDATE="${ROOT}/ansible/proxmox/network.update.yml"
 SAMBA="${ROOT}/ansible/proxmox/container/samba.file.share.yml"
@@ -37,6 +38,9 @@ grep -q 'ensure.data.link.ready' "${ROOT}/setup/vlan.sh" || fail 'VLAN apply doe
 grep -q 'no physical carrier was detected' "${ROOT}/setup/network-link.sh" || fail 'physical carrier error is not surfaced'
 grep -q 'proxmox_vlan_fatal_parser_warning_pattern' "${VLAN}" || fail 'zero-exit parser warnings are not fatal'
 grep -q 'Parse complete DATA-Link candidate interface list' "${VLAN}" || fail 'candidate config is not parsed before mutation'
+grep -q 'literal_escape_count=0' "${VLAN}" || fail 'literal newline escapes are not rejected'
+grep -q 'bridge-ports' "${VLAN_TEMPLATE}" || fail 'canonical DATA-Link template is missing bridge membership'
+grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" || fail 'candidate template is not a runner support dependency'
 ! grep -q 'ip link set dev.*master' "${VLAN}" || fail 'forced runtime bridge attachment remains'
 ok 'physical NIC discovery and identity contract'
 

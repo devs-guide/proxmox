@@ -1,0 +1,19 @@
+{{ proxmox_vlan_interfaces_without_owned_blocks | regex_replace('[ \t\n]*$', '') }}
+{{ proxmox_vlan_block_begin }}
+{% if not proxmox_vlan_data_nic_iface_manual_exists %}
+iface {{ proxmox_vlan_effective.data.nic }} inet manual
+
+{% endif %}
+auto {{ proxmox_vlan_effective.data.bridge }}
+iface {{ proxmox_vlan_effective.data.bridge }} inet {{ 'static' if proxmox_vlan_effective.data.host_ip else 'manual' }}
+    bridge-ports {{ proxmox_vlan_effective.data.nic }}
+    bridge-stp off
+    bridge-fd {{ proxmox_vlan_effective.data.bridge_fd | int }}
+{% if proxmox_vlan_effective.data.bridge_vlan_aware %}
+    bridge-vlan-aware yes
+    bridge-vids {{ proxmox_vlan_effective.data.bridge_vids }}
+{% endif %}
+{% if proxmox_vlan_effective.data.host_ip %}
+    address {{ proxmox_vlan_effective.data.host_ip }}
+{% endif %}
+{{ proxmox_vlan_block_end }}

@@ -623,40 +623,19 @@
           /etc/network/interfaces defines {{ proxmox_vlan_effective.data.nic }} with
           a non-manual method outside feature ownership.
 
-    - name: Build canonical DATA-Link bridge block without inline template controls
-      set_fact:
-        proxmox_vlan_managed_block: >-
-          {{
-            ('' if proxmox_vlan_data_nic_iface_manual_exists else 'iface ' ~ proxmox_vlan_effective.data.nic ~ ' inet manual\n\n')
-            ~ 'auto ' ~ proxmox_vlan_effective.data.bridge ~ '\n'
-            ~ 'iface ' ~ proxmox_vlan_effective.data.bridge ~ ' inet '
-            ~ ('static' if proxmox_vlan_effective.data.host_ip else 'manual') ~ '\n'
-            ~ '    bridge-ports ' ~ proxmox_vlan_effective.data.nic ~ '\n'
-            ~ '    bridge-stp off\n'
-            ~ '    bridge-fd ' ~ (proxmox_vlan_effective.data.bridge_fd | int | string) ~ '\n'
-            ~ (('    bridge-vlan-aware yes\n    bridge-vids ' ~ proxmox_vlan_effective.data.bridge_vids ~ '\n') if proxmox_vlan_effective.data.bridge_vlan_aware else '')
-            ~ (('    address ' ~ proxmox_vlan_effective.data.host_ip ~ '\n') if proxmox_vlan_effective.data.host_ip else '')
-          }}
-
     - name: Ensure DATA-Link candidate directory exists
       file:
         path: "{{ proxmox_vlan_candidate_dir }}"
         state: directory
         mode: "0700"
 
-    - name: Write complete DATA-Link candidate configuration
-      copy:
+    - name: Render complete DATA-Link candidate configuration
+      template:
+        src: "{{ playbook_dir }}/templates/data-link.interfaces.j2"
         dest: "{{ proxmox_vlan_candidate_path }}"
         mode: "0600"
-        content: >-
-          {{
-            (proxmox_vlan_interfaces_without_owned_blocks | regex_replace('[ \\t\\n]*$', ''))
-            ~ '\n' ~ proxmox_vlan_block_begin ~ '\n'
-            ~ proxmox_vlan_managed_block
-            ~ proxmox_vlan_block_end ~ '\n'
-          }}
 
-    - name: Validate candidate DATA-Link structure
+    - name: Inspect candidate DATA-Link structure
       shell: |
         set -eu
         candidate="{{ proxmox_vlan_candidate_path }}"
@@ -664,13 +643,36 @@
         bridge_name="{{ proxmox_vlan_effective.data.bridge }}"
         nic_count="$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic {count += 1} END {print count + 0}' "${candidate}")"
         bridge_count="$(awk -v bridge_name="${bridge_name}" '$1 == "iface" && $2 == bridge_name {count += 1} END {print count + 0}' "${candidate}")"
+        auto_count="$(awk -v bridge_name="${bridge_name}" '$1 == "auto" && $2 == bridge_name {count += 1} END {print count + 0}' "${candidate}")"
         port_count="$(awk -v nic="${nic}" '$1 == "bridge-ports" && $2 == nic {count += 1} END {print count + 0}' "${candidate}")"
-        [ "${nic_count}" -eq 1 ]
-        [ "${bridge_count}" -eq 1 ]
-        [ "${port_count}" -eq 1 ]
+        begin_count="$(awk '$0 == "{{ proxmox_vlan_block_begin }}" {count += 1} END {print count + 0}' "${candidate}")"
+        end_count="$(awk '$0 == "{{ proxmox_vlan_block_end }}" {count += 1} END {print count + 0}' "${candidate}")"
+        literal_escape_count="$(awk 'index($0, "\\\\n") {count += 1} END {print count + 0}' "${candidate}")"
+        printf 'nic_count=%s\n' "${nic_count}"
+        printf 'bridge_count=%s\n' "${bridge_count}"
+        printf 'auto_count=%s\n' "${auto_count}"
+        printf 'port_count=%s\n' "${port_count}"
+        printf 'begin_count=%s\n' "${begin_count}"
+        printf 'end_count=%s\n' "${end_count}"
+        printf 'literal_escape_count=%s\n' "${literal_escape_count}"
       args:
         executable: /bin/bash
+      register: proxmox_vlan_candidate_structure
       changed_when: false
+
+    - name: Validate candidate DATA-Link structure
+      assert:
+        that:
+          - "'nic_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+          - "'bridge_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+          - "'auto_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+          - "'port_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+          - "'begin_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+          - "'end_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+          - "'literal_escape_count=0' in proxmox_vlan_candidate_structure.stdout_lines"
+        fail_msg: >-
+          Candidate DATA-Link structure is invalid at {{ proxmox_vlan_candidate_path }}:
+          {{ proxmox_vlan_candidate_structure.stdout_lines | default([]) | join(', ') }}.
 
     - name: Check if ifreload is available
       command:
