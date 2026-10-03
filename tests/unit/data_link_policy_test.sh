@@ -258,7 +258,7 @@ DATA_LINK_HOST_CANDIDATE="${HOST_CANDIDATE}" \
 assert.canonical.candidate() {
   local candidate="$1" nic="$2" bridge_name="$3"
   [[ "$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" {count++} END {print count + 0}' "${candidate}")" == 1 ]]
-  [[ "$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" && $4 == "manual" {count++} END {print count + 0}' "${candidate}")" == 1 ]]
+  [[ "$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" {method=$4; gsub(sprintf("%c", 13), "", method); if (method == "manual") count++} END {print count + 0}' "${candidate}")" == 1 ]]
   [[ "$(awk -v bridge_name="${bridge_name}" '$1 == "iface" && $2 == bridge_name {count++} END {print count + 0}' "${candidate}")" == 1 ]]
   [[ "$(awk -v nic="${nic}" '$1 == "bridge-ports" && $2 == nic {count++} END {print count + 0}' "${candidate}")" == 1 ]]
   [[ "$(grep -Fxc '# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge' "${candidate}")" == 1 ]]
