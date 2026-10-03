@@ -261,7 +261,7 @@ for marker in \
   'latest-ready' \
   'require.live.update.topology()' \
   'PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS' \
-  'Data CIDR ${EXPECTED_DATA_CIDR} overlaps management CIDR'; do
+  'Data CIDR ${derived} overlaps management CIDR'; do
   if ! grep -Fq -- "${marker}" "${ROOT}/setup/network.sh"; then
     echo "[validate.runtime][error] setup/network.sh is missing fail-closed marker: ${marker}"
     exit 1
