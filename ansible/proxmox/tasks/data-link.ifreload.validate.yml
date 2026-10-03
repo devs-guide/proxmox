@@ -47,13 +47,14 @@
 
 - name: Combine DATA-Link ifreload diagnostics
   ansible.builtin.set_fact:
-    proxmox_vlan_ifreload_validation_output: >-
-      {{
-        (proxmox_vlan_ifreload_syntax_check.stdout | default('')) ~ '\n'
-        ~ (proxmox_vlan_ifreload_syntax_check.stderr | default('')) ~ '\n'
-        ~ (proxmox_vlan_ifreload_plan_check.stdout | default('')) ~ '\n'
-        ~ (proxmox_vlan_ifreload_plan_check.stderr | default(''))
-      }}
+    # The YAML literal block supplies real line boundaries. Do not join these
+    # streams with escaped newline text: a literal `\n` collapses independent
+    # diagnostics into one line and defeats the production warning classifier.
+    proxmox_vlan_ifreload_validation_output: |
+      {{ proxmox_vlan_ifreload_syntax_check.stdout | default('') }}
+      {{ proxmox_vlan_ifreload_syntax_check.stderr | default('') }}
+      {{ proxmox_vlan_ifreload_plan_check.stdout | default('') }}
+      {{ proxmox_vlan_ifreload_plan_check.stderr | default('') }}
 
 - name: Find baseline warnings not attributable to the selected owned DATA-Link
   ansible.builtin.command:
