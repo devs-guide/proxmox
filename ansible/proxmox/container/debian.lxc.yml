@@ -525,20 +525,19 @@
       assert:
         that:
           - >-
-            (
+            ((
               proxmox_lxc_debian_config_after_mounts.stdout
               | default('')
-              | regex_search(
-                  '(^|\\n)mp'
+              | regex_findall(
+                  '(?:^|\\n)mp'
                   ~ ansible_loop.index0
                   ~ ':\\s*'
                   ~ (item.host_path | regex_escape)
                   ~ ',mp='
                   ~ (item.container_path | regex_escape)
-                  ~ '([,\\n]|$)',
-                  multiline=True
+                  ~ '(?:[,\\n]|$)'
                 )
-            ) is not none
+            ) | length) > 0
         fail_msg: "Container config is missing expected mp{{ ansible_loop.index0 }} attachment for {{ item.host_path }} -> {{ item.container_path }}."
       loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
       loop_control:

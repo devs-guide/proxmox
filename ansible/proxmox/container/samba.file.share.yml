@@ -715,7 +715,11 @@
         - name: Require SSH listener to be absent for console-only mode
           assert:
             that:
-              - ((proxmox_samba_listener_state.stdout | default('')) | regex_search(':22(\\s|$)')) is none
+              - >-
+                ((
+                  proxmox_samba_listener_state.stdout | default('')
+                  | regex_findall(':22(?:\\s|$)')
+                ) | length) == 0
             fail_msg: "SSH remains reachable after console-only hardening."
           when: not (proxmox_samba_effective.ssh.enabled | bool)
 
@@ -735,16 +739,19 @@
             that:
               - proxmox_samba_smbclient_probe.rc == 0
               - >-
-                (
+                ((
                   (proxmox_samba_smbclient_probe.stdout | default(''))
-                  | regex_search(
-                      '(^|\\n)\\s*'
-                      ~ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_'))))
+                  | regex_findall(
+                      '(?m)^\\s*'
+                      ~ (
+                          item.name
+                          | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
+                          | regex_escape
+                        )
                       ~ '_RO'
-                      ~ '\\s+Disk(\\s|$)',
-                      multiline=True
+                      ~ '\\s+Disk(?:\\s|$)'
                     )
-                ) is not none
+                ) | length) > 0
             fail_msg: >-
               Guest browse probe did not list expected share
               {{
@@ -794,12 +801,18 @@
             that:
               - proxmox_samba_authenticated_probe.rc == 0
               - >-
-                ((proxmox_samba_authenticated_probe.stdout | default(''))
-                | regex_search(
-                    '(^|\\n)\\s*'
-                    ~ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_'))))
-                    ~ '_RW\\s+Disk(\\s|$)', multiline=True
-                  )) is not none
+                (((
+                  proxmox_samba_authenticated_probe.stdout | default('')
+                  | regex_findall(
+                      '(?m)^\\s*'
+                      ~ (
+                          item.name
+                          | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
+                          | regex_escape
+                        )
+                      ~ '_RW\\s+Disk(?:\\s|$)'
+                    )
+                ) | length) > 0)
             fail_msg: "Authenticated browse did not list an expected read-write share."
           loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
 

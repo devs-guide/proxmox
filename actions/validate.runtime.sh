@@ -22,6 +22,7 @@ files=(
   "tests/unit/debian_lxc_template_policy_test.sh"
   "tests/unit/network_snapshot_policy_test.sh"
   "tests/unit/data_link_policy_test.sh"
+  "tests/unit/ansible_regex_presence_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
   "setup/network-link.sh"
@@ -256,6 +257,7 @@ for marker in \
 done
 echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gigabit data topology"
 "${ROOT}/tests/unit/data_link_policy_test.sh"
+"${ROOT}/tests/unit/ansible_regex_presence_policy_test.sh"
 
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
@@ -918,8 +920,9 @@ if grep -Eq '^[[:space:]]+bridge-fd[[:space:]]+0([[:space:]]|$)' "${ROOT}/ansibl
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must not generate bridge-fd 0"
   exit 1
 fi
-if ! grep -q 'proxmox_vlan_data_nic_iface_manual_exists' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must avoid duplicate selected data NIC iface stanzas"
+if ! grep -q 'proxmox_vlan_data_nic_ipv4_methods' "${ROOT}/ansible/proxmox/vlan.yml" \
+  || ! grep -q 'proxmox_vlan_data_nic_emit_manual' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must count and canonicalize selected data NIC IPv4 stanzas"
   exit 1
 fi
 if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansible/proxmox/vlan.yml"; then

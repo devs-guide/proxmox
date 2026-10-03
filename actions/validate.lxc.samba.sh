@@ -40,6 +40,8 @@ grep -q 'proxmox_vlan_fatal_parser_warning_pattern' "${VLAN}" || fail 'zero-exit
 grep -q 'Parse complete DATA-Link candidate interface list' "${VLAN}" || fail 'candidate config is not parsed before mutation'
 grep -q 'literal_escape_count=0' "${VLAN}" || fail 'literal newline escapes are not rejected'
 grep -q 'bridge-ports' "${VLAN_TEMPLATE}" || fail 'canonical DATA-Link template is missing bridge membership'
+grep -q 'proxmox_vlan_data_nic_ipv4_methods' "${VLAN}" || fail 'DATA-Link candidate does not count existing IPv4 methods'
+grep -q 'nic_nonmanual_count=0' "${VLAN}" || fail 'DATA-Link candidate does not reject non-manual IPv4 declarations'
 grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" || fail 'candidate template is not a runner support dependency'
 ! grep -q 'ip link set dev.*master' "${VLAN}" || fail 'forced runtime bridge attachment remains'
 ok 'physical NIC discovery and identity contract'
