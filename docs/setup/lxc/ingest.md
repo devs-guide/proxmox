@@ -5,6 +5,9 @@ are discovered or confirmed; examples are not defaults. Run every `preflight`
 before its corresponding mutation and keep physical or out-of-band console
 access during host network/firewall changes.
 
+For the networking-only command sequence and acceptance checks, see
+[`networking.md`](networking.md).
+
 The feature runners use the shared runtime detector. On PVE 9/Trixie, the
 native compatible `python3` is sufficient; `/opt/ansible/py312` and its handoff
 marker are not prerequisites. A missing or stale shared Ansible venv may be
