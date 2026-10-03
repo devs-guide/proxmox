@@ -62,6 +62,7 @@ FILES=(
   "release.common.sh:bootstrap/release.common.sh"
   "ansible.runtime.sh:bootstrap/ansible.runtime.sh"
   "setup.vlan.sh:setup/vlan.sh"
+  "setup/network-link.sh:setup/network-link.sh"
   "setup/network.sh:setup/network.sh"
   "setup.cli.codex.sh:setup/cli.codex.sh"
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
@@ -609,6 +610,26 @@ check_published_vlan_runtime_policy() {
   fi
 }
 
+check_published_network_link_policy() {
+  local published_runner="${TMPDIR}/setup/network-link.sh"
+  local needle
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/network-link.sh was not fetched"
+    rc=1
+    return
+  fi
+  for needle in \
+    'administratively down. Bring up this DATA-Link now?' \
+    'no physical carrier was detected' \
+    'PROXMOX_NETWORK_LINK_MIN_SPEED_MBPS' \
+    'network-link.ready.yml'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published DATA-Link runner is missing marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
 check_published_host_network_runner_policy() {
   local published_runner="${TMPDIR}/setup/network.sh"
   local needle
@@ -638,8 +659,8 @@ check_published_host_network_runner_policy() {
     echo "[validate.pages][error] published setup/network.sh retains the non-portable awk row-count expression"
     rc=1
   fi
-  if grep -Eq 'dragonfruit|10[.]0[.]0[.](4|40)|18:66:da:73:19' "${published_runner}"; then
-    echo "[validate.pages][error] published setup/network.sh contains acceptance-host values"
+  if grep -Eq '10[.]0[.]0[.](4|40)|18:66:da:73:19' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/network.sh contains acceptance-host addresses"
     rc=1
   fi
 }
@@ -1005,6 +1026,7 @@ check_published_network_playbook_policy() {
 
 if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_vlan_runtime_policy
+  check_published_network_link_policy
   check_published_samba_runner_policy
   check_published_release91_bootstrap_policy
   check_published_ansible_runtime_policy

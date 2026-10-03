@@ -140,7 +140,7 @@ while IFS= read -r hit; do
     sanitized=""
   fi
   if [[ "${path}" == "ansible/proxmox/vlan.yml" \
-    && "${content}" == '    proxmox_vlan_legacy_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: devsguide-proxmox-vlan-vmbr1"' ]]; then
+    && "${content}" == *'devsguide-proxmox-vlan-vmbr1'* ]]; then
     sanitized=""
   fi
 
@@ -160,8 +160,8 @@ legacy_marker_count="$(
 )"
 [[ "${legacy_marker_count}" == "1" ]] || \
   fail "the reviewed legacy VLAN marker must appear exactly once"
-grep -Fq 'regex_search(proxmox_vlan_legacy_block_begin, multiline=True)' ansible/proxmox/vlan.yml || \
-  fail "the reviewed legacy VLAN marker must remain detection-only"
+grep -Fq 'proxmox_vlan_owned_block_pattern' ansible/proxmox/vlan.yml || \
+  fail "the reviewed legacy VLAN marker must remain in the feature-owned detection pattern"
 ok "host-state branding is limited to public provenance and reviewed legacy detection"
 
 printf '[validate.release] all release hygiene contracts passed\n'

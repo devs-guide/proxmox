@@ -15,6 +15,7 @@ declare -A PKGS
 PLAYBOOKS="debian/install.playbooks.txt"
 FEATURE_MANIFEST="actions/pages.features.txt"
 SETUP_VLAN_RUNNER="setup/vlan.sh"
+SETUP_NETWORK_LINK_RUNNER="setup/network-link.sh"
 SETUP_NETWORK_RUNNER="setup/network.sh"
 SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
 SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
@@ -357,6 +358,14 @@ publish.setup.features() {
     install -m 0755 "setup/vlan.sh" "${PATH_TO[publish]}/setup.vlan.sh"
   else
     log.warn "[www.pages] setup/vlan.sh not found; skipping setup.vlan.sh publish"
+  fi
+
+  if [[ -f "${SETUP_NETWORK_LINK_RUNNER}" ]]; then
+    log.info "[www.pages] installing ${SETUP_NETWORK_LINK_RUNNER}"
+    mkdir -p "${PATH_TO[publish]}/setup"
+    install -m 0755 "${SETUP_NETWORK_LINK_RUNNER}" "${PATH_TO[publish]}/${SETUP_NETWORK_LINK_RUNNER}"
+  else
+    log.warn "[www.pages] ${SETUP_NETWORK_LINK_RUNNER} not found; skipping DATA-Link runner publish"
   fi
 
   if [[ -f "${SETUP_CLI_CODEX_RUNNER}" ]]; then

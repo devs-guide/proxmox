@@ -7,6 +7,7 @@ ok() { printf '[validate.lxc.samba][ok] %s\n' "$*"; }
 
 SHELL_FILES=(
   "${ROOT}/setup/vlan.sh"
+  "${ROOT}/setup/network-link.sh"
   "${ROOT}/setup/network.sh"
   "${ROOT}/setup/firewall.sh"
   "${ROOT}/setup/lxc/debian.sh"
@@ -32,6 +33,11 @@ grep -q "reject('match', '\^fw')" "${HARDWARE}" || fail 'Proxmox firewall interf
 grep -q "link_mode.*untagged" "${VLAN}" || fail 'untagged bridge mode is missing'
 grep -q 'expected_mac' "${VLAN}" || fail 'MAC drift assertion is missing'
 grep -q 'probe.selected.data.nic' "${ROOT}/setup/vlan.sh" || fail 'temporary link probe is missing'
+grep -q 'ensure.data.link.ready' "${ROOT}/setup/vlan.sh" || fail 'VLAN apply does not delegate DATA-Link activation'
+grep -q 'no physical carrier was detected' "${ROOT}/setup/network-link.sh" || fail 'physical carrier error is not surfaced'
+grep -q 'proxmox_vlan_fatal_parser_warning_pattern' "${VLAN}" || fail 'zero-exit parser warnings are not fatal'
+grep -q 'Parse complete DATA-Link candidate interface list' "${VLAN}" || fail 'candidate config is not parsed before mutation'
+! grep -q 'ip link set dev.*master' "${VLAN}" || fail 'forced runtime bridge attachment remains'
 ok 'physical NIC discovery and identity contract'
 
 grep -q 'add_static_data_role_no_gateway' "${NETWORK}" || fail 'static no-gateway data role is missing'
@@ -49,6 +55,9 @@ grep -Fq 'network.snapshot.ready' "${NETWORK}" || fail 'network update-ready mar
 grep -Fq 'latest-ready' "${NETWORK}" || fail 'update does not resolve the latest ready snapshot'
 grep -Fq 'require.live.update.topology' "${NETWORK}" || fail 'live topology revalidation is missing'
 grep -Fq 'MIN_DATA_SPEED_MBPS' "${ROOT}/setup/vlan.sh" || fail 'gigabit data-NIC floor is missing'
+grep -Fq 'vlan.pending.yml' "${ROOT}/setup/vlan.sh" || fail 'pending DATA-Link selection state is missing'
+grep -Fq 'vlan.applied.yml' "${ROOT}/setup/vlan.sh" || fail 'applied DATA-Link selection state is missing'
+grep -Fq 'vlan.applied.yml' "${NETWORK}" || fail 'guest handoff does not require applied DATA-Link state'
 ok 'role-based LXC network contract'
 
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
@@ -70,7 +79,7 @@ grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxm
 grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'
 ok 'Samba, storage, and hardening contract'
 
-for published in setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md; do
+for published in setup/network-link.sh setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md; do
   grep -q "^${published}|${published}|feature$" "${ROOT}/actions/pages.features.txt" \
     || fail "Pages manifest omits ${published}"
 done

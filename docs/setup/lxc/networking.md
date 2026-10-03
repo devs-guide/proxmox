@@ -1,65 +1,83 @@
-# LXC dual-network setup
+# SMB local DATA-Link setup
 
-This runbook configures an existing Debian LXC with two network roles:
+This runbook gives an existing Debian LXC two network roles:
 
 - its existing management interface remains the only Internet/default-route
   path; and
-- a discovered physical data NIC and host bridge provide a static, no-gateway
-  path for local ingest traffic.
+- a separate physical NIC and unnumbered host bridge provide a static,
+  no-gateway path for local SMB ingest traffic.
 
 Run these commands as `root` on the Proxmox host. Keep physical or out-of-band
-console access available while changing host networking. Do not infer physical
-interface names, bridge names, LXC interface slots, or guest interface names;
-the runners discover them and require operator confirmation.
+console access available during host network changes. Interface names, bridge
+names, container IDs, addresses, and link speeds are discovered or confirmed;
+examples from an acceptance system are never deployment defaults.
 
-Names and addresses shown in command output from one host are observations,
-not defaults. The VLAN runner inventories physical NICs, excludes the active
-management path and virtual devices, and offers only unused NICs with at least
-1Gbps of current, advertised, or known driver capability. It may suggest the
-first unused `vmbrN` name, but the operator confirms the bridge name.
+The physical data NIC must be separate from the management path and provide at
+least 1Gbps capability. Faster links are preferred but are not required unless
+the operator raises the minimum-speed policy.
 
-## 1. Discover the host network
+## 1. Prepare the physical DATA-Link
+
+Discover eligible physical NICs and select the local data role:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/network-link.sh | bash -s -- preflight
+```
+
+Activate and verify the selected link:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/network-link.sh | bash -s -- up
+```
+
+If the NIC is administratively down, the runner asks whether to bring it up.
+If it is up but has no carrier, the runner stops and reports that the cable or
+peer switch/network port must be connected or enabled. Bridge apply does not
+continue until carrier and negotiated speed satisfy policy.
+
+## 2. Select and validate the host data bridge
 
 ```bash
 wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- preflight
 ```
 
-On PVE 9/Trixie, compatible system `python3` is sufficient. A managed Python
-path or handoff marker is not a prerequisite.
+Use `untagged` for a dedicated local LAN. In this mode the selected `vmbrN`
+name is a Linux bridge name, not an 802.1Q VLAN ID. Choose VLAN-aware mode only
+for a configured switch trunk and explicitly approved VLAN IDs.
 
-## 2. Probe the selected data NIC
-
-The probe temporarily raises only the selected unused physical link and then
-restores its previous state.
-
-```bash
-wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- probe
-```
+The preflight runner detects feature-owned legacy blocks, revalidates stable
+PCI/MAC identity, and previews a canonical candidate. Foreign bridge
+configuration remains fail-closed.
 
 ## 3. Write and apply the data bridge
 
-Choose `untagged` for an untagged switch port. The data bridge must have no host
-IP address or gateway.
+Stage the validated candidate without a live reload:
 
 ```bash
 PROXMOX_VLAN_CONFIRM_OOB=YES \
   bash -c 'wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- write'
 ```
 
-Review the generated configuration, then apply it:
+Then apply it:
 
 ```bash
 PROXMOX_VLAN_CONFIRM_OOB=YES \
   bash -c 'wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- apply'
 ```
 
-Confirm that the management route was preserved and that the data bridge has
-no host address:
+Apply delegates physical activation to the DATA-Link runner, rejects
+ifupdown2 structural warnings even when the parser returns success, reloads
+the candidate normally, and rolls back instead of forcing runtime bridge
+membership.
+
+Confirm that the management route remains intact and the data bridge remains
+unnumbered:
 
 ```bash
 ip -br link
 ip -br address
 ip route
+bridge link
 ```
 
 ## 4. Discover the LXC network state
@@ -69,17 +87,15 @@ pct list
 wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash -s -- preflight
 ```
 
-Preflight now fails closed. A successful collection writes
-`network.snapshot.status.yml`; only a complete topology with a live,
-unnumbered data bridge and a physical data NIC writes
+Only the verified `vlan.applied.yml` state is used for new snapshots. A valid
+snapshot requires a live data bridge, one qualifying physical bridge member,
+no host data address, and an unchanged management route. It writes
 `network.snapshot.ready`, `network.next-stage.env`, and the `latest-ready`
-pointer used by update mode.
+pointer.
 
-If preflight reports `missing_data_bridge` or
-`missing_physical_data_nic_member`, do not run update. Complete the VLAN
-runner's probe/write/apply sequence above and rerun preflight. The most recent
-report remains available through `latest-report`, but an incomplete report can
-never replace the last update-ready snapshot.
+If preflight reports a missing bridge, physical member, carrier, or applied
+selection, return to the DATA-Link and bridge stages. An incomplete report
+cannot replace the last update-ready snapshot.
 
 ## 5. Add the LXC data interface
 
@@ -91,17 +107,15 @@ During selection:
 
 - choose the existing ingest LXC;
 - preserve its current management/Internet interface;
-- use the update-ready data bridge recorded by the reviewed preflight;
-- assign a unique static address and prefix for the local data network;
+- use the update-ready data bridge;
+- assign a unique static address and prefix from a separate local subnet;
 - configure no gateway on the data interface; and
 - keep the Proxmox firewall flag enabled.
 
-The runner refuses replacement of a live interface slot, probes for duplicate
-IPv4 use, verifies hot activation, and asks to restart the LXC only when runtime
-evidence shows activation is still pending. It also rejects a data CIDR that
-overlaps the discovered management CIDR and revalidates the live management
-route, data bridge, physical bridge member, and absence of a host data address
-before check and again before apply.
+The runner refuses live slot replacement, duplicate addresses, management/data
+CIDR overlap, and stale snapshots. A running container is restarted only when
+runtime evidence proves activation is incomplete and the operator authorizes
+the restart.
 
 ## 6. Verify host and guest routes
 
@@ -112,17 +126,12 @@ pct config <CTID>
 pct exec <CTID> -- ip -br link
 pct exec <CTID> -- ip -br address
 pct exec <CTID> -- ip route
-pct exec <CTID> -- sh -c 'ip -4 route show default; ip -4 route show'
 ```
 
-Acceptance requires:
-
-- exactly one guest default route, through the management interface;
-- a static address on the data interface with no gateway;
-- no host address on the data bridge; and
-- the original Proxmox management route and connectivity still working.
+Acceptance requires exactly one guest default route through the management
+interface, one static no-gateway data interface, no host address on the data
+bridge, and unchanged Proxmox management access.
 
 Do not run `setup/lxc/network.sh` for the pure Samba ingest role. That runner
-configures SSH-oriented container access. The Samba runner later binds TCP 445
-to the selected data interface, applies its dedicated UFW policy, and disables
-container SSH.
+configures SSH-oriented access. The Samba runner binds TCP 445 to the selected
+data interface, applies its dedicated UFW policy, and disables container SSH.

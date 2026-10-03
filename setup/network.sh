@@ -86,7 +86,8 @@ ANSIBLE_PREFLIGHT_FACTS_JSON="${PROXMOX_NETWORK_PREFLIGHT_FACTS_JSON:-${FACTS_DI
 NETWORK_INTENT_PATH="${PROXMOX_NETWORK_INTENT_PATH:-${FACTS_DIR}/network.intent.yml}"
 NETWORK_PLAN_PATH="${PROXMOX_NETWORK_PLAN_PATH:-${FACTS_DIR}/network.plan.tsv}"
 NETWORK_VERIFY_PATH="${PROXMOX_NETWORK_VERIFY_PATH:-${FACTS_DIR}/network.verify.tsv}"
-DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
+DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.applied.yml}"
+LEGACY_DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_LEGACY_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
 SYS_CLASS_NET_ROOT="${PROXMOX_NETWORK_SYS_CLASS_NET_ROOT:-/sys/class/net}"
 
 RUN_DIR=""
@@ -801,6 +802,27 @@ discover.basic.host.facts() {
     DISCOVERED_ADMIN_NICS="$(join.by ',' "${admin_physical_nics[@]}")"
   fi
   DISCOVERED_ADMIN_IP_CIDR="$(ip -o -4 addr show dev "${DISCOVERED_ADMIN_BRIDGE}" 2>/dev/null | awk '{print $4}' | paste -sd, -)"
+
+  if [[ ! -r "${DATA_BRIDGE_SELECTION_PATH}" && -r "${LEGACY_DATA_BRIDGE_SELECTION_PATH}" ]]; then
+    local legacy_bridge=""
+    legacy_bridge="$(
+      awk '
+        /^[[:space:]]{2}data:[[:space:]]*$/ { in_data=1; next }
+        in_data && /^[[:space:]]{4}bridge:[[:space:]]*/ {
+          value=$0
+          sub(/^[^:]+:[[:space:]]*/, "", value)
+          gsub(/["'\'' ]/, "", value)
+          print value
+          exit
+        }
+        in_data && /^[[:space:]]{2}[^[:space:]]/ { in_data=0 }
+      ' "${LEGACY_DATA_BRIDGE_SELECTION_PATH}"
+    )"
+    if [[ -n "${legacy_bridge}" && -d "${SYS_CLASS_NET_ROOT}/${legacy_bridge}/bridge" ]]; then
+      DATA_BRIDGE_SELECTION_PATH="${LEGACY_DATA_BRIDGE_SELECTION_PATH}"
+      log.warn "Using a legacy selection because its data bridge is live; rerun setup.vlan.sh apply to migrate state."
+    fi
+  fi
 
   if [[ -z "${EXPECTED_ADMIN_BRIDGE}" ]]; then
     EXPECTED_ADMIN_BRIDGE="${DISCOVERED_ADMIN_BRIDGE}"
@@ -2178,7 +2200,7 @@ collect.update.selection() {
   EXPECTED_DATA_CIDR="$(derive.ipv4.network.cidr "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")"
   if ipv4.cidrs.overlap "${EXPECTED_MANAGEMENT_CIDR}" "${EXPECTED_DATA_CIDR}"; then
     log.error "Data CIDR ${EXPECTED_DATA_CIDR} overlaps management CIDR ${EXPECTED_MANAGEMENT_CIDR}."
-    log.error "Choose a separate local-only subnet for the 10GbE ingest network."
+    log.error "Choose a separate local-only subnet for the SMB DATA-Link network."
     exit 1
   fi
   [[ "${PROXMOX_NETWORK_UPDATE_LXC_STRATEGY}" == "add_data_nic" ]] || { log.error "Only the non-destructive add_data_nic strategy is supported."; exit 1; }

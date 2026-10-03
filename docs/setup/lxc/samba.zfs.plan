@@ -9,8 +9,15 @@ the later proxy-backed egress extension. Whole-GPU passthrough remains 0.0.8
 and Local Model Inventory remains 0.0.9.
 
 The feature must remain independent of hostname, IP address, interface name,
-bridge name, VLAN, CTID, pool, dataset, mountpoint, account, and subnet. Values
-observed on dragonfruit are an acceptance fixture, not repository defaults.
+bridge name, VLAN, CTID, pool, dataset, mountpoint, account, and subnet.
+Acceptance fixtures use synthetic values that are never repository defaults.
+
+## DATA-Link for SMB Share Local LAN
+
+The physical-link and host-bridge work is the DATA-Link for SMB Share Local
+LAN capability. It is speed-neutral above the 1Gbps safety floor: discovery
+ranks faster interfaces when present, but neither the feature name nor its
+configuration assumes a particular Ethernet speed.
 
 ## Required traffic separation
 
@@ -49,10 +56,10 @@ at least 1Gbps of current, advertised, or known driver capability; unknown or
 sub-gigabit candidates fail closed. The reviewed selection stores MAC and PCI
 identity; the interface name is resolved again immediately before apply.
 
-The dragonfruit fixture contains management `nic0` behind `vmbr0`, unused
-`nic1`, a down candidate `nic2`, and virtual `veth`/`fw*` devices. Tests must
-exclude all virtual devices, classify `nic0` as management, and refuse to
-select `nic2` merely because its fixture name or MAC is familiar.
+Synthetic fixtures contain a management bridge, multiple unused physical
+candidates, and virtual `veth`/`fw*` devices. Tests must exclude virtual
+devices, derive management from the default route, and refuse selection based
+on a familiar fixture name or MAC.
 
 Network execution is split into explicit stages:
 
@@ -68,17 +75,16 @@ Network execution is split into explicit stages:
 
 Untagged bridge mode renders a manual physical port and a manual Linux bridge
 with no host IP, gateway, VLAN awareness, or bridge VID list. The bridge name
-is discovered and confirmed; `vmbr1` is only a suggestion when unused.
+is discovered and confirmed from currently unused bridge names.
 
 Apply fails if management identity or route changes, selected hardware drifts,
-the target bridge conflicts, a selected NIC becomes used/addressed, dry-run
-reload fails, or carrier is absent without explicit disconnected-link
-authorization.
+the target bridge conflicts, a selected NIC becomes used/addressed, candidate
+parsing emits structural warnings, reload fails, or physical carrier is absent.
 
 ## Gate 2: role-based LXC networking
 
-The feature must not assume `net0`, `net1`, `eth0`, `eth1`, DHCP, CTID 100, or
-any bridge name. It selects a container from inventory, maps PVE NIC slots to
+The feature must not assume network slots, guest interface names, DHCP,
+container IDs, or bridge names. It selects a container from inventory, maps PVE NIC slots to
 runtime guest names by MAC, and identifies egress from the live default route.
 
 The operator confirms the existing egress role. The tool discovers a free PVE
@@ -159,8 +165,8 @@ passes review.
 
 Automated coverage includes:
 
-- arbitrary physical/virtual interface names and the dragonfruit link fixture;
-- down high-speed candidates, explicit probing, and MAC/PCI drift;
+- arbitrary physical/virtual interface names and synthetic link fixtures;
+- down data-link candidates, explicit activation, carrier errors, and MAC/PCI drift;
 - management bridges, bonds, direct interfaces, and ambiguous default routes;
 - bridge conflicts, failed reload dry runs, and carrier failures;
 - arbitrary LXC net slots, guest names, DHCP/static egress, and one-route

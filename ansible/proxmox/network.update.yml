@@ -1,5 +1,5 @@
 ---
-- name: "[proxmox]: apply guest high-speed data NIC plan"
+- name: "[proxmox]: apply guest local DATA-Link NIC plan"
   hosts: localhost
   connection: local
   become: true

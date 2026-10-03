@@ -28,20 +28,24 @@ fallback when the native interpreter is below the supported minimum.
    available. Run the existing ZFS inventory/verification workflow from
    `docs/setup/storage/zfs/human.acceptance.md`. An already accepted pool is
    verified, not recreated.
-2. Discover physical NICs and the management default-route path:
+2. Discover, select, and activate the separate physical DATA-Link NIC:
+
+   ```bash
+   wget -qO- https://devs-guide.github.io/proxmox/setup/network-link.sh | bash -s -- preflight
+   wget -qO- https://devs-guide.github.io/proxmox/setup/network-link.sh | bash -s -- up
+   ```
+
+   The runner distinguishes an administratively down NIC from an active NIC
+   without physical carrier. Missing carrier identifies a cable or peer-port
+   problem and blocks bridge apply.
+
+3. Discover and apply the host data bridge after reviewing the candidate and
+   confirming OOB access. Choose `untagged` for a dedicated local LAN; the
+   host bridge receives no IP, gateway, tag, or VLAN awareness. A `vmbrN` name
+   in this mode is a Linux bridge name, not a VLAN ID.
 
    ```bash
    wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- preflight
-   ```
-
-3. Select the unused physical data NIC. Use `probe` to bring only that link up
-   temporarily and restore its prior state. Then use `write` and `apply` after
-   reviewing the generated selection and confirming OOB access. Choose
-   `untagged` for an unmanaged switch; the host data bridge receives no IP,
-   gateway, tag, or VLAN awareness.
-
-   ```bash
-   wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- probe
    PROXMOX_VLAN_CONFIRM_OOB=YES \
      bash -c 'wget -qO- https://devs-guide.github.io/proxmox/setup.vlan.sh | bash -s -- write'
    PROXMOX_VLAN_CONFIRM_OOB=YES \
@@ -149,8 +153,8 @@ chmod 0700 /root/setup.lxc.egress.sh
 
 ## Client and acceptance checks
 
-- Give each 10Gb client a unique static address in the selected data subnet
-  with no gateway on that NIC. Its 1Gb/Wi-Fi route remains its Internet path.
+- Give each data-network client a unique static address in the selected subnet
+  with no gateway on that NIC. Its management/Wi-Fi route remains its Internet path.
 - Prove guest listing/reads work and guest creates fail on `NAME_RO`.
 - Prove the authenticated user can create, rename, and delete on `NAME_RW`.
 - Confirm the LXC has exactly one default route, TCP 22 is not listening, TCP

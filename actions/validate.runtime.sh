@@ -21,8 +21,10 @@ files=(
   "tests/unit/ansible_runtime_policy_test.sh"
   "tests/unit/debian_lxc_template_policy_test.sh"
   "tests/unit/network_snapshot_policy_test.sh"
+  "tests/unit/data_link_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
+  "setup/network-link.sh"
   "setup/network.sh"
   "setup/cli.codex.sh"
   "setup/lxc/debian.sh"
@@ -172,6 +174,24 @@ if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
 fi
 echo "[validate.runtime][ok] setup/vlan.sh uses generated YAML extra-vars and exposes the readable NIC UI"
 
+echo "[validate.runtime] checking physical DATA-Link runner contract..."
+for marker in \
+  'preflight|up' \
+  'administratively down. Bring up this DATA-Link now?' \
+  'no physical carrier was detected' \
+  'network-link.ready.yml' \
+  'PROXMOX_NETWORK_LINK_MIN_SPEED_MBPS'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/network-link.sh"; then
+    echo "[validate.runtime][error] setup/network-link.sh is missing marker: ${marker}"
+    exit 1
+  fi
+done
+if ! grep -Fq 'ensure.data.link.ready()' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not delegate physical activation to the DATA-Link runner"
+  exit 1
+fi
+echo "[validate.runtime][ok] DATA-Link activation distinguishes admin state from physical carrier"
+
 echo "[validate.runtime] checking Proxmox network runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh does not define FEATURE_PLAYBOOKS array"
@@ -234,6 +254,7 @@ for marker in \
   fi
 done
 echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gigabit data topology"
+"${ROOT}/tests/unit/data_link_policy_test.sh"
 
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
@@ -900,20 +921,24 @@ if ! grep -q 'proxmox_vlan_data_nic_iface_manual_exists' "${ROOT}/ansible/proxmo
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must avoid duplicate selected data NIC iface stanzas"
   exit 1
 fi
-if ! grep -q 'Baseline ifreload syntax check before VLAN write' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must run baseline ifreload syntax check before writing vmbr1"
+if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must parse the complete candidate before mutation"
   exit 1
 fi
 if ! grep -q 'Report write mode completion (staged config only)' "${ROOT}/ansible/proxmox/vlan.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must report that write mode stages config without live apply"
   exit 1
 fi
-if ! grep -q 'Attempt runtime bridge attachment remediation when selected NIC is missing from selected bridge' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must attempt runtime attachment remediation when apply leaves the NIC detached"
+if ! grep -q 'proxmox_vlan_fatal_parser_warning_pattern' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must reject zero-exit structural parser warnings"
   exit 1
 fi
-if ! grep -q 'Assert selected data NIC is attached to selected bridge after apply/remediation' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after apply/remediation"
+if grep -q 'ip link set dev.*master' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must not force runtime bridge attachment"
+  exit 1
+fi
+if ! grep -q 'Assert selected data NIC is attached after normal interface reload' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after normal reload"
   exit 1
 fi
 if ! grep -q 'Capture selected bridge port list after apply' "${ROOT}/ansible/proxmox/vlan.yml"; then
@@ -1609,6 +1634,10 @@ if ! grep -q 'setup/network.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured network runner path"
   exit 1
 fi
+if ! grep -q 'setup/network-link.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured DATA-Link runner path"
+  exit 1
+fi
 if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Debian LXC runner path"
   exit 1
@@ -1640,6 +1669,7 @@ bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
 bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VERSION:?}" "${ANSIBLE_CORE_SPEC:?}" "${MANAGED_TARGET_PYTHON_HOME:?}" "${MANAGED_TARGET_PYTHON_PATH:?}"' _ "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
+bash -n "${ROOT}/setup/network-link.sh"
 bash -n "${ROOT}/setup/network.sh"
 bash -n "${ROOT}/setup/cli.codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"

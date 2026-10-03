@@ -44,7 +44,7 @@ proxmox_vlan_ui:
   facts_dir: "/etc/ansible/proxmox/facts"
   hardware_facts_path: "/etc/ansible/proxmox/facts/hardware.yml"
   hardware_nics_tsv_path: "/etc/ansible/proxmox/facts/hardware.nics.tsv"
-  selection_path: "/etc/ansible/proxmox/facts/vlan.selection.yml"
+  selection_path: "/etc/ansible/proxmox/facts/vlan.pending.yml"
   default_data_bridge: null
   default_link_mode: "untagged"
   default_bridge_vids: ""
@@ -82,7 +82,6 @@ proxmox_vlan:
     require_data_nic_no_ip: true
     require_ifreload_dry_run: true
     normalize_legacy_bridge_fd_zero: true
-    allow_disconnected_link: false
 
   workloads:
     migrate: false
