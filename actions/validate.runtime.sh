@@ -14,6 +14,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 files=(
+  "AGENTS.md"
+  "docs/development/feature-authoring.md"
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
@@ -49,6 +51,7 @@ files=(
   "ansible/proxmox/network.update.yml"
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
+  "ansible/proxmox/tasks/data-link.candidate.yml"
   "ansible/proxmox/templates/data-link.interfaces.j2"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/common.yml"
@@ -920,9 +923,13 @@ if grep -Eq '^[[:space:]]+bridge-fd[[:space:]]+0([[:space:]]|$)' "${ROOT}/ansibl
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must not generate bridge-fd 0"
   exit 1
 fi
-if ! grep -q 'proxmox_vlan_data_nic_ipv4_methods' "${ROOT}/ansible/proxmox/vlan.yml" \
-  || ! grep -q 'proxmox_vlan_data_nic_emit_manual' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must count and canonicalize selected data NIC IPv4 stanzas"
+if ! grep -q 'Collect selected physical NIC IPv4 methods by interface tokens' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml" \
+  || ! grep -q 'proxmox_vlan_data_nic_emit_manual' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"; then
+  echo "[validate.runtime][error] canonical DATA-Link task must count and canonicalize selected data NIC IPv4 stanzas"
+  exit 1
+fi
+if ! grep -q 'tasks/data-link.candidate.yml' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must include the canonical DATA-Link candidate task"
   exit 1
 fi
 if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansible/proxmox/vlan.yml"; then
@@ -930,12 +937,13 @@ if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansibl
   exit 1
 fi
 if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" \
+  || ! grep -q 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh" \
   || ! grep -q 'proxmox/templates/data-link.interfaces.j2' "${ROOT}/setup/vlan.sh"; then
-  echo "[validate.runtime][error] setup/vlan.sh must fetch and publish the DATA-Link candidate template"
+  echo "[validate.runtime][error] setup/vlan.sh must fetch and publish the DATA-Link candidate task and template"
   exit 1
 fi
-if ! grep -q 'literal_escape_count=0' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must reject literal newline escapes"
+if ! grep -q 'Search rendered candidate for a literal backslash-n escape' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"; then
+  echo "[validate.runtime][error] canonical DATA-Link task must reject literal newline escapes"
   exit 1
 fi
 if ! grep -q 'Report write mode completion (staged config only)' "${ROOT}/ansible/proxmox/vlan.yml"; then

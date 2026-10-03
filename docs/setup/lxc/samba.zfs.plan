@@ -179,6 +179,23 @@ Automated coverage includes:
 - idempotent reruns, rollback artifacts, reboot persistence, and complete
   Pages publication.
 
+## Parser source-of-truth rule and incident history
+
+DATA-Link preflight exposed a layered-escaping failure while reading an
+existing `iface` stanza: production captured `manual` as `ma`. Doubled escape
+sequences in a negated regex character class were interpreted as excluded
+literal letters. The CI fixture used a separately copied parser with different
+escaping, so it tested intended behavior rather than the shipped parser.
+
+The feature therefore treats
+`ansible/proxmox/tasks/data-link.candidate.yml` as the canonical parser,
+policy, renderer, and structural validator. The live VLAN playbook and test
+fixtures include that exact task. Future feature parsers follow the repository
+[feature-authoring guide](../../development/feature-authoring.md): prefer
+field parsing, execute production artifacts from tests, cover LF/CRLF and
+whitespace variants, compare complete tokens, and reject duplicated fixture
+parsers through policy checks.
+
 ## Human acceptance sequence
 
 1. Accept host/runtime compatibility and read-only network inventory.

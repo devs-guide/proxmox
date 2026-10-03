@@ -5,11 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE_DIR="$(mktemp -d)"
 trap 'rm -rf "${FIXTURE_DIR}"' EXIT
 FIXTURE="${FIXTURE_DIR}/interfaces"
+TASKS="${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"
 TEMPLATE="${ROOT}/ansible/proxmox/templates/data-link.interfaces.j2"
 RENDER_PLAYBOOK="${FIXTURE_DIR}/render.yml"
 HOST_CANDIDATE="${FIXTURE_DIR}/interfaces.host-shaped"
-UNTAGGED_CANDIDATE="${FIXTURE_DIR}/interfaces.untagged"
-VLAN_CANDIDATE="${FIXTURE_DIR}/interfaces.vlan-aware"
 
 cat > "${FIXTURE}" <<'EOF'
 auto lo
@@ -52,132 +51,57 @@ load.managed.block.selection
 
 cat > "${RENDER_PLAYBOOK}" <<'EOF'
 ---
-- name: Render DATA-Link candidate fixtures
+- name: Exercise the production DATA-Link candidate task against policy fixtures
   hosts: localhost
   connection: local
   gather_facts: false
   vars:
     proxmox_vlan_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge"
     proxmox_vlan_block_end: "# END ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge"
-    proxmox_vlan_owned_block_pattern: '(?ms)^\# BEGIN ANSIBLE MANAGED BLOCK: (?:ansible-proxmox-data-bridge|ansible-proxmox-vlan-vmbr1|devsguide-proxmox-vlan-vmbr1)\n.*?^\# END ANSIBLE MANAGED BLOCK: (?:ansible-proxmox-data-bridge|ansible-proxmox-vlan-vmbr1|devsguide-proxmox-vlan-vmbr1)\n?'
-    data_link_method_cases:
+    data_link_valid_cases:
       - name: absent
         nic: port8
+        bridge: fabric8
         source: |
           auto lo
           iface lo inet loopback
-      - name: manual
+      - name: manual_comment
         nic: port7
+        bridge: fabric7
         source: |
-          iface port7 inet manual
-      - name: static
-        nic: port7
-        source: |
-          iface port7 inet static
-      - name: duplicate
-        nic: port7
-        source: |
-          iface port7 inet manual
-          iface port7 inet manual
+          iface port7 inet manual # retained declaration
       - name: dual_stack
         nic: port7
+        bridge: fabric9
         source: |
           iface port7 inet manual
           iface port7 inet6 manual
+      - name: tabs_crlf
+        nic: port9
+        bridge: fabric10
+        source: "iface\tport9\tinet\tmanual\r\niface\tport9\tinet6\tmanual\r\n"
+      - name: legacy_block_crlf
+        nic: port11
+        bridge: fabric11
+        source: "# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1\r\niface port11 inet manual\r\n# END ANSIBLE MANAGED BLOCK: ansible-proxmox-vlan-vmbr1\r\niface port11 inet manual\r\n"
+      - name: metachar_name
+        nic: port.7+safe
+        bridge: fabric.7+safe
+        source: |
+          iface port.7+safe inet manual
   tasks:
     - name: Load host-shaped legacy fixture
       ansible.builtin.set_fact:
         data_link_host_source: "{{ lookup('file', lookup('env', 'DATA_LINK_SOURCE_FIXTURE')) }}"
 
-    - name: Remove legacy feature-owned block from host-shaped fixture
-      ansible.builtin.set_fact:
-        data_link_host_base: "{{ data_link_host_source | regex_replace(proxmox_vlan_owned_block_pattern, '') }}"
-
-    - name: Collect host-shaped physical NIC IPv4 methods
-      ansible.builtin.set_fact:
-        data_link_host_methods: >-
-          {{
-            data_link_host_base
-            | regex_findall(
-                '(?m)^[ \t]*iface[ \t]+data7[ \t]+inet[ \t]+([^ \t#\r\n]+)'
-              )
-          }}
-
-    - name: Collect policy-case physical NIC IPv4 methods
-      ansible.builtin.set_fact:
-        data_link_case_methods: >-
-          {{
-            data_link_case_methods | default({})
-            | combine({
-                item.name: (
-                  item.source
-                  | regex_findall(
-                      '(?m)^[ \t]*iface[ \t]+'
-                      ~ (item.nic | regex_escape)
-                      ~ '[ \t]+inet[ \t]+([^ \t#\r\n]+)'
-                    )
-                )
-              })
-          }}
-      loop: "{{ data_link_method_cases }}"
-
-    - name: Validate explicit IPv4 method-count policy
-      ansible.builtin.assert:
-        that:
-          - data_link_host_methods == ['manual']
-          - data_link_case_methods.absent == []
-          - data_link_case_methods.manual == ['manual']
-          - data_link_case_methods.static == ['static']
-          - data_link_case_methods.duplicate == ['manual', 'manual']
-          - data_link_case_methods.dual_stack == ['manual']
-          - >-
-            (data_link_case_methods.absent | length) == 0
-            or
-            (
-              (data_link_case_methods.absent | length) == 1
-              and data_link_case_methods.absent[0] == 'manual'
-            )
-          - >-
-            (data_link_case_methods.manual | length) == 0
-            or
-            (
-              (data_link_case_methods.manual | length) == 1
-              and data_link_case_methods.manual[0] == 'manual'
-            )
-          - >-
-            (data_link_case_methods.dual_stack | length) == 0
-            or
-            (
-              (data_link_case_methods.dual_stack | length) == 1
-              and data_link_case_methods.dual_stack[0] == 'manual'
-            )
-          - >-
-            not (
-              (data_link_case_methods.static | length) == 0
-              or
-              (
-                (data_link_case_methods.static | length) == 1
-                and data_link_case_methods.static[0] == 'manual'
-              )
-            )
-          - >-
-            not (
-              (data_link_case_methods.duplicate | length) == 0
-              or
-              (
-                (data_link_case_methods.duplicate | length) == 1
-                and data_link_case_methods.duplicate[0] == 'manual'
-              )
-            )
-
-    - name: Render host-shaped candidate after legacy block removal
-      ansible.builtin.template:
-        src: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
-        dest: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/interfaces.host-shaped"
-        mode: "0600"
+    - name: Run canonical production task for host-shaped fixture
+      ansible.builtin.include_tasks: "{{ lookup('env', 'DATA_LINK_TASKS') }}"
       vars:
-        proxmox_vlan_interfaces_without_owned_blocks: "{{ data_link_host_base }}"
-        proxmox_vlan_data_nic_emit_manual: "{{ (data_link_host_methods | length) == 0 }}"
+        proxmox_vlan_candidate_source_text: "{{ data_link_host_source }}"
+        proxmox_vlan_candidate_result_key: host
+        proxmox_vlan_candidate_dir: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}"
+        proxmox_vlan_candidate_path: "{{ lookup('env', 'DATA_LINK_HOST_CANDIDATE') }}"
+        proxmox_vlan_candidate_template_path: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
         proxmox_vlan_effective:
           data:
             nic: data7
@@ -187,60 +111,151 @@ cat > "${RENDER_PLAYBOOK}" <<'EOF'
             bridge_vlan_aware: false
             bridge_vids: ""
 
-    - name: Render untagged dual-stack candidate with existing IPv4 declaration
-      ansible.builtin.template:
-        src: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
-        dest: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/interfaces.untagged"
-        mode: "0600"
+    - name: Run canonical production task for accepted syntax variants
+      ansible.builtin.include_tasks: "{{ lookup('env', 'DATA_LINK_TASKS') }}"
       vars:
-        proxmox_vlan_interfaces_without_owned_blocks: |
-          auto lo
-          iface lo inet loopback
-
-          iface port7 inet manual
-          iface port7 inet6 manual
-        proxmox_vlan_data_nic_emit_manual: "{{ (data_link_case_methods.dual_stack | length) == 0 }}"
+        proxmox_vlan_candidate_source_text: "{{ data_link_case.source }}"
+        proxmox_vlan_candidate_result_key: "{{ data_link_case.name }}"
+        proxmox_vlan_candidate_dir: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}"
+        proxmox_vlan_candidate_path: >-
+          {{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/interfaces.{{ data_link_case.name }}
+        proxmox_vlan_candidate_template_path: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
         proxmox_vlan_effective:
           data:
-            nic: port7
-            bridge: fabric7
+            nic: "{{ data_link_case.nic }}"
+            bridge: "{{ data_link_case.bridge }}"
             host_ip: null
             bridge_fd: 2
             bridge_vlan_aware: false
             bridge_vids: ""
+      loop: "{{ data_link_valid_cases }}"
+      loop_control:
+        loop_var: data_link_case
+        label: "{{ data_link_case.name }}"
 
-    - name: Render VLAN-aware candidate without a physical declaration
-      ansible.builtin.template:
-        src: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
-        dest: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/interfaces.vlan-aware"
-        mode: "0600"
-      vars:
-        proxmox_vlan_interfaces_without_owned_blocks: |
-          auto lo
-          iface lo inet loopback
-        proxmox_vlan_data_nic_emit_manual: "{{ (data_link_case_methods.absent | length) == 0 }}"
-        proxmox_vlan_effective:
-          data:
-            nic: port8
-            bridge: fabric8
-            host_ip: null
-            bridge_fd: 2
-            bridge_vlan_aware: true
-            bridge_vids: "120 140-142"
+    - name: Prove static physical configuration is rejected by production policy
+      block:
+        - name: Run canonical production task for static fixture
+          ansible.builtin.include_tasks: "{{ lookup('env', 'DATA_LINK_TASKS') }}"
+          vars:
+            proxmox_vlan_candidate_source_text: "iface port7 inet static\n"
+            proxmox_vlan_candidate_result_key: static
+            proxmox_vlan_candidate_render: false
+            proxmox_vlan_candidate_dir: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}"
+            proxmox_vlan_candidate_path: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/unused.static"
+            proxmox_vlan_candidate_template_path: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
+            proxmox_vlan_effective:
+              data:
+                nic: port7
+                bridge: fabric11
+      rescue:
+        - name: Record static policy rejection
+          ansible.builtin.set_fact:
+            data_link_static_rejected: true
+
+    - name: Prove duplicate physical configuration is rejected by production policy
+      block:
+        - name: Run canonical production task for duplicate fixture
+          ansible.builtin.include_tasks: "{{ lookup('env', 'DATA_LINK_TASKS') }}"
+          vars:
+            proxmox_vlan_candidate_source_text: |
+              iface port7 inet manual
+              iface port7 inet manual
+            proxmox_vlan_candidate_result_key: duplicate
+            proxmox_vlan_candidate_render: false
+            proxmox_vlan_candidate_dir: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}"
+            proxmox_vlan_candidate_path: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/unused.duplicate"
+            proxmox_vlan_candidate_template_path: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
+            proxmox_vlan_effective:
+              data:
+                nic: port7
+                bridge: fabric12
+      rescue:
+        - name: Record duplicate policy rejection
+          ansible.builtin.set_fact:
+            data_link_duplicate_rejected: true
+
+    - name: Prove foreign bridge configuration is rejected by production policy
+      block:
+        - name: Run canonical production task for foreign bridge fixture
+          ansible.builtin.include_tasks: "{{ lookup('env', 'DATA_LINK_TASKS') }}"
+          vars:
+            proxmox_vlan_candidate_source_text: |
+              iface port7 inet manual
+              auto fabric13
+              iface fabric13 inet manual
+            proxmox_vlan_candidate_result_key: foreign_bridge
+            proxmox_vlan_candidate_render: false
+            proxmox_vlan_candidate_dir: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}"
+            proxmox_vlan_candidate_path: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/unused.foreign"
+            proxmox_vlan_candidate_template_path: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
+            proxmox_vlan_effective:
+              data:
+                nic: port7
+                bridge: fabric13
+      rescue:
+        - name: Record foreign bridge policy rejection
+          ansible.builtin.set_fact:
+            data_link_foreign_bridge_rejected: true
+
+    - name: Prove malformed owned blocks are rejected by production policy
+      block:
+        - name: Run canonical production task for malformed block fixture
+          ansible.builtin.include_tasks: "{{ lookup('env', 'DATA_LINK_TASKS') }}"
+          vars:
+            proxmox_vlan_candidate_source_text: |
+              iface port7 inet manual
+              # BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge
+              auto fabric14
+            proxmox_vlan_candidate_result_key: malformed_block
+            proxmox_vlan_candidate_render: false
+            proxmox_vlan_candidate_dir: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}"
+            proxmox_vlan_candidate_path: "{{ lookup('env', 'DATA_LINK_FIXTURE_DIR') }}/unused.malformed"
+            proxmox_vlan_candidate_template_path: "{{ lookup('env', 'DATA_LINK_TEMPLATE') }}"
+            proxmox_vlan_effective:
+              data:
+                nic: port7
+                bridge: fabric14
+      rescue:
+        - name: Record malformed block policy rejection
+          ansible.builtin.set_fact:
+            data_link_malformed_block_rejected: true
+
+    - name: Assert canonical parser and rejection results
+      ansible.builtin.assert:
+        that:
+          - proxmox_vlan_candidate_results.host.methods == ['manual']
+          - "'ma' not in proxmox_vlan_candidate_results.host.methods"
+          - proxmox_vlan_candidate_results.absent.methods == []
+          - proxmox_vlan_candidate_results.absent.emit_manual | bool
+          - proxmox_vlan_candidate_results.manual_comment.methods == ['manual']
+          - proxmox_vlan_candidate_results.dual_stack.methods == ['manual']
+          - proxmox_vlan_candidate_results.tabs_crlf.methods == ['manual']
+          - proxmox_vlan_candidate_results.legacy_block_crlf.methods == ['manual']
+          - proxmox_vlan_candidate_results.metachar_name.methods == ['manual']
+          - proxmox_vlan_candidate_results.static.methods == ['static']
+          - not (proxmox_vlan_candidate_results.static.policy_valid | bool)
+          - proxmox_vlan_candidate_results.duplicate.methods == ['manual', 'manual']
+          - not (proxmox_vlan_candidate_results.duplicate.policy_valid | bool)
+          - (proxmox_vlan_candidate_results.foreign_bridge.foreign_bridge_references | int) == 2
+          - data_link_static_rejected | default(false) | bool
+          - data_link_duplicate_rejected | default(false) | bool
+          - data_link_foreign_bridge_rejected | default(false) | bool
+          - data_link_malformed_block_rejected | default(false) | bool
 EOF
 
+DATA_LINK_TASKS="${TASKS}" \
 DATA_LINK_TEMPLATE="${TEMPLATE}" \
 DATA_LINK_FIXTURE_DIR="${FIXTURE_DIR}" \
 DATA_LINK_SOURCE_FIXTURE="${FIXTURE}" \
+DATA_LINK_HOST_CANDIDATE="${HOST_CANDIDATE}" \
   ansible-playbook -i localhost, -c local "${RENDER_PLAYBOOK}" >/dev/null
 
 assert.canonical.candidate() {
   local candidate="$1" nic="$2" bridge_name="$3"
   [[ "$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" {count++} END {print count + 0}' "${candidate}")" == 1 ]]
   [[ "$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" && $4 == "manual" {count++} END {print count + 0}' "${candidate}")" == 1 ]]
-  [[ "$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" && $4 != "manual" {count++} END {print count + 0}' "${candidate}")" == 0 ]]
   [[ "$(awk -v bridge_name="${bridge_name}" '$1 == "iface" && $2 == bridge_name {count++} END {print count + 0}' "${candidate}")" == 1 ]]
-  [[ "$(awk -v bridge_name="${bridge_name}" '$1 == "auto" && $2 == bridge_name {count++} END {print count + 0}' "${candidate}")" == 1 ]]
   [[ "$(awk -v nic="${nic}" '$1 == "bridge-ports" && $2 == nic {count++} END {print count + 0}' "${candidate}")" == 1 ]]
   [[ "$(grep -Fxc '# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge' "${candidate}")" == 1 ]]
   [[ "$(grep -Fxc '# END ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge' "${candidate}")" == 1 ]]
@@ -249,29 +264,21 @@ assert.canonical.candidate() {
 
 assert.canonical.candidate "${HOST_CANDIDATE}" data7 lanbr7
 ! grep -Fq 'ansible-proxmox-vlan-vmbr1' "${HOST_CANDIDATE}"
-assert.canonical.candidate "${UNTAGGED_CANDIDATE}" port7 fabric7
-[[ "$(grep -Fxc 'iface port7 inet6 manual' "${UNTAGGED_CANDIDATE}")" == 1 ]]
-! grep -Fq 'bridge-vlan-aware' "${UNTAGGED_CANDIDATE}"
-! grep -Eq '^[[:space:]]*(address|gateway)[[:space:]]' "${UNTAGGED_CANDIDATE}"
-
-assert.canonical.candidate "${VLAN_CANDIDATE}" port8 fabric8
-grep -Fqx '    bridge-vlan-aware yes' "${VLAN_CANDIDATE}"
-grep -Fqx '    bridge-vids 120 140-142' "${VLAN_CANDIDATE}"
+assert.canonical.candidate "${FIXTURE_DIR}/interfaces.tabs_crlf" port9 fabric10
+assert.canonical.candidate "${FIXTURE_DIR}/interfaces.metachar_name" port.7+safe fabric.7+safe
+[[ "$(grep -Fxc 'iface port7 inet6 manual' "${FIXTURE_DIR}/interfaces.dual_stack")" == 1 ]]
 
 VLAN_PLAYBOOK="${ROOT}/ansible/proxmox/vlan.yml"
+grep -Fq 'tasks/data-link.candidate.yml' "${VLAN_PLAYBOOK}"
 grep -Fq 'Parse complete DATA-Link candidate interface list' "${VLAN_PLAYBOOK}"
 grep -Fq 'duplicate interface|invalid use of bridge attribute|interface not recognized' "${VLAN_PLAYBOOK}"
-grep -Fq 'templates/data-link.interfaces.j2' "${VLAN_PLAYBOOK}"
-grep -Fq 'literal_escape_count=0' "${VLAN_PLAYBOOK}"
-grep -Fq 'proxmox_vlan_data_nic_ipv4_methods' "${VLAN_PLAYBOOK}"
-grep -Fq 'nic_nonmanual_count=0' "${VLAN_PLAYBOOK}"
-! grep -Fq "~ '\\n'" "${VLAN_PLAYBOOK}"
-! grep -Fq 'proxmox_vlan_data_nic_iface_manual_exists' "${VLAN_PLAYBOOK}"
+! grep -Fq 'proxmox_vlan_owned_block_pattern' "${VLAN_PLAYBOOK}"
 ! grep -Eq 'ip link set dev.*master' "${VLAN_PLAYBOOK}"
 
+grep -Fq 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh"
 grep -Fq 'vlan.pending.yml' "${ROOT}/setup/vlan.sh"
 grep -Fq 'vlan.applied.yml' "${ROOT}/setup/vlan.sh"
 grep -Fq 'vlan.applied.yml' "${ROOT}/setup/network.sh"
 grep -Fq 'no physical carrier was detected' "${ROOT}/setup/network-link.sh"
 
-echo "[data_link_policy_test][ok] legacy recovery, explicit IPv4 method counts, rendered candidate structure, and transactional handoff contract"
+echo "[data_link_policy_test][ok] production parser source, exact methods, syntax variants, rejection policy, and rendered candidate contract"

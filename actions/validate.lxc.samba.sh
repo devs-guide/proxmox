@@ -21,6 +21,7 @@ ok 'shell syntax'
 
 HARDWARE="${ROOT}/ansible/proxmox/helper/hardware.yml"
 VLAN="${ROOT}/ansible/proxmox/vlan.yml"
+VLAN_TASKS="${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"
 VLAN_TEMPLATE="${ROOT}/ansible/proxmox/templates/data-link.interfaces.j2"
 NETWORK="${ROOT}/setup/network.sh"
 UPDATE="${ROOT}/ansible/proxmox/network.update.yml"
@@ -38,11 +39,12 @@ grep -q 'ensure.data.link.ready' "${ROOT}/setup/vlan.sh" || fail 'VLAN apply doe
 grep -q 'no physical carrier was detected' "${ROOT}/setup/network-link.sh" || fail 'physical carrier error is not surfaced'
 grep -q 'proxmox_vlan_fatal_parser_warning_pattern' "${VLAN}" || fail 'zero-exit parser warnings are not fatal'
 grep -q 'Parse complete DATA-Link candidate interface list' "${VLAN}" || fail 'candidate config is not parsed before mutation'
-grep -q 'literal_escape_count=0' "${VLAN}" || fail 'literal newline escapes are not rejected'
+grep -q 'Search rendered candidate for a literal backslash-n escape' "${VLAN_TASKS}" || fail 'literal newline escapes are not rejected'
 grep -q 'bridge-ports' "${VLAN_TEMPLATE}" || fail 'canonical DATA-Link template is missing bridge membership'
-grep -q 'proxmox_vlan_data_nic_ipv4_methods' "${VLAN}" || fail 'DATA-Link candidate does not count existing IPv4 methods'
-grep -q 'nic_nonmanual_count=0' "${VLAN}" || fail 'DATA-Link candidate does not reject non-manual IPv4 declarations'
-grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" || fail 'candidate template is not a runner support dependency'
+grep -q 'Collect selected physical NIC IPv4 methods by interface tokens' "${VLAN_TASKS}" || fail 'DATA-Link candidate does not use the canonical token parser'
+grep -q 'proxmox_vlan_data_nic_policy_valid' "${VLAN_TASKS}" || fail 'DATA-Link candidate does not reject non-manual IPv4 declarations'
+grep -q 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh" || fail 'candidate task is not a runner support dependency'
+grep -q 'proxmox/templates/data-link.interfaces.j2' "${ROOT}/setup/vlan.sh" || fail 'candidate template is not a runner support dependency'
 ! grep -q 'ip link set dev.*master' "${VLAN}" || fail 'forced runtime bridge attachment remains'
 ok 'physical NIC discovery and identity contract'
 
@@ -85,7 +87,7 @@ grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxm
 grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'
 ok 'Samba, storage, and hardening contract'
 
-for published in setup/network-link.sh setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md; do
+for published in setup/network-link.sh setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md docs/development/feature-authoring.md; do
   grep -q "^${published}|${published}|feature$" "${ROOT}/actions/pages.features.txt" \
     || fail "Pages manifest omits ${published}"
 done

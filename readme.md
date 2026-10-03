@@ -57,6 +57,11 @@ for review, planning, explicitly authorized creation, and verification.
 
 ## Feature Runner Naming
 
+Feature contributors and automation agents must follow the
+[feature-authoring and parser-safety guide](docs/development/feature-authoring.md).
+It defines the production-source-of-truth, regression-fixture, dependency,
+GitHub Actions, and guarded Pages publication requirements.
+
 - Proxmox-native feature runners keep their existing `setup/...` layout such as `setup/vlan.sh` and publish aliases such as `setup.vlan.sh`.
 - Non-Proxmox CLI application installers for Proxmox hosts should use the `cli.{app_name}` naming family.
 

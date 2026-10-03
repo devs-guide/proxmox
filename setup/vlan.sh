@@ -27,15 +27,19 @@ FEATURE_PLAYBOOKS=(
   "proxmox/vlan.yml"
 )
 FEATURE_SUPPORT_FILES=(
+  "proxmox/tasks/data-link.candidate.yml"
   "proxmox/templates/data-link.interfaces.j2"
 )
 HARDWARE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 VLAN_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
-VLAN_TEMPLATE_REL="${FEATURE_SUPPORT_FILES[0]}"
+VLAN_TASKS_REL="${FEATURE_SUPPORT_FILES[0]}"
+VLAN_TEMPLATE_REL="${FEATURE_SUPPORT_FILES[1]}"
 HARDWARE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${HARDWARE_PLAYBOOK_REL}"
 HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${HARDWARE_PLAYBOOK_REL}"
 VLAN_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${VLAN_PLAYBOOK_REL}"
 VLAN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${VLAN_PLAYBOOK_REL}"
+VLAN_TASKS_URL="${PAGES_BASE_URL}/ansible/${VLAN_TASKS_REL}"
+VLAN_TASKS_PATH="${PLAYBOOK_ROOT}/${VLAN_TASKS_REL}"
 VLAN_TEMPLATE_URL="${PAGES_BASE_URL}/ansible/${VLAN_TEMPLATE_REL}"
 VLAN_TEMPLATE_PATH="${PLAYBOOK_ROOT}/${VLAN_TEMPLATE_REL}"
 NETWORK_LINK_RUNNER_URL="${PAGES_BASE_URL}/setup/network-link.sh"
@@ -1145,6 +1149,7 @@ use.local.feature.files() {
 
   if [[ -r "${repo_root}/ansible/${HARDWARE_PLAYBOOK_REL}" \
     && -r "${repo_root}/ansible/${VLAN_PLAYBOOK_REL}" \
+    && -r "${repo_root}/ansible/${VLAN_TASKS_REL}" \
     && -r "${repo_root}/ansible/${VLAN_TEMPLATE_REL}" \
     && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
@@ -1152,6 +1157,7 @@ use.local.feature.files() {
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
     HARDWARE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${HARDWARE_PLAYBOOK_REL}"
     VLAN_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${VLAN_PLAYBOOK_REL}"
+    VLAN_TASKS_PATH="${PLAYBOOK_ROOT}/${VLAN_TASKS_REL}"
     VLAN_TEMPLATE_PATH="${PLAYBOOK_ROOT}/${VLAN_TEMPLATE_REL}"
     NETWORK_LINK_RUNNER_PATH="${repo_root}/setup/network-link.sh"
     log "Using local feature files from ${repo_root}."
@@ -1186,6 +1192,7 @@ prepare.feature.files() {
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
   fetch.feature.file "${HARDWARE_PLAYBOOK_URL}" "${HARDWARE_PLAYBOOK_PATH}"
   fetch.feature.file "${VLAN_PLAYBOOK_URL}" "${VLAN_PLAYBOOK_PATH}"
+  fetch.feature.file "${VLAN_TASKS_URL}" "${VLAN_TASKS_PATH}"
   fetch.feature.file "${VLAN_TEMPLATE_URL}" "${VLAN_TEMPLATE_PATH}"
   fetch.feature.file "${NETWORK_LINK_RUNNER_URL}" "${NETWORK_LINK_RUNNER_PATH}"
   chmod 0755 "${NETWORK_LINK_RUNNER_PATH}"

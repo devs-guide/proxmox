@@ -8,3 +8,4 @@ setup/lxc/egress.sh|setup/lxc/egress.sh|feature
 docs/setup/lxc/samba.zfs.plan|docs/setup/lxc/samba.zfs.plan|feature
 docs/setup/lxc/ingest.md|docs/setup/lxc/ingest.md|feature
 docs/setup/lxc/networking.md|docs/setup/lxc/networking.md|feature
+docs/development/feature-authoring.md|docs/development/feature-authoring.md|feature

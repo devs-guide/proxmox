@@ -139,7 +139,7 @@ while IFS= read -r hit; do
     && "${content}" == "GITHUB[user]='devs-guide'" ]]; then
     sanitized=""
   fi
-  if [[ "${path}" == "ansible/proxmox/vlan.yml" \
+  if [[ "${path}" == "ansible/proxmox/tasks/data-link.candidate.yml" \
     && "${content}" == *'devsguide-proxmox-vlan-vmbr1'* ]]; then
     sanitized=""
   fi
@@ -156,12 +156,12 @@ if ((${#branding_violations[@]})); then
 fi
 
 legacy_marker_count="$(
-  grep -Fc -- 'devsguide-proxmox-vlan-vmbr1' ansible/proxmox/vlan.yml || true
+  grep -Fc -- 'devsguide-proxmox-vlan-vmbr1' ansible/proxmox/tasks/data-link.candidate.yml || true
 )"
 [[ "${legacy_marker_count}" == "1" ]] || \
   fail "the reviewed legacy VLAN marker must appear exactly once"
-grep -Fq 'proxmox_vlan_owned_block_pattern' ansible/proxmox/vlan.yml || \
-  fail "the reviewed legacy VLAN marker must remain in the feature-owned detection pattern"
+grep -Fq 'function owned(name)' ansible/proxmox/tasks/data-link.candidate.yml || \
+  fail "the reviewed legacy VLAN marker must remain in canonical feature-owned detection"
 ok "host-state branding is limited to public provenance and reviewed legacy detection"
 
 printf '[validate.release] all release hygiene contracts passed\n'

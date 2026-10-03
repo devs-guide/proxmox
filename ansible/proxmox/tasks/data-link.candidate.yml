@@ -1,0 +1,261 @@
+---
+# Canonical DATA-Link candidate parser and renderer.
+#
+# Callers provide:
+#   proxmox_vlan_candidate_source_text
+#   proxmox_vlan_effective.data.nic / .bridge
+#   proxmox_vlan_candidate_dir / .path / .template_path
+#   proxmox_vlan_block_begin / .block_end
+#
+# Tests consume this exact task file. Do not duplicate its parsing logic in a
+# fixture playbook; parser drift previously allowed "manual" to be read as
+# "ma" in production while CI continued to pass.
+
+- name: Validate canonical DATA-Link candidate task inputs
+  ansible.builtin.assert:
+    that:
+      - proxmox_vlan_candidate_source_text is defined
+      - (proxmox_vlan_effective.data.nic | default('', true) | string | length) > 0
+      - (proxmox_vlan_effective.data.bridge | default('', true) | string | length) > 0
+      - (proxmox_vlan_candidate_result_key | default('production') | string | length) > 0
+    fail_msg: "Canonical DATA-Link candidate inputs are incomplete."
+
+- name: Remove complete feature-owned DATA-Link blocks from source text
+  ansible.builtin.command:
+    argv:
+      - awk
+      - |-
+        function cleaned(name) {
+          gsub(sprintf("%c", 13), "", name)
+          return name
+        }
+        function owned(name) {
+          name = cleaned(name)
+          return name == "ansible-proxmox-data-bridge" \
+            || name == "ansible-proxmox-vlan-vmbr1" \
+            || name == "devsguide-proxmox-vlan-vmbr1"
+        }
+        function marker(kind) {
+          return $1 == "#" \
+            && $2 == kind \
+            && $3 == "ANSIBLE" \
+            && $4 == "MANAGED" \
+            && $5 == "BLOCK:"
+        }
+        marker("BEGIN") && owned($6) {
+          if (inside) nested += 1
+          inside = 1
+          owned_name = cleaned($6)
+          next
+        }
+        marker("END") && owned($6) {
+          if (!inside || cleaned($6) != owned_name) orphan_end += 1
+          inside = 0
+          next
+        }
+        !inside { print }
+        END {
+          if (inside || nested || orphan_end) exit 42
+        }
+  args:
+    stdin: "{{ proxmox_vlan_candidate_source_text }}"
+    stdin_add_newline: true
+    strip_empty_ends: false
+  register: proxmox_vlan_owned_block_cleanup
+  changed_when: false
+  failed_when: false
+
+- name: Reject malformed feature-owned DATA-Link blocks
+  ansible.builtin.assert:
+    that:
+      - proxmox_vlan_owned_block_cleanup.rc == 0
+    fail_msg: >-
+      DATA-Link source contains an incomplete, nested, or orphaned feature-owned
+      block. Refusing to guess how /etc/network/interfaces should be repaired.
+
+- name: Store DATA-Link source without feature-owned blocks
+  ansible.builtin.set_fact:
+    proxmox_vlan_interfaces_without_owned_blocks: "{{ proxmox_vlan_owned_block_cleanup.stdout }}"
+
+- name: Count selected bridge references outside feature-owned blocks
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "bridge_name={{ proxmox_vlan_effective.data.bridge }}"
+      - |-
+        ($1 == "auto" || $1 == "iface") && $2 == bridge_name { count += 1 }
+        END { print count + 0 }
+  args:
+    stdin: "{{ proxmox_vlan_interfaces_without_owned_blocks }}"
+    stdin_add_newline: true
+  register: proxmox_vlan_foreign_bridge_scan
+  changed_when: false
+
+- name: Collect selected physical NIC IPv4 methods by interface tokens
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "nic={{ proxmox_vlan_effective.data.nic }}"
+      - |-
+        $1 == "iface" && $2 == nic && $3 == "inet" {
+          method = $4
+          gsub(sprintf("%c", 13), "", method)
+          if (method == "") method = "<missing>"
+          print method
+        }
+  args:
+    stdin: "{{ proxmox_vlan_interfaces_without_owned_blocks }}"
+    stdin_add_newline: true
+  register: proxmox_vlan_data_nic_method_scan
+  changed_when: false
+
+- name: Derive selected physical NIC declaration policy
+  ansible.builtin.set_fact:
+    proxmox_vlan_foreign_bridge_reference_count: "{{ proxmox_vlan_foreign_bridge_scan.stdout | trim | int }}"
+    proxmox_vlan_data_nic_ipv4_methods: >-
+      {{ proxmox_vlan_data_nic_method_scan.stdout_lines | default([]) | reject('equalto', '') | list }}
+
+- name: Derive selected physical NIC declaration counts
+  ansible.builtin.set_fact:
+    proxmox_vlan_data_nic_ipv4_count: "{{ proxmox_vlan_data_nic_ipv4_methods | length }}"
+    proxmox_vlan_data_nic_manual_count: >-
+      {{ proxmox_vlan_data_nic_ipv4_methods | select('equalto', 'manual') | list | length }}
+    proxmox_vlan_data_nic_nonmanual_count: >-
+      {{ proxmox_vlan_data_nic_ipv4_methods | reject('equalto', 'manual') | list | length }}
+    proxmox_vlan_data_nic_emit_manual: "{{ (proxmox_vlan_data_nic_ipv4_methods | length) == 0 }}"
+    proxmox_vlan_data_nic_policy_valid: >-
+      {{
+        (proxmox_vlan_data_nic_ipv4_methods | length) == 0
+        or
+        (
+          (proxmox_vlan_data_nic_ipv4_methods | length) == 1
+          and proxmox_vlan_data_nic_ipv4_methods[0] == 'manual'
+        )
+      }}
+
+- name: Record canonical DATA-Link parser result for callers and fixtures
+  ansible.builtin.set_fact:
+    proxmox_vlan_candidate_results: >-
+      {{
+        proxmox_vlan_candidate_results | default({})
+        | combine({
+            (proxmox_vlan_candidate_result_key | default('production')): {
+              'methods': proxmox_vlan_data_nic_ipv4_methods,
+              'ipv4_count': proxmox_vlan_data_nic_ipv4_count | int,
+              'manual_count': proxmox_vlan_data_nic_manual_count | int,
+              'nonmanual_count': proxmox_vlan_data_nic_nonmanual_count | int,
+              'emit_manual': proxmox_vlan_data_nic_emit_manual | bool,
+              'policy_valid': proxmox_vlan_data_nic_policy_valid | bool,
+              'foreign_bridge_references': proxmox_vlan_foreign_bridge_reference_count | int
+            }
+          })
+      }}
+
+- name: Reject selected bridge definitions outside feature-owned blocks
+  ansible.builtin.assert:
+    that:
+      - (proxmox_vlan_foreign_bridge_reference_count | int) == 0
+    fail_msg: >-
+      /etc/network/interfaces defines {{ proxmox_vlan_effective.data.bridge }}
+      outside a feature-owned block. Refusing to replace foreign configuration.
+  when: proxmox_vlan_candidate_enforce_policy | default(true) | bool
+
+- name: Require selected physical NIC to have zero or one manual IPv4 declaration
+  ansible.builtin.assert:
+    that:
+      - proxmox_vlan_data_nic_policy_valid | bool
+    fail_msg: >-
+      /etc/network/interfaces must define zero or one IPv4 stanza for
+      {{ proxmox_vlan_effective.data.nic }}, and an existing stanza must use
+      the manual method. Found methods={{ proxmox_vlan_data_nic_ipv4_methods }};
+      ipv4_count={{ proxmox_vlan_data_nic_ipv4_count }};
+      manual_count={{ proxmox_vlan_data_nic_manual_count }};
+      nonmanual_count={{ proxmox_vlan_data_nic_nonmanual_count }}.
+  when: proxmox_vlan_candidate_enforce_policy | default(true) | bool
+
+- name: Ensure DATA-Link candidate directory exists
+  ansible.builtin.file:
+    path: "{{ proxmox_vlan_candidate_dir }}"
+    state: directory
+    mode: "0700"
+  when: proxmox_vlan_candidate_render | default(true) | bool
+
+- name: Render complete DATA-Link candidate configuration
+  ansible.builtin.template:
+    src: "{{ proxmox_vlan_candidate_template_path }}"
+    dest: "{{ proxmox_vlan_candidate_path }}"
+    mode: "0600"
+  when: proxmox_vlan_candidate_render | default(true) | bool
+
+- name: Inspect rendered DATA-Link candidate structure by interface tokens
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "nic={{ proxmox_vlan_effective.data.nic }}"
+      - -v
+      - "bridge_name={{ proxmox_vlan_effective.data.bridge }}"
+      - |-
+        function normalized(value) {
+          gsub(sprintf("%c", 13), "", value)
+          return value
+        }
+        $1 == "iface" && $2 == nic && $3 == "inet" {
+          nic_inet_count += 1
+          method = normalized($4)
+          if (method == "manual") nic_manual_count += 1
+          else nic_nonmanual_count += 1
+        }
+        $1 == "iface" && $2 == bridge_name { bridge_count += 1 }
+        $1 == "auto" && $2 == bridge_name { auto_count += 1 }
+        $1 == "bridge-ports" && $2 == nic { port_count += 1 }
+        $1 == "#" && $2 == "BEGIN" && $3 == "ANSIBLE" && $4 == "MANAGED" \
+          && $5 == "BLOCK:" && $6 == "ansible-proxmox-data-bridge" { begin_count += 1 }
+        $1 == "#" && $2 == "END" && $3 == "ANSIBLE" && $4 == "MANAGED" \
+          && $5 == "BLOCK:" && $6 == "ansible-proxmox-data-bridge" { end_count += 1 }
+        END {
+          printf "nic_inet_count=%d\n", nic_inet_count + 0
+          printf "nic_manual_count=%d\n", nic_manual_count + 0
+          printf "nic_nonmanual_count=%d\n", nic_nonmanual_count + 0
+          printf "bridge_count=%d\n", bridge_count + 0
+          printf "auto_count=%d\n", auto_count + 0
+          printf "port_count=%d\n", port_count + 0
+          printf "begin_count=%d\n", begin_count + 0
+          printf "end_count=%d\n", end_count + 0
+        }
+      - "{{ proxmox_vlan_candidate_path }}"
+  register: proxmox_vlan_candidate_structure
+  changed_when: false
+  when: proxmox_vlan_candidate_render | default(true) | bool
+
+- name: Search rendered candidate for a literal backslash-n escape
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -F
+      - '\n'
+      - "{{ proxmox_vlan_candidate_path }}"
+  register: proxmox_vlan_candidate_literal_escape
+  changed_when: false
+  failed_when: false
+  when: proxmox_vlan_candidate_render | default(true) | bool
+
+- name: Validate rendered DATA-Link candidate structure
+  ansible.builtin.assert:
+    that:
+      - "'nic_inet_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'nic_manual_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'nic_nonmanual_count=0' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'bridge_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'auto_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'port_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'begin_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - "'end_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
+      - proxmox_vlan_candidate_literal_escape.rc == 1
+    fail_msg: >-
+      Candidate DATA-Link structure is invalid at {{ proxmox_vlan_candidate_path }}:
+      {{ proxmox_vlan_candidate_structure.stdout_lines | default([]) | join(', ') }};
+      literal_escape_rc={{ proxmox_vlan_candidate_literal_escape.rc | default('not-run') }}.
+  when: proxmox_vlan_candidate_render | default(true) | bool

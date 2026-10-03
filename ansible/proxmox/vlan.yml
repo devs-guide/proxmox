@@ -14,9 +14,9 @@
     proxmox_vlan_block_marker: "# {mark} ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge"
     proxmox_vlan_block_begin: "# BEGIN ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge"
     proxmox_vlan_block_end: "# END ANSIBLE MANAGED BLOCK: ansible-proxmox-data-bridge"
-    proxmox_vlan_owned_block_pattern: '(?ms)^\# BEGIN ANSIBLE MANAGED BLOCK: (?:ansible-proxmox-data-bridge|ansible-proxmox-vlan-vmbr1|devsguide-proxmox-vlan-vmbr1)\n.*?^\# END ANSIBLE MANAGED BLOCK: (?:ansible-proxmox-data-bridge|ansible-proxmox-vlan-vmbr1|devsguide-proxmox-vlan-vmbr1)\n?'
     proxmox_vlan_candidate_dir: "/run/proxmox-data-link"
     proxmox_vlan_candidate_path: "/run/proxmox-data-link/interfaces.candidate"
+    proxmox_vlan_candidate_template_path: "{{ playbook_dir }}/templates/data-link.interfaces.j2"
     proxmox_vlan_fatal_parser_warning_pattern: >-
       (?i)(duplicate interface|invalid use of bridge attribute|interface not recognized|error:|syntax error)
     proxmox_vlan_10g_driver_floors:
@@ -468,7 +468,7 @@
 
     - name: Derive VLAN tokens for syntax validation
       set_fact:
-        proxmox_vlan_vid_tokens: "{{ proxmox_vlan_effective.data.bridge_vids | string | regex_findall('\\S+') }}"
+        proxmox_vlan_vid_tokens: "{{ (proxmox_vlan_effective.data.bridge_vids | string).split() }}"
 
     - name: Assert VLAN IDs are not empty
       assert:
@@ -578,142 +578,11 @@
         - proxmox_vlan_effective.data.expected_mac is not none
         - (proxmox_vlan_effective.data.expected_mac | string) | length > 0
 
-    - name: Remove feature-owned bridge blocks from the candidate base text
-      set_fact:
-        proxmox_vlan_interfaces_without_owned_blocks: >-
-          {{
-            (proxmox_interfaces_file.content | b64decode)
-            | regex_replace(proxmox_vlan_owned_block_pattern, '')
-          }}
-
-    - name: Reject selected bridge definitions outside feature-owned blocks
-      assert:
-        that:
-          - >-
-            ((
-              proxmox_vlan_interfaces_without_owned_blocks
-              | regex_findall(
-                  '(?m)^[ \\t]*(?:auto|iface)[ \\t]+'
-                  ~ (proxmox_vlan_effective.data.bridge | regex_escape)
-                  ~ '(?:[ \\t]|$)'
-                )
-            ) | length) == 0
-        fail_msg: >-
-          /etc/network/interfaces defines {{ proxmox_vlan_effective.data.bridge }}
-          outside a feature-owned block. Refusing to replace foreign configuration.
-
-    - name: Collect selected physical NIC IPv4 methods outside feature-owned blocks
-      set_fact:
-        proxmox_vlan_data_nic_ipv4_methods: >-
-          {{
-            proxmox_vlan_interfaces_without_owned_blocks
-            | regex_findall(
-                '(?m)^[ \\t]*iface[ \\t]+'
-                ~ (proxmox_vlan_effective.data.nic | regex_escape)
-                ~ '[ \\t]+inet[ \\t]+([^ \\t#\\r\\n]+)'
-              )
-          }}
-
-    - name: Derive selected physical NIC IPv4 declaration counts
-      set_fact:
-        proxmox_vlan_data_nic_ipv4_count: "{{ proxmox_vlan_data_nic_ipv4_methods | length }}"
-        proxmox_vlan_data_nic_manual_count: >-
-          {{
-            proxmox_vlan_data_nic_ipv4_methods
-            | select('equalto', 'manual')
-            | list
-            | length
-          }}
-        proxmox_vlan_data_nic_nonmanual_count: >-
-          {{
-            proxmox_vlan_data_nic_ipv4_methods
-            | reject('equalto', 'manual')
-            | list
-            | length
-          }}
-        proxmox_vlan_data_nic_emit_manual: >-
-          {{
-            (proxmox_vlan_data_nic_ipv4_methods | length) == 0
-          }}
-
-    - name: Require selected physical NIC to have zero or one manual IPv4 declaration
-      assert:
-        that:
-          - >-
-            (proxmox_vlan_data_nic_ipv4_count | int) == 0
-            or
-            (
-              (proxmox_vlan_data_nic_ipv4_count | int) == 1
-              and (proxmox_vlan_data_nic_manual_count | int) == 1
-              and (proxmox_vlan_data_nic_nonmanual_count | int) == 0
-            )
-        fail_msg: >-
-          /etc/network/interfaces must define zero or one IPv4 stanza for
-          {{ proxmox_vlan_effective.data.nic }}, and an existing stanza must use
-          the manual method. Found methods={{ proxmox_vlan_data_nic_ipv4_methods }};
-          ipv4_count={{ proxmox_vlan_data_nic_ipv4_count }};
-          manual_count={{ proxmox_vlan_data_nic_manual_count }};
-          nonmanual_count={{ proxmox_vlan_data_nic_nonmanual_count }}.
-
-    - name: Ensure DATA-Link candidate directory exists
-      file:
-        path: "{{ proxmox_vlan_candidate_dir }}"
-        state: directory
-        mode: "0700"
-
-    - name: Render complete DATA-Link candidate configuration
-      template:
-        src: "{{ playbook_dir }}/templates/data-link.interfaces.j2"
-        dest: "{{ proxmox_vlan_candidate_path }}"
-        mode: "0600"
-
-    - name: Inspect candidate DATA-Link structure
-      shell: |
-        set -eu
-        candidate="{{ proxmox_vlan_candidate_path }}"
-        nic="{{ proxmox_vlan_effective.data.nic }}"
-        bridge_name="{{ proxmox_vlan_effective.data.bridge }}"
-        nic_inet_count="$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" {count += 1} END {print count + 0}' "${candidate}")"
-        nic_manual_count="$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" && $4 == "manual" {count += 1} END {print count + 0}' "${candidate}")"
-        nic_nonmanual_count="$(awk -v nic="${nic}" '$1 == "iface" && $2 == nic && $3 == "inet" && $4 != "manual" {count += 1} END {print count + 0}' "${candidate}")"
-        bridge_count="$(awk -v bridge_name="${bridge_name}" '$1 == "iface" && $2 == bridge_name {count += 1} END {print count + 0}' "${candidate}")"
-        auto_count="$(awk -v bridge_name="${bridge_name}" '$1 == "auto" && $2 == bridge_name {count += 1} END {print count + 0}' "${candidate}")"
-        port_count="$(awk -v nic="${nic}" '$1 == "bridge-ports" && $2 == nic {count += 1} END {print count + 0}' "${candidate}")"
-        begin_count="$(awk '$0 == "{{ proxmox_vlan_block_begin }}" {count += 1} END {print count + 0}' "${candidate}")"
-        end_count="$(awk '$0 == "{{ proxmox_vlan_block_end }}" {count += 1} END {print count + 0}' "${candidate}")"
-        literal_escape_count="$(awk 'index($0, "\\\\n") {count += 1} END {print count + 0}' "${candidate}")"
-        printf 'nic_inet_count=%s\n' "${nic_inet_count}"
-        printf 'nic_manual_count=%s\n' "${nic_manual_count}"
-        printf 'nic_nonmanual_count=%s\n' "${nic_nonmanual_count}"
-        printf 'source_nic_inet_count=%s\n' "{{ proxmox_vlan_data_nic_ipv4_count }}"
-        printf 'source_nic_manual_count=%s\n' "{{ proxmox_vlan_data_nic_manual_count }}"
-        printf 'emit_manual=%s\n' "{{ proxmox_vlan_data_nic_emit_manual | bool | ternary('1', '0') }}"
-        printf 'bridge_count=%s\n' "${bridge_count}"
-        printf 'auto_count=%s\n' "${auto_count}"
-        printf 'port_count=%s\n' "${port_count}"
-        printf 'begin_count=%s\n' "${begin_count}"
-        printf 'end_count=%s\n' "${end_count}"
-        printf 'literal_escape_count=%s\n' "${literal_escape_count}"
-      args:
-        executable: /bin/bash
-      register: proxmox_vlan_candidate_structure
-      changed_when: false
-
-    - name: Validate candidate DATA-Link structure
-      assert:
-        that:
-          - "'nic_inet_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'nic_manual_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'nic_nonmanual_count=0' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'bridge_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'auto_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'port_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'begin_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'end_count=1' in proxmox_vlan_candidate_structure.stdout_lines"
-          - "'literal_escape_count=0' in proxmox_vlan_candidate_structure.stdout_lines"
-        fail_msg: >-
-          Candidate DATA-Link structure is invalid at {{ proxmox_vlan_candidate_path }}:
-          {{ proxmox_vlan_candidate_structure.stdout_lines | default([]) | join(', ') }}.
+    - name: Build and validate canonical DATA-Link candidate
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/data-link.candidate.yml"
+      vars:
+        proxmox_vlan_candidate_source_text: "{{ proxmox_interfaces_file.content | b64decode }}"
+        proxmox_vlan_candidate_result_key: production
 
     - name: Check if ifreload is available
       command:
@@ -754,11 +623,32 @@
       changed_when: false
       failed_when: false
 
+    - name: Verify parsed DATA-Link bridge contains the selected physical port
+      ansible.builtin.command:
+        argv:
+          - awk
+          - -v
+          - "nic={{ proxmox_vlan_effective.data.nic }}"
+          - |-
+            $1 == "bridge-ports" {
+              for (field = 2; field <= NF; field += 1) {
+                if ($field == nic) found = 1
+              }
+            }
+            END { exit(found ? 0 : 1) }
+      args:
+        stdin: "{{ proxmox_vlan_candidate_ifquery_bridge.stdout | default('') }}"
+        stdin_add_newline: true
+      register: proxmox_vlan_candidate_port_check
+      changed_when: false
+      failed_when: false
+
     - name: Reject candidate parser failures and structural warnings
       assert:
         that:
           - proxmox_vlan_candidate_ifquery_list.rc == 0
           - proxmox_vlan_candidate_ifquery_bridge.rc == 0
+          - proxmox_vlan_candidate_port_check.rc == 0
           - >-
             ((
               (
@@ -769,15 +659,6 @@
               )
               | regex_findall(proxmox_vlan_fatal_parser_warning_pattern)
             ) | length) == 0
-          - >-
-            ((
-              proxmox_vlan_candidate_ifquery_bridge.stdout | default('')
-              | regex_findall(
-                  '(?m)^[ \\t]*bridge-ports[ \\t]+'
-                  ~ (proxmox_vlan_effective.data.nic | regex_escape)
-                  ~ '(?:[ \\t]|$)'
-                )
-            ) | length) > 0
         fail_msg: >-
           Candidate DATA-Link configuration was rejected before mutation.
           list_rc={{ proxmox_vlan_candidate_ifquery_list.rc }};
@@ -923,24 +804,8 @@
           set_fact:
             proxmox_vlan_data_nic_attached_after_apply: >-
               {{
-                (
-                  proxmox_bridge_link_after_apply.rc == 0
-                )
-                and
-                (
-                  ((
-                    proxmox_bridge_link_after_apply.stdout | default('')
-                    | regex_findall(
-                        '(?m)^[0-9]+:[ \\t]+'
-                        ~ (proxmox_vlan_effective.data.nic | regex_escape)
-                        ~ '(?:@|:).* master '
-                        ~ (proxmox_vlan_effective.data.bridge | regex_escape)
-                        ~ '(?:\\s|$)'
-                      )
-                  ) | length) > 0
-                  or
-                  (proxmox_vlan_bridge_member_after_apply.stat.exists | default(false))
-                )
+                (proxmox_vlan_bridge_after_apply.stat.exists | default(false))
+                and (proxmox_vlan_bridge_member_after_apply.stat.exists | default(false))
               }}
           when: proxmox_vlan_mode == 'apply'
 
@@ -960,37 +825,46 @@
               ifquery_list={{ proxmox_vlan_ifquery_after_apply.stdout_lines | default([]) }}.
           when: proxmox_vlan_mode == 'apply'
 
-        - name: Capture management route and DATA-Link host addresses after apply
-          shell: |
-            set -eu
-            printf 'default_route=%s\n' "$(ip route show default | head -n1)"
-            printf 'data_ipv4=%s\n' "$(ip -o -4 addr show dev '{{ proxmox_vlan_effective.data.bridge }}' 2>/dev/null | awk '{print $4}' | paste -sd, -)"
-          args:
-            executable: /bin/bash
-          register: proxmox_vlan_post_apply_route_and_address
+        - name: Capture management default route after apply
+          ansible.builtin.command:
+            argv:
+              - ip
+              - route
+              - show
+              - default
+              - dev
+              - "{{ proxmox_vlan_effective.management.bridge }}"
+          register: proxmox_vlan_management_route_after_apply
           changed_when: false
+          failed_when: false
+          when: proxmox_vlan_mode == 'apply'
+
+        - name: Capture DATA-Link host IPv4 addresses after apply
+          ansible.builtin.command:
+            argv:
+              - ip
+              - -o
+              - -4
+              - addr
+              - show
+              - dev
+              - "{{ proxmox_vlan_effective.data.bridge }}"
+          register: proxmox_vlan_data_addresses_after_apply
+          changed_when: false
+          failed_when: false
           when: proxmox_vlan_mode == 'apply'
 
         - name: Require unchanged management route and unnumbered DATA-Link bridge
           assert:
             that:
-              - >-
-                ((
-                  proxmox_vlan_post_apply_route_and_address.stdout
-                  | regex_findall(
-                      '(?m)^default_route=.* dev '
-                      ~ (proxmox_vlan_effective.management.bridge | regex_escape)
-                      ~ '(?: |$)'
-                    )
-                ) | length) > 0
-              - >-
-                ((
-                  proxmox_vlan_post_apply_route_and_address.stdout
-                  | regex_findall('(?m)^data_ipv4=$')
-                ) | length) > 0
+              - proxmox_vlan_management_route_after_apply.rc == 0
+              - (proxmox_vlan_management_route_after_apply.stdout | trim | length) > 0
+              - proxmox_vlan_data_addresses_after_apply.rc == 0
+              - (proxmox_vlan_data_addresses_after_apply.stdout | trim | length) == 0
             fail_msg: >-
-              Post-apply route/address verification failed:
-              {{ proxmox_vlan_post_apply_route_and_address.stdout | default('') }}.
+              Post-apply route/address verification failed. management_route={{
+              proxmox_vlan_management_route_after_apply.stdout | default('') }};
+              data_ipv4={{ proxmox_vlan_data_addresses_after_apply.stdout | default('') }}.
           when: proxmox_vlan_mode == 'apply'
 
         - name: Read selected data NIC carrier after apply

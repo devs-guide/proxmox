@@ -1,4 +1,4 @@
-{{ proxmox_vlan_interfaces_without_owned_blocks | regex_replace('[ \t\n]*$', '') }}
+{{ proxmox_vlan_interfaces_without_owned_blocks.rstrip() }}
 {{ proxmox_vlan_block_begin }}
 {% if proxmox_vlan_data_nic_emit_manual | bool %}
 iface {{ proxmox_vlan_effective.data.nic }} inet manual

@@ -713,14 +713,17 @@
           changed_when: false
 
         - name: Require SSH listener to be absent for console-only mode
-          assert:
-            that:
-              - >-
-                ((
-                  proxmox_samba_listener_state.stdout | default('')
-                  | regex_findall(':22(?:\\s|$)')
-                ) | length) == 0
-            fail_msg: "SSH remains reachable after console-only hardening."
+          command:
+            argv:
+              - ss
+              - -H
+              - -lnt4
+              - "sport = :22"
+          register: proxmox_samba_ssh_listener_probe
+          changed_when: false
+          failed_when: >-
+            proxmox_samba_ssh_listener_probe.rc != 0
+            or (proxmox_samba_ssh_listener_probe.stdout | trim | length) > 0
           when: not (proxmox_samba_effective.ssh.enabled | bool)
 
         - name: Probe Samba shares locally
@@ -734,33 +737,38 @@
           changed_when: false
           failed_when: false
 
-        - name: Assert guest browse lists selected shares when guest mode is enabled
-          assert:
-            that:
-              - proxmox_samba_smbclient_probe.rc == 0
+        - name: Check guest browse output for selected read-only shares by fields
+          command:
+            argv:
+              - awk
+              - -v
               - >-
-                ((
-                  (proxmox_samba_smbclient_probe.stdout | default(''))
-                  | regex_findall(
-                      '(?m)^\\s*'
-                      ~ (
-                          item.name
-                          | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
-                          | regex_escape
-                        )
-                      ~ '_RO'
-                      ~ '\\s+Disk(?:\\s|$)'
-                    )
-                ) | length) > 0
-            fail_msg: >-
-              Guest browse probe did not list expected share
-              {{
-                item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
-              }}_RO.
+                expected={{
+                  item.name
+                  | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
+                }}_RO
+              - |-
+                $1 == expected && $2 == "Disk" { found = 1 }
+                END { exit(found ? 0 : 1) }
+          args:
+            stdin: "{{ proxmox_samba_smbclient_probe.stdout | default('') }}"
+            stdin_add_newline: true
+          register: proxmox_samba_guest_share_checks
+          changed_when: false
+          failed_when: false
           loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
           when:
             - proxmox_samba_effective.samba.guest_mode | bool
             - (proxmox_samba_effective.shares.explicit | default([]) | length) > 0
+
+        - name: Assert guest browse lists selected shares when guest mode is enabled
+          assert:
+            that:
+              - proxmox_samba_smbclient_probe.rc == 0
+              - item.rc == 0
+            fail_msg: "Guest browse probe did not list an expected read-only share."
+          loop: "{{ proxmox_samba_guest_share_checks.results | default([]) }}"
+          when: proxmox_samba_effective.samba.guest_mode | bool
 
         - name: Prove guest writes are rejected by every read-only share
           command:
@@ -796,25 +804,36 @@
           changed_when: false
           no_log: true
 
+        - name: Check authenticated browse output for selected read-write shares by fields
+          command:
+            argv:
+              - awk
+              - -v
+              - >-
+                expected={{
+                  item.name
+                  | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
+                }}_RW
+              - |-
+                $1 == expected && $2 == "Disk" { found = 1 }
+                END { exit(found ? 0 : 1) }
+          args:
+            stdin: "{{ proxmox_samba_authenticated_probe.stdout | default('') }}"
+            stdin_add_newline: true
+          register: proxmox_samba_authenticated_share_checks
+          changed_when: false
+          failed_when: false
+          no_log: true
+          loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
+
         - name: Require authenticated browse to list every read-write share
           assert:
             that:
               - proxmox_samba_authenticated_probe.rc == 0
-              - >-
-                (((
-                  proxmox_samba_authenticated_probe.stdout | default('')
-                  | regex_findall(
-                      '(?m)^\\s*'
-                      ~ (
-                          item.name
-                          | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
-                          | regex_escape
-                        )
-                      ~ '_RW\\s+Disk(?:\\s|$)'
-                    )
-                ) | length) > 0)
+              - item.rc == 0
             fail_msg: "Authenticated browse did not list an expected read-write share."
-          loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
+          no_log: true
+          loop: "{{ proxmox_samba_authenticated_share_checks.results | default([]) }}"
 
         - name: Prove authenticated create rename and delete on every read-write share
           command:
