@@ -1073,10 +1073,12 @@ if ! grep -q 'Set UFW default-deny ingress and egress policy' "${ROOT}/ansible/p
   echo "[validate.runtime][error] samba.file.share.yml must enforce interface-scoped, default-deny UFW policy"
   exit 1
 fi
-if ! grep -q '_RO]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
-   || ! grep -q '_RW]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+if grep -q '_RO]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || grep -q '_RW]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'guest only = no' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'read only = yes' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
    || ! grep -q 'write list =' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
-  echo "[validate.runtime][error] samba.file.share.yml must render separate guest-read and authenticated-write shares"
+  echo "[validate.runtime][error] samba.file.share.yml must render one guest-read/authenticated-write share per mount"
   exit 1
 fi
 if ! grep -q 'Stop and mask SSH for the console-only ingest appliance' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
