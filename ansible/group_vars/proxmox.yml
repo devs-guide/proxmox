@@ -205,6 +205,9 @@ proxmox_samba:
     fruit_time_machine: false
     fruit_resource: "xattr"
     fruit_nfs_aces: false
+    data_ready_timeout_seconds: 60
+    data_ready_script_path: "/usr/local/sbin/proxmox-samba-wait-data-link"
+    systemd_override_path: "/etc/systemd/system/smbd.service.d/90-proxmox-data-link.conf"
 
   shares:
     auto_discover: true

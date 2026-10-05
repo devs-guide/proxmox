@@ -106,6 +106,9 @@
           fruit_time_machine: false
           fruit_resource: "xattr"
           fruit_nfs_aces: false
+          data_ready_timeout_seconds: 60
+          data_ready_script_path: "/usr/local/sbin/proxmox-samba-wait-data-link"
+          systemd_override_path: "/etc/systemd/system/smbd.service.d/90-proxmox-data-link.conf"
         shares:
           explicit: []
         auth:
@@ -468,26 +471,63 @@
               {% endif %}
               {% for share in proxmox_samba_effective.shares.explicit %}
 
-              [{{ (share.name | default((share.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}_RO]
+              [{{ (share.name | default((share.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}]
                   path = {{ share.path }}
                   browsable = yes
-                  guest ok = yes
-                  guest only = yes
-                  writable = no
-                  read only = yes
-                  public = yes
-
-              [{{ (share.name | default((share.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}_RW]
-                  path = {{ share.path }}
-                  browsable = yes
-                  guest ok = no
+                  guest ok = {{ 'yes' if proxmox_samba_effective.samba.guest_mode | bool else 'no' }}
                   guest only = no
+                  read only = yes
+              {% if not (proxmox_samba_effective.samba.guest_mode | bool) %}
                   valid users = {{ proxmox_samba_effective.auth.username }}
+              {% endif %}
                   write list = {{ proxmox_samba_effective.auth.username }}
-                  writable = yes
-                  read only = no
-                  public = no
+                  public = {{ 'yes' if proxmox_samba_effective.samba.guest_mode | bool else 'no' }}
               {% endfor %}
+
+        - name: Install DATA-Link readiness probe for smbd
+          copy:
+            dest: "{{ proxmox_samba_effective.samba.data_ready_script_path }}"
+            mode: "0755"
+            content: |
+              #!/bin/sh
+              set -eu
+              data_interface={{ proxmox_samba_effective.network.data_interface | quote }}
+              timeout={{ proxmox_samba_effective.samba.data_ready_timeout_seconds | int }}
+              elapsed=0
+              while [ "${elapsed}" -lt "${timeout}" ]; do
+                if ip -o -4 addr show dev "${data_interface}" scope global 2>/dev/null \
+                  | awk 'NR == 1 { found = 1 } END { exit(found ? 0 : 1) }'; then
+                  exit 0
+                fi
+                elapsed=$((elapsed + 1))
+                sleep 1
+              done
+              echo "smbd DATA-Link readiness timed out for ${data_interface}" >&2
+              exit 1
+
+        - name: Ensure smbd systemd override directory exists
+          file:
+            path: "{{ proxmox_samba_effective.samba.systemd_override_path | dirname }}"
+            state: directory
+            mode: "0755"
+
+        - name: Require DATA-Link readiness before smbd starts
+          copy:
+            dest: "{{ proxmox_samba_effective.samba.systemd_override_path }}"
+            mode: "0644"
+            content: |
+              [Unit]
+              Wants=network-online.target
+              After=network-online.target
+
+              [Service]
+              ExecStartPre={{ proxmox_samba_effective.samba.data_ready_script_path }}
+              Restart=on-failure
+              RestartSec=5s
+
+        - name: Reload systemd after installing the smbd DATA-Link guard
+          systemd:
+            daemon_reload: true
 
         - name: Write Avahi SMB service advertisement
           copy:
@@ -739,7 +779,7 @@
           changed_when: false
           failed_when: false
 
-        - name: Check guest browse output for selected read-only shares by fields
+        - name: Check guest browse output for selected shares by fields
           command:
             argv:
               - awk
@@ -748,7 +788,7 @@
                 expected={{
                   item.name
                   | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
-                }}_RO
+                }}
               - |-
                 $1 == expected && $2 == "Disk" { found = 1 }
                 END { exit(found ? 0 : 1) }
@@ -768,15 +808,15 @@
             that:
               - proxmox_samba_smbclient_probe.rc == 0
               - item.rc == 0
-            fail_msg: "Guest browse probe did not list an expected read-only share."
+            fail_msg: "Guest browse probe did not list an expected share."
           loop: "{{ proxmox_samba_guest_share_checks.results | default([]) }}"
           when: proxmox_samba_effective.samba.guest_mode | bool
 
-        - name: Prove guest writes are rejected by every read-only share
+        - name: Prove guest writes are rejected by every selected share
           command:
             argv:
               - smbclient
-              - "//localhost/{{ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}_RO"
+              - "//localhost/{{ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}"
               - -N
               - -c
               - "put /etc/hostname .proxmox-ro-write-probe; del .proxmox-ro-write-probe"
@@ -789,7 +829,7 @@
           assert:
             that:
               - item.rc != 0
-            fail_msg: "A guest write unexpectedly succeeded on a read-only share."
+            fail_msg: "A guest write unexpectedly succeeded on a selected share."
           loop: "{{ proxmox_samba_guest_write_probe.results | default([]) }}"
 
         - name: Probe authenticated Samba share listing
@@ -806,7 +846,7 @@
           changed_when: false
           no_log: true
 
-        - name: Check authenticated browse output for selected read-write shares by fields
+        - name: Check authenticated browse output for selected shares by fields
           command:
             argv:
               - awk
@@ -815,7 +855,7 @@
                 expected={{
                   item.name
                   | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))
-                }}_RW
+                }}
               - |-
                 $1 == expected && $2 == "Disk" { found = 1 }
                 END { exit(found ? 0 : 1) }
@@ -833,15 +873,15 @@
             that:
               - proxmox_samba_authenticated_probe.rc == 0
               - item.rc == 0
-            fail_msg: "Authenticated browse did not list an expected read-write share."
+            fail_msg: "Authenticated browse did not list an expected share."
           no_log: true
           loop: "{{ proxmox_samba_authenticated_share_checks.results | default([]) }}"
 
-        - name: Prove authenticated create rename and delete on every read-write share
+        - name: Prove authenticated create rename and delete on every selected share
           command:
             argv:
               - smbclient
-              - "//localhost/{{ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}_RW"
+              - "//localhost/{{ (item.name | default((item.path | basename | upper | regex_replace('[^A-Z0-9_]', '_')))) }}"
               - -U
               - "{{ proxmox_samba_effective.auth.username }}"
               - -c
@@ -857,7 +897,7 @@
           assert:
             that:
               - item.rc == 0
-            fail_msg: "Authenticated create/rename/delete failed on a read-write share."
+            fail_msg: "Authenticated create/rename/delete failed on a selected share."
           loop: "{{ proxmox_samba_authenticated_write_probe.results | default([]) }}"
           no_log: true
 

@@ -131,8 +131,11 @@ chmod 0700 /root/setup.lxc.egress.sh
 
    The runner discovers the egress interface from the default route and asks
    for the separate data interface. It binds TCP 445 only to the data role and
-   its selected local CIDR. Each selected mount gets `NAME_RO` (guest,
-   read-only) and `NAME_RW` (authenticated, read-write). Filesystem operations
+   its selected local CIDR. Each selected mount gets one `NAME` share: guests
+   are read-only, while the authenticated Samba user is granted write access
+   through `write list`. When exactly one mount is selected, the runner prompts
+   for its published name; non-interactive callers can set
+   `PROXMOX_SAMBA_SHARE_NAME`. Filesystem operations
    are forced to non-login `smb-ingest` UID/GID 2000; root ownership is not
    replaced. The credential menu defaults to LXC-hostname compatibility mode:
    the discovered container hostname becomes both the authenticated username
@@ -145,6 +148,9 @@ chmod 0700 /root/setup.lxc.egress.sh
 
    UFW is reset to the dedicated-appliance policy: deny inbound and outbound,
    allow SMB only on the data role, and allow DNS/DHCP only on the egress role.
+   A systemd start guard waits for that data interface to own a global IPv4
+   address before `smbd` starts, and retries service startup after transient
+   boot-order failures.
    SSH/SSHD services and sockets are stopped and masked, the SSH server package
    is removed, temporary `app`/`agent` logins are locked, and NetBIOS/Avahi
    discovery remains off.
@@ -171,8 +177,8 @@ chmod 0700 /root/setup.lxc.egress.sh
 
 - Give each data-network client a unique static address in the selected subnet
   with no gateway on that NIC. Its management/Wi-Fi route remains its Internet path.
-- Prove guest listing/reads work and guest creates fail on `NAME_RO`.
-- Prove the authenticated user can create, rename, and delete on `NAME_RW`.
+- Prove guest listing/reads work and guest creates fail on `NAME`.
+- Prove the authenticated user can create, rename, and delete on that same `NAME`.
 - Confirm the LXC has exactly one default route, TCP 22 is not listening, TCP
   445 is bound only to the data interface, and unapproved egress fails.
 - Confirm the Proxmox data bridge has no host address and host ports 22/8006

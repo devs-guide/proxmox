@@ -94,14 +94,23 @@ ok 'production DATA-Link address, semantic parser, apply/verify, and rollback fi
 
 bash "${ROOT}/tests/unit/samba_credential_policy_test.sh"
 ok 'Samba hostname/custom credential and secret-cleanup fixtures'
+python3 "${ROOT}/tests/unit/samba_config_policy_test.py"
+ok 'production Samba config single-share render fixture'
 
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
 ! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'
-grep -q '_RO]' "${SAMBA}" && grep -q '_RW]' "${SAMBA}" || fail 'dual Samba shares are missing'
+! grep -q '_RO]' "${SAMBA}" && ! grep -q '_RW]' "${SAMBA}" || fail 'legacy dual Samba shares remain'
+grep -q 'guest only = no' "${SAMBA}" || fail 'single-share guest/auth policy is missing'
+grep -q 'read only = yes' "${SAMBA}" || fail 'single-share guest read-only policy is missing'
+grep -q 'write list = {{ proxmox_samba_effective.auth.username }}' "${SAMBA}" || fail 'single-share authenticated write policy is missing'
+grep -q 'PROXMOX_SAMBA_SHARE_NAME' "${ROOT}/setup/lxc/samba.sh" || fail 'operator-selected published share name is missing'
 grep -q 'Prove guest writes are rejected' "${SAMBA}" || fail 'guest read-only write probe is missing'
 grep -q 'Prove authenticated create rename and delete' "${SAMBA}" || fail 'authenticated write lifecycle probe is missing'
 grep -q 'default deny outgoing' "${SAMBA}" || fail 'default-deny egress is missing'
 grep -q 'Require SMB listener to stay on loopback and the selected data role' "${SAMBA}" || fail 'SMB listener binding verification is missing'
+grep -q 'Install DATA-Link readiness probe for smbd' "${SAMBA}" || fail 'smbd DATA-Link readiness probe is missing'
+grep -q 'ExecStartPre={{ proxmox_samba_effective.samba.data_ready_script_path }}' "${SAMBA}" || fail 'smbd startup is not guarded by DATA-Link readiness'
+grep -q 'Restart=on-failure' "${SAMBA}" || fail 'smbd startup race retry is missing'
 grep -q 'ssh.socket' "${SAMBA}" || fail 'SSH socket masking is missing'
 grep -q 'Remove the SSH server package' "${SAMBA}" || fail 'SSH server removal is missing'
 grep -q 'Lock temporary interactive accounts' "${SAMBA}" || fail 'temporary account locking is missing'
@@ -114,6 +123,7 @@ grep -Fq 'shares: {{ proxmox_samba_effective.shares.explicit | to_json }}' "${SA
 grep -q 'setup/lxc/storage.sh' "${SAMBA}" || fail 'mapped host ACL remediation is missing'
 grep -q 'pct exec.*setpriv' "${ROOT}/setup/lxc/storage.sh" || fail 'mapped identity container verification is missing'
 grep -q 'remove_managed_rules' "${ROOT}/setup/lxc/egress.sh" || fail 'egress approval reconciliation is missing'
+grep -q 'TMPDIR=/tmp mktemp' "${ROOT}/setup/lxc/egress.sh" || fail 'egress helper does not isolate temporary-file creation'
 grep -q 'preflight|apply|revoke' "${ROOT}/setup/lxc/egress.sh" || fail 'egress revoke mode is missing'
 grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxmox LXC boundary rule is missing'
 grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'

@@ -49,7 +49,7 @@ PY
 
 write_fetch_wrapper() {
   local temp_file
-  temp_file="$(mktemp)"
+  temp_file="$(TMPDIR=/tmp mktemp)"
   {
     printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
     printf 'config=%q\n' "${CONFIG_PATH}"

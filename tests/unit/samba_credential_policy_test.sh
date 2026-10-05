@@ -92,6 +92,7 @@ PROXMOX_SAMBA_DNS_SERVERS='10.0.0.1'
 PROXMOX_SAMBA_CREDENTIAL_MODE=hostname
 PROXMOX_SAMBA_AUTH_USER=fixture-nas
 PROXMOX_SAMBA_AUTH_PASSWORD=''
+PROXMOX_SAMBA_SHARE_NAME='FIXTURE_DATA'
 PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE=false
 ALLOW_SUBNET_LIST=('10.10.0.0/24')
 PROXMOX_SAMBA_ALLOW_USERS_SELECTED=(root app agent)
@@ -114,7 +115,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 shares = payload["proxmox_samba"]["shares"]["explicit"]
 assert len(shares) == 1
 assert shares[0]["path"] == "/media/ARCHIVE"
-assert shares[0]["name"] == "ARCHIVE"
+assert shares[0]["name"] == "FIXTURE_DATA"
 assert shares[0]["writable"] is True
 assert "shares" not in payload
 assert payload["proxmox_samba_access_users_runner"] == ["root", "app", "agent"]

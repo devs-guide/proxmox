@@ -68,6 +68,7 @@ PROXMOX_SAMBA_AUTH_PASSWORD="${PROXMOX_SAMBA_AUTH_PASSWORD:-}"
 # hostname-password switch. New callers should select credential_mode=hostname.
 PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD="${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD:-0}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
+PROXMOX_SAMBA_SHARE_NAME="${PROXMOX_SAMBA_SHARE_NAME:-}"
 PROXMOX_SAMBA_ALLOW_EMPTY_SHARES="${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES:-0}"
 # Two-tier baseline policy for this stack:
 # - Generic LXC common baseline: root, app, agent
@@ -669,6 +670,34 @@ mount.share.name.by.path() {
   fi
 }
 
+selected.share.name.by.path() {
+  local path="${1:-}"
+  if [[ -n "${PROXMOX_SAMBA_SHARE_NAME}" ]]; then
+    printf '%s\n' "${PROXMOX_SAMBA_SHARE_NAME}"
+  else
+    mount.share.name.by.path "${path}"
+  fi
+}
+
+select.published.share.name() {
+  local default_name requested_name
+  ((${#SELECTED_SHARES[@]} > 0)) || return 0
+
+  if [[ -n "${PROXMOX_SAMBA_SHARE_NAME}" && ${#SELECTED_SHARES[@]} -ne 1 ]]; then
+    log.error "PROXMOX_SAMBA_SHARE_NAME can be used only when exactly one share path is selected."
+    exit 1
+  fi
+
+  if ((${#SELECTED_SHARES[@]} == 1)); then
+    default_name="$(mount.share.name.by.path "${SELECTED_SHARES[0]}")"
+    if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+      requested_name="$(prompt.tty "Enter published SMB share name" "${PROXMOX_SAMBA_SHARE_NAME:-${default_name}}")"
+      PROXMOX_SAMBA_SHARE_NAME="${requested_name}"
+    fi
+    PROXMOX_SAMBA_SHARE_NAME="$(normalize.share.name "${PROXMOX_SAMBA_SHARE_NAME:-${default_name}}")"
+  fi
+}
+
 append.share.selection.index() {
   local candidate="$1"
   local existing
@@ -898,7 +927,7 @@ validate.selection() {
       log.warn "Selected share ${path} was probed as read=no. Guest browse may list it, but access may still fail until permissions are corrected."
     fi
     if [[ "${writable}" != "yes" ]]; then
-      log.warn "Selected share ${path} was probed as write=no. It will be published read-only."
+      log.warn "Selected share ${path} was probed as write=no for the runner identity. Apply will verify the mapped Samba service identity before publishing it."
     fi
     if [[ "${xattr}" != "yes" ]]; then
       log.warn "Selected share ${path} was probed as xattr=no. macOS metadata compatibility may be reduced."
@@ -939,7 +968,7 @@ EOF
       for path in "${SELECTED_SHARES[@]}"; do
         printf '    - path: %s\n      name: %s\n      guest_ok: %s\n      writable: %s\n      readable: %s\n      xattr: %s\n' \
           "$(yaml.quote "${path}")" \
-          "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
+          "$(yaml.quote "$(selected.share.name.by.path "${path}")")" \
           "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
           "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
           "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
@@ -990,6 +1019,7 @@ collect.operator.selection() {
       exit 1
     fi
   fi
+  select.published.share.name
   select.network.roles
   normalize.allow.subnets
   validate.selection
@@ -1111,7 +1141,7 @@ $(if ((${#SELECTED_SHARES[@]} > 0)); then
   for path in "${SELECTED_SHARES[@]}"; do
     printf '      - path: %s\n        name: %s\n        guest_ok: %s\n        writable: %s\n        readable: %s\n        xattr: %s\n' \
       "$(yaml.quote "${path}")" \
-      "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
+      "$(yaml.quote "$(selected.share.name.by.path "${path}")")" \
       "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
       "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
       "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
