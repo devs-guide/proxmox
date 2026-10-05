@@ -79,4 +79,45 @@ printf 'password: fixture-secret\n' > "${SAMBA_EXTRA_VARS_PATH}"
 remove.samba.secret.file
 [[ ! -e "${SAMBA_EXTRA_VARS_PATH}" ]] || fail 'temporary secret file was retained'
 
-printf '[samba_credential_policy_test][ok] hostname/custom credentials and secret cleanup\n'
+SAMBA_EXTRA_VARS_PATH="${TEST_ROOT}/rendered.extra-vars.yml"
+FEATURE_MODE=preflight
+FACTS_DIR="/etc/ansible/proxmox/facts"
+CONTAINER_FACTS_PATH="${FACTS_DIR}/container.yml"
+SAMBA_FACTS_PATH="${FACTS_DIR}/samba.yml"
+SAMBA_MOUNTS_TSV="${FACTS_DIR}/samba.mounts.tsv"
+SAMBA_SELECTION_PATH="${FACTS_DIR}/samba.selection.yml"
+PROXMOX_SAMBA_DATA_INTERFACE=eth1
+PROXMOX_SAMBA_EGRESS_INTERFACE=eth0
+PROXMOX_SAMBA_DNS_SERVERS='10.0.0.1'
+PROXMOX_SAMBA_CREDENTIAL_MODE=hostname
+PROXMOX_SAMBA_AUTH_USER=fixture-nas
+PROXMOX_SAMBA_AUTH_PASSWORD=''
+PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE=false
+ALLOW_SUBNET_LIST=('10.10.0.0/24')
+PROXMOX_SAMBA_ALLOW_USERS_SELECTED=(root app agent)
+PROXMOX_SAMBA_ALLOW_USERS_CLI=()
+SELECTED_SHARES=('/media/ARCHIVE')
+MOUNT_PATH=('/media/ARCHIVE')
+MOUNT_SHARE_NAME=('ARCHIVE')
+MOUNT_READABLE=('yes')
+MOUNT_WRITABLE=('yes')
+MOUNT_XATTR=('yes')
+write.samba.extra.vars.file
+
+python3 - "${SAMBA_EXTRA_VARS_PATH}" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    payload = yaml.safe_load(stream)
+
+shares = payload["proxmox_samba"]["shares"]["explicit"]
+assert len(shares) == 1
+assert shares[0]["path"] == "/media/ARCHIVE"
+assert shares[0]["name"] == "ARCHIVE"
+assert shares[0]["writable"] is True
+assert "shares" not in payload
+assert payload["proxmox_samba_access_users_runner"] == ["root", "app", "agent"]
+PY
+
+printf '[samba_credential_policy_test][ok] hostname/custom credentials, secret cleanup, and production YAML rendering\n'

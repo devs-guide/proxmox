@@ -1105,6 +1105,21 @@ $(for user in ${PROXMOX_SAMBA_BASELINE_USERS}; do printf '      - %s\n' "$(yaml.
     credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
     username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
     password: $(yaml.quote "${PROXMOX_SAMBA_AUTH_PASSWORD}")
+  shares:
+$(if ((${#SELECTED_SHARES[@]} > 0)); then
+  printf '    explicit:\n'
+  for path in "${SELECTED_SHARES[@]}"; do
+    printf '      - path: %s\n        name: %s\n        guest_ok: %s\n        writable: %s\n        readable: %s\n        xattr: %s\n' \
+      "$(yaml.quote "${path}")" \
+      "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
+      "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
+      "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
+      "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
+      "$(bool.yaml "$(mount.xattr.by.path "${path}")")"
+  done
+else
+  printf '    explicit: []\n'
+fi)
 proxmox_samba_access_users_runner:
 $(if ((${#PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]} > 0)); then
   for user in "${PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]}"; do
@@ -1126,23 +1141,6 @@ fi)
 proxmox_samba_access_users_override: $(bool.yaml "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}")
 EOF
   chmod 0600 "${SAMBA_EXTRA_VARS_PATH}"
-  if ((${#SELECTED_SHARES[@]} > 0)); then
-    {
-      printf '  shares:\n'
-      printf '    explicit:\n'
-      for path in "${SELECTED_SHARES[@]}"; do
-        printf '      - path: %s\n        name: %s\n        guest_ok: %s\n        writable: %s\n        readable: %s\n        xattr: %s\n' \
-          "$(yaml.quote "${path}")" \
-          "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
-          "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
-          "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
-          "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
-          "$(bool.yaml "$(mount.xattr.by.path "${path}")")"
-      done
-    } >> "${SAMBA_EXTRA_VARS_PATH}"
-  else
-    printf '  shares:\n    explicit: []\n' >> "${SAMBA_EXTRA_VARS_PATH}"
-  fi
   log "Prepared Samba extra-vars: ${SAMBA_EXTRA_VARS_PATH}"
 }
 

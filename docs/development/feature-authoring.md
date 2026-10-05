@@ -53,6 +53,13 @@ Parser-affecting changes cover, where relevant:
 Assertions compare complete values. For example, a method parser must return
 `manual`, not merely a non-empty prefix such as `ma`.
 
+Generated structured configuration follows the same rule. A hosted fixture
+must call the production renderer, parse the emitted YAML or JSON with the
+real format parser, and assert the final nesting and value types. Do not test a
+handwritten approximation of the expected document or rely only on matching
+individual output lines; either approach can miss a valid-looking block that
+was appended under the wrong parent key.
+
 ## Runner and publication checklist
 
 For each new or changed support artifact:
