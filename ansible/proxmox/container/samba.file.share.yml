@@ -109,6 +109,7 @@
         shares:
           explicit: []
         auth:
+          credential_mode: "hostname"
           username: null
           password: null
 
@@ -292,6 +293,7 @@
           - proxmox_samba_effective.network.allow_subnets | length > 0
           - not (proxmox_samba_effective.firewall.enabled | bool) or (proxmox_samba_effective.network.dns_servers | length > 0)
           - (proxmox_samba_effective.auth.username | default('', true) | string | length) > 0
+          - proxmox_samba_effective.auth.credential_mode in ['hostname', 'custom']
           - proxmox_samba_effective.auth.username != proxmox_samba_effective.samba.force_user
           - proxmox_samba_effective.auth.username != proxmox_samba_effective.samba.guest_account
           - proxmox_samba_effective.mode != 'apply' or (proxmox_samba_effective.auth.password | default('', true) | length > 0)
@@ -868,6 +870,9 @@
               proxmox_samba_runtime:
                 hostname: {{ ansible_facts.hostname | to_json }}
                 mode: {{ proxmox_samba_effective.mode | to_json }}
+                auth:
+                  credential_mode: {{ proxmox_samba_effective.auth.credential_mode | to_json }}
+                  username: {{ proxmox_samba_effective.auth.username | to_json }}
                 share_count: {{ proxmox_samba_effective.shares.explicit | default([]) | length }}
                 shares: {{ proxmox_samba_effective.shares.explicit | to_nice_yaml(indent=2) | indent(4, true) }}
 

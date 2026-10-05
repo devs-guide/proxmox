@@ -540,6 +540,14 @@ if ! grep -q -- '-e "@${SAMBA_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/samba.sh"; t
   echo "[validate.runtime][error] setup/lxc/samba.sh must pass generated YAML extra-vars with -e @file"
   exit 1
 fi
+if ! grep -q 'PROXMOX_SAMBA_CREDENTIAL_MODE=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh is missing explicit hostname/custom credential mode selection"
+  exit 1
+fi
+if ! grep -q 'trap cleanup.samba.secrets EXIT' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh does not remove its temporary secret-bearing extra-vars file"
+  exit 1
+fi
 if ! grep -q 'This Samba feature must be run inside the NAS LXC container, not on the Proxmox host.' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must reject Proxmox host execution by default"
   exit 1

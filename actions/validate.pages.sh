@@ -553,6 +553,10 @@ check_published_samba_runner_policy() {
     'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' \
     'PROXMOX_SAMBA_MAP_TO_GUEST' \
     'PROXMOX_SAMBA_GUEST_ACCOUNT' \
+    'PROXMOX_SAMBA_CREDENTIAL_MODE' \
+    'LXC hostname compatibility' \
+    'custom username and password' \
+    'trap cleanup.samba.secrets EXIT' \
     'writable: %s' \
     'ensurepip --version'; do
     if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
@@ -948,6 +952,8 @@ check_published_samba_playbook_policy() {
     'share_count:' \
     'Normalize Samba selection payload' \
     'Build effective Samba model' \
+    'credential_mode in' \
+    'credential_mode:' \
     'Report effective Samba share count before smb.conf render' \
     'Assert guest browse lists selected shares when guest mode is enabled' \
     'guest account ='; do

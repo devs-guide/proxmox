@@ -171,3 +171,7 @@ bridge, and unchanged Proxmox management access.
 Do not run `setup/lxc/network.sh` for the pure Samba ingest role. That runner
 configures SSH-oriented access. The Samba runner binds TCP 445 to the selected
 data interface, applies its dedicated UFW policy, and disables container SSH.
+Its credential menu defaults to the discovered LXC hostname for both the
+initial authenticated username and password, while retaining an explicit
+custom username/password path. Secrets are hidden during entry, omitted from
+persistent facts and logs, and removed with the temporary variables file.

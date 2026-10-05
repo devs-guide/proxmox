@@ -131,10 +131,11 @@ Avahi, WSDD, broad private-network allowances, world-write modes, and root
 forcing. `interfaces`, `hosts allow`, and firewall rules are derived from the
 reviewed data role and CIDRs.
 
-The initial compatibility policy may derive the Samba password from the
-selected account/hostname, with a prominent warning. Secrets are never
-committed or printed in public evidence. A later 0.0.7 credential helper may
-replace that policy without changing storage or networking.
+The default compatibility policy derives the authenticated username and
+initial password from the discovered LXC hostname, with a prominent warning.
+The runner also offers an explicit custom username and hidden, confirmed
+password path. Secrets are never committed, printed in public evidence, or
+retained in persistent facts or temporary variables files after execution.
 
 ## Gate 5: container hardening and egress
 

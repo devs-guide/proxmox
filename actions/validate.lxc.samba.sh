@@ -92,6 +92,9 @@ bash "${ROOT}/tests/unit/network_update_playbook_policy_test.sh"
 bash "${ROOT}/tests/unit/network_update_transaction_policy_test.sh"
 ok 'production DATA-Link address, semantic parser, apply/verify, and rollback fixtures'
 
+bash "${ROOT}/tests/unit/samba_credential_policy_test.sh"
+ok 'Samba hostname/custom credential and secret-cleanup fixtures'
+
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
 ! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'
 grep -q '_RO]' "${SAMBA}" && grep -q '_RW]' "${SAMBA}" || fail 'dual Samba shares are missing'
@@ -103,6 +106,9 @@ grep -q 'ssh.socket' "${SAMBA}" || fail 'SSH socket masking is missing'
 grep -q 'Remove the SSH server package' "${SAMBA}" || fail 'SSH server removal is missing'
 grep -q 'Lock temporary interactive accounts' "${SAMBA}" || fail 'temporary account locking is missing'
 grep -q 'Stop and mask legacy NetBIOS discovery' "${SAMBA}" || fail 'NetBIOS daemon hardening is missing'
+grep -q 'credential_mode.*hostname' "${GROUP_VARS}" || fail 'hostname credential mode is not the default'
+grep -q 'remove.samba.secret.file' "${ROOT}/setup/lxc/samba.sh" || fail 'temporary Samba secret cleanup is missing'
+grep -q 'custom username and password' "${ROOT}/setup/lxc/samba.sh" || fail 'custom Samba credential selection is missing'
 grep -q 'setup/lxc/storage.sh' "${SAMBA}" || fail 'mapped host ACL remediation is missing'
 grep -q 'pct exec.*setpriv' "${ROOT}/setup/lxc/storage.sh" || fail 'mapped identity container verification is missing'
 grep -q 'remove_managed_rules' "${ROOT}/setup/lxc/egress.sh" || fail 'egress approval reconciliation is missing'

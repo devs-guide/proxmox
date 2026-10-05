@@ -61,8 +61,11 @@ PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-}"
 PROXMOX_SAMBA_DATA_INTERFACE="${PROXMOX_SAMBA_DATA_INTERFACE:-}"
 PROXMOX_SAMBA_EGRESS_INTERFACE="${PROXMOX_SAMBA_EGRESS_INTERFACE:-}"
 PROXMOX_SAMBA_DNS_SERVERS="${PROXMOX_SAMBA_DNS_SERVERS:-}"
+PROXMOX_SAMBA_CREDENTIAL_MODE="${PROXMOX_SAMBA_CREDENTIAL_MODE:-}"
 PROXMOX_SAMBA_AUTH_USER="${PROXMOX_SAMBA_AUTH_USER:-}"
 PROXMOX_SAMBA_AUTH_PASSWORD="${PROXMOX_SAMBA_AUTH_PASSWORD:-}"
+# Backward-compatible alias for callers that opted into the earlier hidden
+# hostname-password switch. New callers should select credential_mode=hostname.
 PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD="${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD:-0}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
 PROXMOX_SAMBA_ALLOW_EMPTY_SHARES="${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES:-0}"
@@ -102,6 +105,25 @@ CONTAINER_CTNAME="${PROXMOX_CTNAME:-}"
 OPEN_TTY=0
 ALLOW_EMPTY_SHARES="false"
 SHARE_SELECTION_ERROR=""
+
+remove.samba.secret.file() {
+  if [[ -n "${SAMBA_EXTRA_VARS_PATH:-}" && -f "${SAMBA_EXTRA_VARS_PATH}" ]]; then
+    rm -f -- "${SAMBA_EXTRA_VARS_PATH}" || true
+  fi
+}
+
+cleanup.samba.secrets() {
+  local exit_code=$?
+  set +e
+  remove.samba.secret.file
+  PROXMOX_SAMBA_AUTH_PASSWORD=""
+  return "${exit_code}"
+}
+
+trap cleanup.samba.secrets EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 source.lxc.common() {
   local script_dir=""
@@ -186,6 +208,7 @@ collect.sudo.env.args() {
     "PROXMOX_SAMBA_DATA_INTERFACE=${PROXMOX_SAMBA_DATA_INTERFACE}"
     "PROXMOX_SAMBA_EGRESS_INTERFACE=${PROXMOX_SAMBA_EGRESS_INTERFACE}"
     "PROXMOX_SAMBA_DNS_SERVERS=${PROXMOX_SAMBA_DNS_SERVERS}"
+    "PROXMOX_SAMBA_CREDENTIAL_MODE=${PROXMOX_SAMBA_CREDENTIAL_MODE}"
     "PROXMOX_SAMBA_AUTH_USER=${PROXMOX_SAMBA_AUTH_USER}"
     "PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD=${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD}"
     "PROXMOX_SAMBA_SHARE_PATHS=${PROXMOX_SAMBA_SHARE_PATHS}"
@@ -393,14 +416,80 @@ detect.container.identity() {
   if [[ -z "${PROXMOX_SAMBA_DNS_SERVERS}" ]]; then
     PROXMOX_SAMBA_DNS_SERVERS="$(awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ {print $2}' /etc/resolv.conf 2>/dev/null | sort -u | paste -sd' ' -)"
   fi
-  if [[ -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]] && is.true "${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD}"; then
-    PROXMOX_SAMBA_AUTH_PASSWORD="${CONTAINER_HOSTNAME}"
-    log.warn "Using the container hostname as the compatibility Samba password; rotate it after initial validation."
+}
+
+normalize.credential.mode() {
+  if [[ -z "${PROXMOX_SAMBA_CREDENTIAL_MODE}" ]]; then
+    if is.true "${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD}"; then
+      PROXMOX_SAMBA_CREDENTIAL_MODE="hostname"
+    elif [[ -n "${PROXMOX_SAMBA_AUTH_USER}" || -n "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+      PROXMOX_SAMBA_CREDENTIAL_MODE="custom"
+    else
+      PROXMOX_SAMBA_CREDENTIAL_MODE="hostname"
+    fi
+  fi
+
+  case "${PROXMOX_SAMBA_CREDENTIAL_MODE}" in
+    hostname|custom) ;;
+    *)
+      log.error "Unsupported Samba credential mode: ${PROXMOX_SAMBA_CREDENTIAL_MODE}"
+      log.error "Use one of: hostname, custom"
+      exit 1
+      ;;
+  esac
+}
+
+select.samba.credentials() {
+  local credential_choice="" password_confirm=""
+
+  normalize.credential.mode
+
+  if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+    credential_choice="$(menu.tty \
+      'Authenticated SMB credential mode' \
+      "LXC hostname compatibility (${CONTAINER_HOSTNAME}/${CONTAINER_HOSTNAME})" \
+      'custom username and password')"
+    case "${credential_choice}" in
+      1) PROXMOX_SAMBA_CREDENTIAL_MODE="hostname" ;;
+      2) PROXMOX_SAMBA_CREDENTIAL_MODE="custom" ;;
+    esac
+  fi
+
+  case "${PROXMOX_SAMBA_CREDENTIAL_MODE}" in
+    hostname)
+      PROXMOX_SAMBA_AUTH_USER="${CONTAINER_HOSTNAME}"
+      PROXMOX_SAMBA_AUTH_PASSWORD=""
+      if [[ "${FEATURE_MODE}" == apply ]]; then
+        PROXMOX_SAMBA_AUTH_PASSWORD="${CONTAINER_HOSTNAME}"
+        log.warn "Using the LXC hostname as the compatibility Samba username and password; select custom mode to supply separate credentials."
+      fi
+      ;;
+    custom)
+      if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+        PROXMOX_SAMBA_AUTH_USER="$(prompt.tty 'Enter authenticated SMB username' "${PROXMOX_SAMBA_AUTH_USER}")"
+        if [[ "${FEATURE_MODE}" == apply && -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+          PROXMOX_SAMBA_AUTH_PASSWORD="$(prompt.secret.tty 'Enter authenticated SMB password')"
+          password_confirm="$(prompt.secret.tty 'Confirm authenticated SMB password')"
+          [[ "${PROXMOX_SAMBA_AUTH_PASSWORD}" == "${password_confirm}" ]] \
+            || { log.error 'SMB passwords did not match.'; exit 1; }
+        fi
+      fi
+      ;;
+  esac
+
+  [[ "${PROXMOX_SAMBA_AUTH_USER}" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] \
+    || { log.error 'Select a valid lowercase SMB username.'; exit 1; }
+  [[ "${PROXMOX_SAMBA_AUTH_USER}" != "${PROXMOX_SAMBA_FORCE_USER}" \
+    && "${PROXMOX_SAMBA_AUTH_USER}" != "${PROXMOX_SAMBA_GUEST_ACCOUNT}" ]] \
+    || { log.error 'The authenticated SMB user must differ from the force and guest identities.'; exit 1; }
+  if [[ "${FEATURE_MODE}" == apply && -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+    log.error 'Custom apply requires an interactively entered secret or PROXMOX_SAMBA_AUTH_PASSWORD.'
+    exit 1
   fi
 }
 
 select.network.roles() {
-  local candidate="" candidate_count=0 selected="" data_cidr="" password_confirm=""
+  local candidate="" candidate_count=0 selected="" data_cidr=""
   if [[ -z "${PROXMOX_SAMBA_DATA_INTERFACE}" ]]; then
     for candidate in "${CONTAINER_IFACES[@]}"; do
       [[ "${candidate}" != "${PROXMOX_SAMBA_EGRESS_INTERFACE}" ]] || continue
@@ -417,12 +506,6 @@ select.network.roles() {
     printf '  egress/default-route interface: %s\n' "${PROXMOX_SAMBA_EGRESS_INTERFACE:-none}" >&3
     printf '  interfaces with global IPv4: %s\n' "${CONTAINER_IFACES[*]:-none}" >&3
     PROXMOX_SAMBA_DATA_INTERFACE="$(prompt.tty "Enter SMB data interface" "${PROXMOX_SAMBA_DATA_INTERFACE}")"
-    PROXMOX_SAMBA_AUTH_USER="$(prompt.tty "Enter authenticated SMB username" "${PROXMOX_SAMBA_AUTH_USER}")"
-    if [[ "${FEATURE_MODE}" == apply && -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
-      PROXMOX_SAMBA_AUTH_PASSWORD="$(prompt.secret.tty 'Enter authenticated SMB password')"
-      password_confirm="$(prompt.secret.tty 'Confirm authenticated SMB password')"
-      [[ "${PROXMOX_SAMBA_AUTH_PASSWORD}" == "${password_confirm}" ]] || { log.error 'SMB passwords did not match.'; exit 1; }
-    fi
   fi
 
   [[ -n "${PROXMOX_SAMBA_DATA_INTERFACE}" ]] || { log.error "A discovered/operator-selected SMB data interface is required."; exit 1; }
@@ -434,13 +517,7 @@ select.network.roles() {
     PROXMOX_SAMBA_ALLOW_SUBNETS="${data_cidr}"
   fi
   [[ -n "${PROXMOX_SAMBA_ALLOW_SUBNETS}" ]] || { log.error "Could not discover the local SMB data CIDR."; exit 1; }
-  [[ "${PROXMOX_SAMBA_AUTH_USER}" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || { log.error 'Select a valid lowercase SMB username.'; exit 1; }
-  [[ "${PROXMOX_SAMBA_AUTH_USER}" != "${PROXMOX_SAMBA_FORCE_USER}" && "${PROXMOX_SAMBA_AUTH_USER}" != "${PROXMOX_SAMBA_GUEST_ACCOUNT}" ]] \
-    || { log.error 'The authenticated SMB user must differ from the force and guest identities.'; exit 1; }
-  if [[ "${FEATURE_MODE}" == apply && -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
-    log.error 'Apply requires PROXMOX_SAMBA_AUTH_PASSWORD or an interactively entered secret.'
-    exit 1
-  fi
+  select.samba.credentials
 }
 
 write.container.facts() {
@@ -853,6 +930,7 @@ $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quot
     dns_servers:
 $(for server in ${PROXMOX_SAMBA_DNS_SERVERS}; do printf '      - %s\n' "$(yaml.quote "${server}")"; done)
   auth:
+    credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
     username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
 EOF
   if ((${#SELECTED_SHARES[@]} > 0)); then
@@ -882,6 +960,9 @@ proxmox_samba_runtime:
   default_route: $(yaml.scalar.or.null "${CONTAINER_DEFAULT_ROUTE}")
   mode: $(yaml.quote "${FEATURE_MODE}")
   allow_empty_shares: $(bool.yaml "${ALLOW_EMPTY_SHARES}")
+  auth:
+    credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
+    username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
 EOF
   if ((${#SELECTED_SHARES[@]} > 0)); then
     {
@@ -970,6 +1051,8 @@ run.feature.playbook() {
 
 write.samba.extra.vars.file() {
   mkdir -p "${TMP_DIR}"
+  remove.samba.secret.file
+  (umask 077; : > "${SAMBA_EXTRA_VARS_PATH}")
   cat > "${SAMBA_EXTRA_VARS_PATH}" <<EOF
 ---
 proxmox_feature_defaults:
@@ -1019,6 +1102,7 @@ $(for user in ${PROXMOX_SAMBA_BASELINE_USERS}; do printf '      - %s\n' "$(yaml.
     force_group: $(yaml.quote "${PROXMOX_SAMBA_FORCE_GROUP}")
     guest_mode: $(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")
   auth:
+    credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
     username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
     password: $(yaml.quote "${PROXMOX_SAMBA_AUTH_PASSWORD}")
 proxmox_samba_access_users_runner:
@@ -1081,6 +1165,7 @@ main() {
     exit 1
   fi
   ensure.root.or.sudo.reexec "${SAMBA_SUDO_REEXEC}" "${SAMBA_SELF_URL}" "$@"
+  remove.samba.secret.file
   require.root
   require.apt
   require.valid.mode
@@ -1091,4 +1176,6 @@ main() {
   run.samba.feature
 }
 
-main "$@"
+if ! is.true "${PROXMOX_SAMBA_SOURCE_ONLY:-0}"; then
+  main "$@"
+fi

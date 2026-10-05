@@ -226,6 +226,7 @@ proxmox_samba:
     explicit: []
 
   auth:
+    credential_mode: "hostname"
     username: null
     password: null
 

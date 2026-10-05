@@ -125,11 +125,14 @@ chmod 0700 /root/setup.lxc.egress.sh
    its selected local CIDR. Each selected mount gets `NAME_RO` (guest,
    read-only) and `NAME_RW` (authenticated, read-write). Filesystem operations
    are forced to non-login `smb-ingest` UID/GID 2000; root ownership is not
-   replaced. The runner requires an operator-selected authenticated account
-   and prompts for its secret during apply. For non-interactive apply, set
-   `PROXMOX_SAMBA_AUTH_USER` and `PROXMOX_SAMBA_AUTH_PASSWORD` as root. The
-   hostname compatibility password is disabled unless explicitly opted into
-   for temporary migration testing.
+   replaced. The credential menu defaults to LXC-hostname compatibility mode:
+   the discovered container hostname becomes both the authenticated username
+   and initial password. Select `custom username and password` to enter a
+   lowercase account name and a hidden, confirmed secret instead. For
+   non-interactive custom apply, set `PROXMOX_SAMBA_CREDENTIAL_MODE=custom`,
+   `PROXMOX_SAMBA_AUTH_USER`, and `PROXMOX_SAMBA_AUTH_PASSWORD` as root.
+   Passwords are not written to persistent facts or logs; the mode-restricted
+   temporary Ansible variables file is removed on success, failure, or signal.
 
    UFW is reset to the dedicated-appliance policy: deny inbound and outbound,
    allow SMB only on the data role, and allow DNS/DHCP only on the egress role.
