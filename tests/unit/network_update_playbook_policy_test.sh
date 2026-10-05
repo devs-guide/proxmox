@@ -132,7 +132,7 @@ grep -Eq '^[[:space:]]+changed: false$' "${RUNTIME_PATH}" || fail 'check preview
 APPLY_OUTPUT="${TEST_ROOT}/apply.out"
 run.update.playbook '198.51.100.40/24' apply > "${APPLY_OUTPUT}" \
   || fail 'production network update playbook rejected the valid apply fixture'
-grep -Fq $'APPLY\\tlxc\\t4242' "${APPLY_OUTPUT}" || fail 'apply did not report the LXC mutation'
+grep -Eq '^[[:space:]]+changed: true$' "${RUNTIME_PATH}" || fail 'apply did not record the LXC mutation'
 [[ -s "${STATE_PATH}" ]] || fail 'fake Proxmox canonical state was not created'
 
 VERIFY_OUTPUT="${TEST_ROOT}/verify.out"
@@ -147,7 +147,8 @@ run.update.playbook '198.51.100.40/24' check > "${NOOP_OUTPUT}" \
   || fail 'canonical existing NIC was not accepted as an idempotent no-op'
 after_set_count="$(wc -l < "${SET_LOG}")"
 [[ "${before_set_count}" == "${after_set_count}" ]] || fail 'semantic no-op invoked pct set'
-grep -Fq $'NOOP\\tlxc\\t4242' "${NOOP_OUTPUT}" || fail 'semantic no-op was not reported'
+grep -Eq '^[[:space:]]+would_change: false$' "${RUNTIME_PATH}" || fail 'semantic no-op reported a pending mutation'
+grep -Eq '^[[:space:]]+changed: false$' "${RUNTIME_PATH}" || fail 'semantic no-op reported a real mutation'
 
 printf '%s\n' 'type=veth,hwaddr=02:00:00:00:00:40,ip=198.51.100.40/24,firewall=1,bridge=br-foreign,name=data0' > "${STATE_PATH}"
 CONFLICT_OUTPUT="${TEST_ROOT}/conflict.out"
