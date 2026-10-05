@@ -117,6 +117,10 @@ grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxm
 grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'
 grep -q '^set -Eeuo pipefail$' "${ROOT}/setup/firewall.sh" || fail 'firewall ERR rollback is not inherited by main'
 grep -q 'CLUSTER_BACKUP_PATH=' "${ROOT}/setup/firewall.sh" || fail 'cluster firewall rollback backup is missing'
+grep -q 'host.ufw.is.active' "${ROOT}/setup/firewall.sh" || fail 'legacy host UFW discovery is missing'
+grep -q 'ufw --force disable' "${ROOT}/setup/firewall.sh" || fail 'legacy host UFW retirement is missing'
+grep -q 'ufw --force enable' "${ROOT}/setup/firewall.sh" || fail 'legacy host UFW rollback is missing'
+grep -q 'restart.proxmox.firewall' "${ROOT}/setup/firewall.sh" || fail 'Proxmox firewall reload after UFW reconciliation is missing'
 grep -q 'pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --policy_out ACCEPT' "${ROOT}/setup/firewall.sh" \
   || fail 'cluster firewall does not own host default policies'
 ! grep -q '"/nodes/${node}/firewall/options".*policy_in' "${ROOT}/setup/firewall.sh" \

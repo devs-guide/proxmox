@@ -15,6 +15,42 @@ CLUSTER_FW_PATH=""
 CLUSTER_BACKUP_PATH=""
 CLUSTER_FW_EXISTED=0
 CLUSTER_ENABLE_BEFORE=0
+UFW_ACTIVE_BEFORE=0
+UFW_DISABLED_BY_APPLY=0
+
+host.ufw.is.active() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  LC_ALL=C ufw status 2>/dev/null | grep -Eiq '^Status:[[:space:]]+active[[:space:]]*$'
+}
+
+restart.proxmox.firewall() {
+  if command -v systemctl >/dev/null 2>&1 \
+    && systemctl is-active --quiet proxmox-firewall.service 2>/dev/null; then
+    systemctl restart proxmox-firewall.service
+  elif command -v pve-firewall >/dev/null 2>&1; then
+    pve-firewall restart >/dev/null
+  elif command -v systemctl >/dev/null 2>&1 \
+    && systemctl cat proxmox-firewall.service >/dev/null 2>&1; then
+    systemctl restart proxmox-firewall.service
+  elif command -v proxmox-firewall >/dev/null 2>&1; then
+    proxmox-firewall compile >/dev/null
+  else
+    return 1
+  fi
+}
+
+verify.proxmox.firewall() {
+  if command -v systemctl >/dev/null 2>&1 \
+    && systemctl is-active --quiet proxmox-firewall.service 2>/dev/null; then
+    return 0
+  fi
+  if command -v pve-firewall >/dev/null 2>&1; then
+    pve-firewall status >/dev/null
+    return
+  fi
+  command -v proxmox-firewall >/dev/null 2>&1 \
+    && proxmox-firewall compile >/dev/null
+}
 
 rollback.apply() {
   ((APPLY_ACTIVE == 1)) || return 0
@@ -38,8 +74,12 @@ rollback.apply() {
       rm -f -- "${CLUSTER_FW_PATH}"
     fi
   fi
+  restart.proxmox.firewall || log 'Rollback warning: could not reload the restored Proxmox firewall policy.'
+  if ((UFW_ACTIVE_BEFORE == 1 && UFW_DISABLED_BY_APPLY == 1)); then
+    ufw --force enable >/dev/null || log 'Rollback warning: could not restore the previously active host UFW policy.'
+  fi
   APPLY_ACTIVE=0
-  log "Apply failed; restored host, LXC, and cluster firewall files (previous cluster enable=${CLUSTER_ENABLE_BEFORE})."
+  log "Apply failed; restored host, LXC, and cluster firewall files plus the previous host UFW state (previous cluster enable=${CLUSTER_ENABLE_BEFORE})."
 }
 
 die() {
@@ -83,7 +123,7 @@ PY
 main() {
   local node default_if mgmt_if mgmt_ip connected_cidr confirm existing_rules existing_cluster_rules findings comment
   local applied_rules node_options cluster_options existing_ct_rules ct_findings applied_ct_rules ct_options
-  local line slot body net_ip net_bridge selected_body data_network backup_stamp ct_dhcp_required
+  local line slot body net_ip net_bridge selected_body data_network backup_stamp ct_dhcp_required ufw_state
   local -a containers=() candidate_slots=()
   [[ "$(id -u)" -eq 0 ]] || die 'Run as root on the Proxmox host.'
   command -v pveversion >/dev/null 2>&1 || die 'pveversion was not found.'
@@ -191,8 +231,17 @@ for rule in json.loads(sys.argv[3]):
             rule.get("proto", "ANY"), rule.get("dport", "ANY"), rule.get("comment", "")))
 ' "${data_network}" "${DATA_SLOT}" "${existing_ct_rules}")"
 
-  printf '\nProxmox firewall plan:\n  node: %s\n  management interface: %s\n  host IP: %s\n  host allowed source: %s\n  host inbound ports: 22, 8006\n  LXC/data slot: %s/%s\n  LXC SMB source: %s -> tcp/445\n  input/output policy: DROP/ACCEPT\n' \
-    "${node}" "${mgmt_if}" "${mgmt_ip}" "${MGMT_CIDR}" "${CTID}" "${DATA_SLOT}" "${data_network}" >&2
+  ufw_state="not installed"
+  if command -v ufw >/dev/null 2>&1; then
+    ufw_state="inactive"
+    if host.ufw.is.active; then
+      UFW_ACTIVE_BEFORE=1
+      ufw_state="active (apply will retire it after Proxmox policy validation)"
+    fi
+  fi
+
+  printf '\nProxmox firewall plan:\n  node: %s\n  management interface: %s\n  host IP: %s\n  host allowed source: %s\n  host inbound ports: 22, 8006\n  LXC/data slot: %s/%s\n  LXC SMB source: %s -> tcp/445\n  input/output policy: DROP/ACCEPT\n  legacy host UFW: %s\n' \
+    "${node}" "${mgmt_if}" "${mgmt_ip}" "${MGMT_CIDR}" "${CTID}" "${DATA_SLOT}" "${data_network}" "${ufw_state}" >&2
   [[ -z "${findings}" ]] || { printf '  conflicting broad ACCEPT rules:\n%s\n' "${findings}" >&2; [[ "${MODE}" != apply ]] || die 'Remove or narrow conflicting inbound ACCEPT rules before apply.'; }
   [[ -z "${ct_findings}" ]] || { printf '  conflicting LXC inbound ACCEPT rules:\n%s\n' "${ct_findings}" >&2; [[ "${MODE}" != apply ]] || die 'Remove non-SMB LXC inbound ACCEPT rules before apply.'; }
   [[ "${MODE}" == apply ]] || { log 'Preflight complete; no firewall change made.'; return; }
@@ -325,14 +374,16 @@ if (not options.get("enable") or str(options.get("policy_in", "")).upper() != "D
 if bool(options.get("dhcp", 0)) != dhcp_required:
     raise SystemExit("LXC DHCP firewall option verification failed")
 ' "${data_network}" "${DATA_SLOT}" "${applied_ct_rules}" "${ct_options}" "${ct_dhcp_required}"
-  if command -v proxmox-firewall >/dev/null 2>&1; then
-    proxmox-firewall compile >/dev/null
-  elif command -v pve-firewall >/dev/null 2>&1; then
-    pve-firewall status >/dev/null
+  if ((UFW_ACTIVE_BEFORE == 1)); then
+    UFW_DISABLED_BY_APPLY=1
+    ufw --force disable >/dev/null
   fi
+  restart.proxmox.firewall || die 'Could not rebuild the Proxmox firewall after policy reconciliation.'
+  verify.proxmox.firewall || die 'The Proxmox firewall service is not running after policy reconciliation.'
+  ! host.ufw.is.active || die 'Legacy host UFW remained active after Proxmox firewall reconciliation.'
   ss -lnt | grep -Eq ':22[[:space:]]|:8006[[:space:]]' || die 'Management listeners were not detected after policy apply.'
   APPLY_ACTIVE=0
-  log "Host and LXC firewall boundaries enabled; recovery backups: ${BACKUP_PATH}, ${CT_BACKUP_PATH}, ${CLUSTER_BACKUP_PATH}"
+  log "Host and LXC firewall boundaries enabled with Proxmox firewall authoritative; recovery backups: ${BACKUP_PATH}, ${CT_BACKUP_PATH}, ${CLUSTER_BACKUP_PATH}"
 }
 
 main "$@"

@@ -99,7 +99,12 @@ fallback when the native interpreter is below the supported minimum.
    cluster scope supported by the Proxmox API; node scope is enabled without
    unsupported policy fields. When the LXC has a DHCP management NIC, the
    guest firewall's DHCP option is enabled so lease renewal survives its
-   default-DROP inbound policy:
+   default-DROP inbound policy. If legacy host UFW is active, preflight reports
+   it and apply retires it only after validating the Proxmox rules. The runner
+   then rebuilds and verifies the Proxmox firewall chains; failure restores the
+   firewall files and re-enables the previous host UFW policy. This host-level
+   reconciliation does not replace the separate UFW policy applied inside the
+   Samba LXC:
 
    ```bash
    wget -qO- https://devs-guide.github.io/proxmox/setup/firewall.sh | bash -s -- preflight

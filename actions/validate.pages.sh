@@ -583,6 +583,10 @@ check_published_firewall_runner_policy() {
   for needle in \
     'set -Eeuo pipefail' \
     'CLUSTER_BACKUP_PATH=' \
+    'host.ufw.is.active' \
+    'ufw --force disable' \
+    'ufw --force enable' \
+    'restart.proxmox.firewall' \
     'ct_dhcp_required' \
     'pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --policy_out ACCEPT'; do
     if ! grep -Fq -- "${needle}" "${published_runner}"; then
