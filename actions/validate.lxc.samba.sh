@@ -26,6 +26,8 @@ VLAN_IFRELOAD_TASKS="${ROOT}/ansible/proxmox/tasks/data-link.ifreload.validate.y
 VLAN_TEMPLATE="${ROOT}/ansible/proxmox/templates/data-link.interfaces.j2"
 NETWORK="${ROOT}/setup/network.sh"
 UPDATE="${ROOT}/ansible/proxmox/network.update.yml"
+VERIFY="${ROOT}/ansible/proxmox/network.verify.yml"
+LXC_NIC_HELPER="${ROOT}/ansible/proxmox/helper/network.lxc_nic.py"
 SAMBA="${ROOT}/ansible/proxmox/container/samba.file.share.yml"
 GROUP_VARS="${ROOT}/ansible/group_vars/proxmox.yml"
 PACKAGES="${ROOT}/ansible/debian/packages.yml"
@@ -57,9 +59,15 @@ ok 'physical NIC discovery and identity contract'
 grep -q 'add_static_data_role_no_gateway' "${NETWORK}" || fail 'static no-gateway data role is missing'
 grep -q 'firewall=1,ip=${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}' "${NETWORK}" || fail 'data NIC is not serialized as static/firewalled'
 ! grep -q 'selected_lxc_highspeed_only' "${NETWORK}" || fail 'destructive net0 replacement path remains'
-grep -q 'unsafe_data_route' "${UPDATE}" || fail 'gateway/DHCP rejection is missing'
+[[ -f "${LXC_NIC_HELPER}" ]] || fail 'canonical LXC NIC parser is missing'
+grep -q 'unsafe_data_route' "${LXC_NIC_HELPER}" || fail 'gateway/DHCP rejection is missing'
+grep -q 'GENERATED_KEYS = {"type", "hwaddr"}' "${LXC_NIC_HELPER}" || fail 'Proxmox-generated LXC fields are not normalized'
+grep -q 'network.lxc_nic.py' "${UPDATE}" || fail 'network update does not use the canonical LXC NIC parser'
+grep -q 'network.lxc_nic.py' "${VERIFY}" || fail 'network verification does not use the canonical LXC NIC parser'
 grep -q 'refuse_live_slot_overwrite' "${UPDATE}" || fail 'live slot overwrite protection is missing'
 grep -q 'rollback.network.update.plan' "${NETWORK}" || fail 'guest NIC rollback is missing'
+grep -q 'network.transaction.tsv' "${NETWORK}" || fail 'guest NIC transaction journal is missing'
+grep -q 'detect.pending.network.recovery' "${NETWORK}" || fail 'failed update recovery path is missing'
 grep -q 'probe.data.ip.conflict' "${NETWORK}" || fail 'duplicate static-address probe is missing'
 grep -q 'normalize.ipv4.interface.cidr' "${NETWORK}" || fail 'bare IPv4 normalization is missing'
 grep -q 'network.update.status.yml' "${NETWORK}" || fail 'transactional update status is missing'
@@ -79,8 +87,10 @@ grep -Fq 'vlan.applied.yml' "${NETWORK}" || fail 'guest handoff does not require
 ok 'role-based LXC network contract'
 
 bash "${ROOT}/tests/unit/network_snapshot_policy_test.sh"
+bash "${ROOT}/tests/unit/network_lxc_nic_policy_test.sh"
 bash "${ROOT}/tests/unit/network_update_playbook_policy_test.sh"
-ok 'production DATA-Link address and check-mode fixtures'
+bash "${ROOT}/tests/unit/network_update_transaction_policy_test.sh"
+ok 'production DATA-Link address, semantic parser, apply/verify, and rollback fixtures'
 
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
 ! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'

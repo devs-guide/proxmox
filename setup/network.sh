@@ -64,15 +64,21 @@ FEATURE_PLAYBOOKS=(
   "proxmox/network.update.yml"
   "proxmox/network.verify.yml"
 )
+FEATURE_SUPPORT_FILES=(
+  "proxmox/helper/network.lxc_nic.py"
+)
 NETWORK_EXPORT_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 NETWORK_UPDATE_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[1]}"
 NETWORK_VERIFY_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[2]}"
+NETWORK_LXC_NIC_HELPER_REL="${FEATURE_SUPPORT_FILES[0]}"
 NETWORK_EXPORT_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NETWORK_EXPORT_PLAYBOOK_REL}"
 NETWORK_UPDATE_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NETWORK_UPDATE_PLAYBOOK_REL}"
 NETWORK_VERIFY_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${NETWORK_VERIFY_PLAYBOOK_REL}"
+NETWORK_LXC_NIC_HELPER_URL="${PAGES_BASE_URL}/ansible/${NETWORK_LXC_NIC_HELPER_REL}"
 NETWORK_EXPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_EXPORT_PLAYBOOK_REL}"
 NETWORK_UPDATE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_UPDATE_PLAYBOOK_REL}"
 NETWORK_VERIFY_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_VERIFY_PLAYBOOK_REL}"
+NETWORK_LXC_NIC_HELPER_PATH="${PLAYBOOK_ROOT}/${NETWORK_LXC_NIC_HELPER_REL}"
 NETWORK_EXTRA_VARS_PATH="${TMP_DIR}/network.update.extra-vars.yml"
 ANSIBLE_VENV="/opt/ansible-venv"
 ANSIBLE_VENV_BIN="${ANSIBLE_VENV}/bin/ansible-playbook"
@@ -89,6 +95,8 @@ NETWORK_PLAN_PATH="${PROXMOX_NETWORK_PLAN_PATH:-${FACTS_DIR}/network.plan.tsv}"
 NETWORK_VERIFY_PATH="${PROXMOX_NETWORK_VERIFY_PATH:-${FACTS_DIR}/network.verify.tsv}"
 NETWORK_UPDATE_RUNTIME_FACTS_PATH="${PROXMOX_NETWORK_UPDATE_RUNTIME_FACTS_PATH:-${FACTS_DIR}/network.update.runtime.yml}"
 NETWORK_UPDATE_STATUS_PATH="${PROXMOX_NETWORK_UPDATE_STATUS_PATH:-${FACTS_DIR}/network.update.status.yml}"
+NETWORK_TRANSACTION_PATH="${PROXMOX_NETWORK_TRANSACTION_PATH:-${FACTS_DIR}/network.transaction.tsv}"
+NETWORK_ROLLBACK_PATH="${PROXMOX_NETWORK_ROLLBACK_PATH:-${FACTS_DIR}/network.rollback.tsv}"
 DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.applied.yml}"
 LEGACY_DATA_BRIDGE_SELECTION_PATH="${PROXMOX_NETWORK_LEGACY_DATA_BRIDGE_SELECTION_PATH:-${FACTS_DIR}/vlan.selection.yml}"
 SYS_CLASS_NET_ROOT="${PROXMOX_NETWORK_SYS_CLASS_NET_ROOT:-/sys/class/net}"
@@ -134,6 +142,8 @@ PARTIAL_ERROR_PATH=""
 TRACE_PATH=""
 TRACE_FD_OPEN=0
 PREFLIGHT_ACTIVE=0
+NETWORK_RECOVERY_MODE=0
+NETWORK_ROLLBACK_OUTCOME="not-run"
 
 declare -a CT_IDS=()
 declare -a VM_IDS=()
@@ -197,7 +207,8 @@ command_exists() {
 
 is.true() {
   local value="${1:-}"
-  case "${value,,}" in
+  value="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  case "${value}" in
     1|true|yes|y|on) return 0 ;;
     *) return 1 ;;
   esac
@@ -1979,6 +1990,7 @@ use.local.feature.files() {
   if [[ -r "${repo_root}/ansible/${NETWORK_EXPORT_PLAYBOOK_REL}" \
     && -r "${repo_root}/ansible/${NETWORK_UPDATE_PLAYBOOK_REL}" \
     && -r "${repo_root}/ansible/${NETWORK_VERIFY_PLAYBOOK_REL}" \
+    && -r "${repo_root}/ansible/${NETWORK_LXC_NIC_HELPER_REL}" \
     && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
     PLAYBOOK_ROOT="${repo_root}/ansible"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
@@ -1986,6 +1998,7 @@ use.local.feature.files() {
     NETWORK_EXPORT_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_EXPORT_PLAYBOOK_REL}"
     NETWORK_UPDATE_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_UPDATE_PLAYBOOK_REL}"
     NETWORK_VERIFY_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${NETWORK_VERIFY_PLAYBOOK_REL}"
+    NETWORK_LXC_NIC_HELPER_PATH="${PLAYBOOK_ROOT}/${NETWORK_LXC_NIC_HELPER_REL}"
     log "Using local feature files from ${repo_root}."
     return 0
   fi
@@ -2018,6 +2031,7 @@ prepare.feature.files() {
   fetch.feature.file "${NETWORK_EXPORT_PLAYBOOK_URL}" "${NETWORK_EXPORT_PLAYBOOK_PATH}"
   fetch.feature.file "${NETWORK_UPDATE_PLAYBOOK_URL}" "${NETWORK_UPDATE_PLAYBOOK_PATH}"
   fetch.feature.file "${NETWORK_VERIFY_PLAYBOOK_URL}" "${NETWORK_VERIFY_PLAYBOOK_PATH}"
+  fetch.feature.file "${NETWORK_LXC_NIC_HELPER_URL}" "${NETWORK_LXC_NIC_HELPER_PATH}"
 }
 
 run.feature.playbook() {
@@ -2379,6 +2393,8 @@ proxmox_network_update:
     preflight_facts_json: $(yaml.quote "${ANSIBLE_PREFLIGHT_FACTS_JSON}")
     plan_tsv: $(yaml.quote "${NETWORK_PLAN_PATH}")
     verify_tsv: $(yaml.quote "${NETWORK_VERIFY_PATH}")
+    transaction_tsv: $(yaml.quote "${NETWORK_TRANSACTION_PATH}")
+    rollback_tsv: $(yaml.quote "${NETWORK_ROLLBACK_PATH}")
 EOF
 }
 
@@ -2394,6 +2410,11 @@ proxmox_network_update_status:
   snapshot_dir: $(yaml.quote "${RUN_DIR}")
   plan_path: $(yaml.quote "${NETWORK_PLAN_PATH}")
   intent_path: $(yaml.quote "${NETWORK_INTENT_PATH}")
+  verify_path: $(yaml.quote "${NETWORK_VERIFY_PATH}")
+  transaction_path: $(yaml.quote "${NETWORK_TRANSACTION_PATH}")
+  rollback_path: $(yaml.quote "${NETWORK_ROLLBACK_PATH}")
+  recovery_mode: $(yaml.quote "${NETWORK_RECOVERY_MODE}")
+  rollback_outcome: $(yaml.quote "${NETWORK_ROLLBACK_OUTCOME}")
   normalized_data_ipv4_cidr: $(yaml.quote "${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}")
   derived_data_cidr: $(yaml.quote "${EXPECTED_DATA_CIDR}")
 EOF
@@ -2417,6 +2438,7 @@ proxmox_network_intent_path: $(yaml.quote "${NETWORK_INTENT_PATH}")
 proxmox_network_plan_path: $(yaml.quote "${NETWORK_PLAN_PATH}")
 proxmox_network_verify_path: $(yaml.quote "${NETWORK_VERIFY_PATH}")
 proxmox_network_update_runtime_facts_path: $(yaml.quote "${NETWORK_UPDATE_RUNTIME_FACTS_PATH}")
+proxmox_network_lxc_nic_helper_path: $(yaml.quote "${NETWORK_LXC_NIC_HELPER_PATH}")
 proxmox_network_update_mode: $(yaml.quote "${mode}")
 proxmox_network_expected_admin_bridge: $(yaml.quote "${EXPECTED_ADMIN_BRIDGE}")
 proxmox_network_expected_data_bridge: $(yaml.quote "${EXPECTED_DATA_BRIDGE}")
@@ -2429,23 +2451,213 @@ proxmox_network_update_apply_requested: ${apply_requested}
 EOF
 }
 
-rollback.network.update.plan() {
-  local guest_type guest_id guest_name net_slot desired_value reason current_value
-  log.warn "Rolling back NICs added by the failed network apply/verify stage."
+network.status.field() {
+  local key="${1:-}"
+  [[ -f "${NETWORK_UPDATE_STATUS_PATH}" && -n "${key}" ]] || return 1
+  sed -n "s/^[[:space:]]*${key}: \"\(.*\)\"$/\1/p" "${NETWORK_UPDATE_STATUS_PATH}" | head -n1
+}
+
+lxc.nic.semantic.compare() {
+  local expected="${1:-}" actual="${2:-}"
+  python3 "${NETWORK_LXC_NIC_HELPER_PATH}" compare --expected "${expected}" --actual "${actual}"
+}
+
+guest.net.value() {
+  local guest_type="${1:-}" guest_id="${2:-}" net_slot="${3:-}"
+  if [[ "${guest_type}" == "lxc" ]]; then
+    pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true
+  elif [[ "${guest_type}" == "vm" ]]; then
+    qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true
+  fi
+}
+
+write.network.transaction.journal() {
+  local mode="${1:-new}"
+  local guest_type guest_id guest_name net_slot desired_value reason current_value comparison
+  local errors=0
+  printf 'guest_type\tguest_id\tguest_name\tnet_slot\tpre_state\tpre_value\tdesired_value\n' > "${NETWORK_TRANSACTION_PATH}"
+
   while IFS=$'\t' read -r guest_type guest_id guest_name net_slot desired_value reason; do
     [[ "${guest_type}" != "guest_type" ]] || continue
-    if [[ "${guest_type}" == "lxc" ]]; then
-      current_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
-      if [[ "${current_value}" == "${desired_value}" ]]; then
-        pct set "${guest_id}" -delete "${net_slot}" || log.error "Rollback failed for LXC ${guest_id} ${net_slot}."
+    current_value="$(guest.net.value "${guest_type}" "${guest_id}" "${net_slot}")"
+    if [[ "${mode}" == "new" && -n "${current_value}" ]]; then
+      log.error "Transaction refused: ${guest_type} ${guest_id} ${net_slot} became occupied before apply."
+      errors=$((errors + 1))
+      continue
+    fi
+    if [[ "${mode}" == "recovery" ]]; then
+      if [[ "${guest_type}" != "lxc" ]]; then
+        log.error "Recovery is supported only for the LXC DATA-Link workflow."
+        errors=$((errors + 1))
+        continue
       fi
-    elif [[ "${guest_type}" == "vm" ]]; then
-      current_value="$(qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
-      if [[ "${current_value}" == "${desired_value}" ]]; then
-        qm set "${guest_id}" -delete "${net_slot}" || log.error "Rollback failed for VM ${guest_id} ${net_slot}."
+      if ! comparison="$(lxc.nic.semantic.compare "${desired_value}" "${current_value}" 2>&1)"; then
+        log.error "Recovery conflict for LXC ${guest_id} ${net_slot}: ${comparison}"
+        errors=$((errors + 1))
+        continue
       fi
     fi
+    append.tsv.row "${NETWORK_TRANSACTION_PATH}" \
+      "${guest_type}" "${guest_id}" "${guest_name}" "${net_slot}" "absent" "-" "${desired_value}"
   done < "${NETWORK_PLAN_PATH}"
+
+  [[ "${errors}" -eq 0 ]]
+}
+
+detect.pending.network.recovery() {
+  local status phase row_count guest_type guest_id guest_name net_slot desired_value reason
+  local current_value comparison choice desired_if desired_bridge desired_ip
+  status="$(network.status.field status || true)"
+  phase="$(network.status.field phase || true)"
+  [[ "${status}" == "failed" ]] || return 1
+  case "${phase}" in
+    apply|verify|runtime|post-apply-preflight|recovery-check-export|recovery-check-preview|recovery-journal) ;;
+    *) return 1 ;;
+  esac
+  [[ -f "${NETWORK_PLAN_PATH}" ]] || return 1
+  row_count="$(tsv.data.row.count "${NETWORK_PLAN_PATH}" 2>/dev/null || printf '0')"
+  [[ "${row_count}" -eq 1 ]] || {
+    log.error "Cannot automatically recover a failed network plan with ${row_count} rows."
+    return 2
+  }
+
+  IFS=$'\t' read -r guest_type guest_id guest_name net_slot desired_value reason < <(awk 'NR == 2 {print; exit}' "${NETWORK_PLAN_PATH}")
+  [[ "${guest_type}" == "lxc" && -n "${guest_id}" && -n "${net_slot}" && -n "${desired_value}" ]] || {
+    log.error "The failed network plan is not a recoverable single-LXC DATA-Link update."
+    return 2
+  }
+  current_value="$(guest.net.value "${guest_type}" "${guest_id}" "${net_slot}")"
+  [[ -n "${current_value}" ]] || return 1
+  if ! comparison="$(lxc.nic.semantic.compare "${desired_value}" "${current_value}" 2>&1)"; then
+    log.error "Pending network recovery conflicts with live LXC ${guest_id} ${net_slot}: ${comparison}"
+    log.error "No interface was changed. Review pct config ${guest_id} and ${NETWORK_PLAN_PATH}."
+    return 2
+  fi
+
+  desired_if="$(extract.csv.kv "${desired_value}" name || true)"
+  desired_bridge="$(extract.csv.kv "${desired_value}" bridge || true)"
+  desired_ip="$(extract.csv.kv "${desired_value}" ip || true)"
+  [[ -n "${desired_if}" && -n "${desired_bridge}" && -n "${desired_ip}" ]] || {
+    log.error "The pending recovery plan does not contain a complete LXC DATA-Link identity."
+    return 2
+  }
+  [[ "${desired_bridge}" == "${EXPECTED_DATA_BRIDGE}" ]] || {
+    log.error "Pending recovery bridge ${desired_bridge} differs from live selected bridge ${EXPECTED_DATA_BRIDGE}."
+    return 2
+  }
+
+  UPDATE_LXC_IDS=("${guest_id}")
+  UPDATE_VM_IDS=()
+  EXPECTED_GUEST_ADMIN_IF="$(lxc.egress.if.name "${guest_id}")"
+  EXPECTED_GUEST_DATA_IF="${desired_if}"
+  PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR="${desired_ip}"
+  EXPECTED_DATA_CIDR="$(derive.ipv4.network.cidr "${desired_ip}")"
+  [[ -n "${EXPECTED_GUEST_ADMIN_IF}" ]] || {
+    log.error "Could not resolve the preserved management interface for recovery LXC ${guest_id}."
+    return 2
+  }
+
+  if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
+    printf '\nRecoverable DATA-Link update detected:\n' >&3
+    printf '  LXC:              %s\n' "${guest_id}" >&3
+    printf '  existing slot:    %s\n' "${net_slot}" >&3
+    printf '  data interface:   %s\n' "${desired_if}" >&3
+    printf '  data bridge:      %s\n' "${desired_bridge}" >&3
+    printf '  data address:     %s\n' "${desired_ip}" >&3
+    printf '  failed phase:     %s\n' "${phase}" >&3
+    choice="$(menu.tty "Resume semantic verification and runtime completion?" "yes" "abort")"
+    [[ "${choice}" == "1" ]] || return 2
+  elif [[ "${PROXMOX_NETWORK_UPDATE_MODE}" != "apply" ]] && ! is.true "${PROXMOX_NETWORK_UPDATE_AUTO_APPLY}"; then
+    log.error "A matching pending update exists. Set PROXMOX_NETWORK_UPDATE_MODE=apply to resume non-interactively."
+    return 2
+  fi
+
+  NETWORK_RECOVERY_MODE=1
+  PROXMOX_NETWORK_UPDATE_MODE="apply"
+  log "Resuming the matching LXC DATA-Link update without reassigning or overwriting ${net_slot}."
+  return 0
+}
+
+rollback.network.update.plan() {
+  local guest_type guest_id guest_name net_slot pre_state pre_value desired_value current_value comparison status detail
+  local deleted=0 absent=0 conflicts=0 errors=0
+  log.warn "Rolling back NICs added by the failed network apply/verify stage."
+  printf 'guest_type\tguest_id\tguest_name\tnet_slot\tdesired_value\tactual_value\tstatus\tdetail\n' > "${NETWORK_ROLLBACK_PATH}"
+  if [[ ! -f "${NETWORK_TRANSACTION_PATH}" ]]; then
+    NETWORK_ROLLBACK_OUTCOME="missing-transaction"
+    log.error "Rollback journal is missing: ${NETWORK_TRANSACTION_PATH}"
+    return 1
+  fi
+
+  while IFS=$'\t' read -r guest_type guest_id guest_name net_slot pre_state pre_value desired_value; do
+    [[ "${guest_type}" != "guest_type" ]] || continue
+    current_value="$(guest.net.value "${guest_type}" "${guest_id}" "${net_slot}")"
+    status="already_absent"
+    detail="slot is already absent"
+    if [[ "${pre_state}" != "absent" ]]; then
+      status="conflict"
+      detail="transaction did not record an originally absent slot"
+      conflicts=$((conflicts + 1))
+    elif [[ -z "${current_value}" ]]; then
+      absent=$((absent + 1))
+    elif [[ "${guest_type}" == "lxc" ]]; then
+      if comparison="$(lxc.nic.semantic.compare "${desired_value}" "${current_value}" 2>&1)"; then
+        if pct set "${guest_id}" -delete "${net_slot}"; then
+          status="deleted"
+          detail="semantically matching feature-owned NIC was removed"
+          deleted=$((deleted + 1))
+        else
+          status="error"
+          detail="pct failed to delete the matching feature-owned NIC"
+          errors=$((errors + 1))
+        fi
+      else
+        status="conflict"
+        detail="live NIC differs from the transaction: ${comparison}"
+        conflicts=$((conflicts + 1))
+      fi
+    elif [[ "${guest_type}" == "vm" ]]; then
+      if [[ "${current_value}" == "${desired_value}" ]]; then
+        if qm set "${guest_id}" -delete "${net_slot}"; then
+          status="deleted"
+          detail="exactly matching feature-owned VM NIC was removed"
+          deleted=$((deleted + 1))
+        else
+          status="error"
+          detail="qm failed to delete the matching feature-owned NIC"
+          errors=$((errors + 1))
+        fi
+      else
+        status="conflict"
+        detail="live VM NIC differs from the transaction"
+        conflicts=$((conflicts + 1))
+      fi
+    else
+      status="error"
+      detail="unsupported guest type=${guest_type}"
+      errors=$((errors + 1))
+    fi
+    append.tsv.row "${NETWORK_ROLLBACK_PATH}" \
+      "${guest_type}" "${guest_id}" "${guest_name}" "${net_slot}" "${desired_value}" "${current_value:--}" "${status}" "${detail}"
+  done < "${NETWORK_TRANSACTION_PATH}"
+
+  if ((conflicts > 0 || errors > 0)); then
+    NETWORK_ROLLBACK_OUTCOME="incomplete:deleted=${deleted},absent=${absent},conflicts=${conflicts},errors=${errors}"
+    log.error "Rollback incomplete; see ${NETWORK_ROLLBACK_PATH}. ${NETWORK_ROLLBACK_OUTCOME}"
+    return 1
+  fi
+  NETWORK_ROLLBACK_OUTCOME="complete:deleted=${deleted},absent=${absent}"
+  log "Rollback completed safely. ${NETWORK_ROLLBACK_OUTCOME}"
+  return 0
+}
+
+record.network.failure.with.rollback() {
+  local phase="${1:-unknown}" detail="${2:-Network update failed.}"
+  if rollback.network.update.plan; then
+    write.network.update.status "failed" "${phase}" "${detail} Rollback completed safely."
+  else
+    write.network.update.status "failed" "${phase}" "${detail} Rollback is incomplete; inspect ${NETWORK_ROLLBACK_PATH}."
+  fi
 }
 
 lxc.runtime.data.ready() {
@@ -2507,46 +2719,66 @@ ensure.lxc.runtime.data.role() {
 }
 
 run.network.update.flow() {
-  local apply_requested=0 choice prev_interactive
+  local apply_requested=0 choice prev_interactive recovery_rc=0
 
   resolve.snapshot.dir
   load.snapshot.defaults
   require.snapshot.artifacts
   require.live.update.topology
-  load.update.candidates
-  collect.update.selection
-  require.live.update.topology
-  if ! probe.data.ip.conflict; then
-    write.network.update.status "failed" "initial-address-probe" "Duplicate-address validation failed before plan generation; no guest mutation was attempted."
-    return 1
-  fi
-  build.network.update.plan
-  if ! awk 'NR > 1 {found=1} END {exit(found ? 0 : 1)}' "${NETWORK_PLAN_PATH}" 2>/dev/null; then
-    log.warn "No actionable plan rows found. Update stage exiting without changes."
-    return 0
-  fi
-
-  write.network.intent.file
-  write.network.update.status "prepared" "plan" "Validated plan is ready for check mode."
-  log "Network update scope is limited to guest NIC config. Samba hardening stays in a separate script."
-
   ensure.network.ansible
   prepare.feature.files
+
+  if detect.pending.network.recovery; then
+    apply_requested=1
+  else
+    recovery_rc=$?
+    if [[ "${recovery_rc}" -ne 1 ]]; then
+      return 1
+    fi
+    load.update.candidates
+    collect.update.selection
+    require.live.update.topology
+    if ! probe.data.ip.conflict; then
+      write.network.update.status "failed" "initial-address-probe" "Duplicate-address validation failed before plan generation; no guest mutation was attempted."
+      return 1
+    fi
+    build.network.update.plan
+    if ! awk 'NR > 1 {found=1} END {exit(found ? 0 : 1)}' "${NETWORK_PLAN_PATH}" 2>/dev/null; then
+      log.warn "No actionable plan rows found. Update stage exiting without changes."
+      return 0
+    fi
+
+    write.network.intent.file
+    write.network.update.status "prepared" "plan" "Validated plan is ready for check mode."
+  fi
+  log "Network update scope is limited to guest NIC config. Samba hardening stays in a separate script."
 
   write.network.extra.vars.file "check"
   set.stage "check.export.preflight.facts"
   if ! run.feature.playbook "${NETWORK_EXPORT_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
-    write.network.update.status "failed" "check-export" "Preflight fact export failed; no guest mutation was attempted."
+    if [[ "${NETWORK_RECOVERY_MODE}" -eq 1 ]]; then
+      write.network.update.status "failed" "recovery-check-export" "Recovery preflight fact export failed; the existing matching NIC was preserved."
+    else
+      write.network.update.status "failed" "check-export" "Preflight fact export failed; no guest mutation was attempted."
+    fi
     return 1
   fi
   set.stage "check.preview.network.update"
   if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
-    write.network.update.status "failed" "check-preview" "Check-mode preview failed; no guest mutation was attempted."
+    if [[ "${NETWORK_RECOVERY_MODE}" -eq 1 ]]; then
+      write.network.update.status "failed" "recovery-check-preview" "Recovery semantic preview failed; the existing matching NIC was preserved."
+    else
+      write.network.update.status "failed" "check-preview" "Check-mode preview failed; no guest mutation was attempted."
+    fi
     return 1
   fi
-  write.network.update.status "checked" "check-preview" "Check-mode preview passed without guest mutation."
+  if [[ "${NETWORK_RECOVERY_MODE}" -eq 0 ]]; then
+    write.network.update.status "checked" "check-preview" "Check-mode preview passed without guest mutation."
+  fi
 
-  if [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]] || is.true "${PROXMOX_NETWORK_UPDATE_AUTO_APPLY}"; then
+  if [[ "${NETWORK_RECOVERY_MODE}" -eq 1 ]] \
+    || [[ "${PROXMOX_NETWORK_UPDATE_MODE}" == "apply" ]] \
+    || is.true "${PROXMOX_NETWORK_UPDATE_AUTO_APPLY}"; then
     apply_requested=1
   fi
 
@@ -2565,27 +2797,36 @@ run.network.update.flow() {
   fi
 
   require.live.update.topology
-  if ! probe.data.ip.conflict; then
-    write.network.update.status "failed" "pre-apply-address-probe" "Duplicate-address revalidation failed immediately before apply; no guest mutation was attempted."
-    return 1
+  if [[ "${NETWORK_RECOVERY_MODE}" -eq 1 ]]; then
+    log "Skipping duplicate-address reprobe because the matching selected LXC already owns ${PROXMOX_NETWORK_UPDATE_DATA_IPV4_CIDR}."
+    if ! write.network.transaction.journal recovery; then
+      write.network.update.status "failed" "recovery-journal" "Could not prove ownership of the existing DATA-Link NIC; no mutation was attempted."
+      return 1
+    fi
+  else
+    if ! probe.data.ip.conflict; then
+      write.network.update.status "failed" "pre-apply-address-probe" "Duplicate-address revalidation failed immediately before apply; no guest mutation was attempted."
+      return 1
+    fi
+    if ! write.network.transaction.journal new; then
+      write.network.update.status "failed" "pre-apply-journal" "A selected guest slot changed after preview; no guest mutation was attempted."
+      return 1
+    fi
+    write.network.update.status "applying" "apply" "Duplicate-address revalidation passed; transaction journaling passed; apply is starting."
   fi
-  write.network.update.status "applying" "apply" "Duplicate-address revalidation passed; apply is starting."
   write.network.extra.vars.file "apply"
   set.stage "apply.network.update"
   if ! run.feature.playbook "${NETWORK_UPDATE_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
-    rollback.network.update.plan
-    write.network.update.status "failed" "apply" "Apply failed and exact-value rollback was attempted."
+    record.network.failure.with.rollback "apply" "Apply failed."
     return 1
   fi
   set.stage "verify.network.update"
   if ! run.feature.playbook "${NETWORK_VERIFY_PLAYBOOK_PATH}" -e "@${NETWORK_EXTRA_VARS_PATH}"; then
-    rollback.network.update.plan
-    write.network.update.status "failed" "verify" "Verification failed and exact-value rollback was attempted."
+    record.network.failure.with.rollback "verify" "Semantic configuration verification failed."
     return 1
   fi
   if ! ensure.lxc.runtime.data.role; then
-    rollback.network.update.plan
-    write.network.update.status "failed" "runtime" "Runtime activation failed and exact-value rollback was attempted."
+    record.network.failure.with.rollback "runtime" "Runtime activation or route verification failed."
     return 1
   fi
 
@@ -2594,11 +2835,11 @@ run.network.update.flow() {
   FEATURE_INTERACTIVE=0
   if ! run.preflight; then
     FEATURE_INTERACTIVE="${prev_interactive}"
-    rollback.network.update.plan
-    write.network.update.status "failed" "post-apply-preflight" "Post-apply preflight failed and exact-value rollback was attempted."
+    record.network.failure.with.rollback "post-apply-preflight" "Post-apply preflight failed."
     return 1
   fi
   FEATURE_INTERACTIVE="${prev_interactive}"
+  NETWORK_ROLLBACK_OUTCOME="not-required"
   write.network.update.status "applied" "complete" "Apply, verification, runtime activation, and post-apply preflight passed."
 }
 

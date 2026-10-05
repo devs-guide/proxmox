@@ -106,3 +106,13 @@ block may authorize canonical repair, but it is never ignored on the generated
 candidate. Both parser-only and reload-plan checks use ifupdown2 no-action mode,
 and hosted fixtures execute the same production validation include with dirty,
 clean, zero-exit-warning, and nonzero failure cases.
+
+The LXC DATA-Link workflow applies the same production-parser rule to
+Proxmox comma-separated NIC definitions. Proxmox can reorder keys and add
+generated fields after mutation, so raw-string equality is not a valid
+verification or ownership test. One shipped helper defines semantic equality
+for update no-ops, verification, recovery, rollback, and fixtures. Tests may
+provide serialized inputs and expected statuses, but must not duplicate its
+CSV parser or normalize values with test-only regexes. Any feature whose
+external tool canonicalizes written state must similarly reuse its production
+reader in check, apply, verify, rollback, and CI paths.

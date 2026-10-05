@@ -23,7 +23,9 @@ files=(
   "tests/unit/ansible_runtime_policy_test.sh"
   "tests/unit/debian_lxc_template_policy_test.sh"
   "tests/unit/network_snapshot_policy_test.sh"
+  "tests/unit/network_lxc_nic_policy_test.sh"
   "tests/unit/network_update_playbook_policy_test.sh"
+  "tests/unit/network_update_transaction_policy_test.sh"
   "tests/unit/data_link_policy_test.sh"
   "tests/unit/data_link_ifreload_policy_test.sh"
   "tests/unit/ansible_regex_presence_policy_test.sh"
@@ -50,6 +52,7 @@ files=(
   "ansible/group_vars/proxmox.yml"
   "ansible/proxmox/helper/hardware.yml"
   "ansible/proxmox/helper/network.preflight.export.yml"
+  "ansible/proxmox/helper/network.lxc_nic.py"
   "ansible/proxmox/network.update.yml"
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
@@ -215,6 +218,11 @@ if ! grep -q '"proxmox/network.update.yml"' "${ROOT}/setup/network.sh"; then
 fi
 if ! grep -q '"proxmox/network.verify.yml"' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS is missing proxmox/network.verify.yml"
+  exit 1
+fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/network.sh" \
+  || ! grep -q '"proxmox/helper/network.lxc_nic.py"' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh is missing the canonical LXC NIC support parser"
   exit 1
 fi
 if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/network.sh"; then

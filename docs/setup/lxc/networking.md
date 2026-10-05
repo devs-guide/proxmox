@@ -132,6 +132,27 @@ container is restarted only when runtime evidence proves activation is
 incomplete and the operator authorizes the restart. Check mode records a
 would-change result without reporting or performing a guest mutation.
 
+Proxmox may reorder LXC NIC fields and add generated `type=veth` and `hwaddr`
+values after `pct set`. Update, verification, and rollback compare the parsed
+NIC meaning rather than raw field order. Required `name`, `bridge`,
+`firewall=1`, and static `ip` values must still match exactly; gateway, DHCP,
+VLAN, disabled-link, malformed, duplicate, and unexplained fields remain
+fatal.
+
+Before apply, the runner records the originally empty slot in
+`network.transaction.tsv`. Verification writes field-level evidence to
+`network.verify.tsv`, and any rollback writes its result to
+`network.rollback.tsv`. Rollback deletes only a semantically matching
+feature-owned NIC. A conflicting live NIC is preserved for operator review.
+
+If an earlier apply succeeded but verification failed on normalized field
+ordering, rerun preflight and update with the corrected runner. A matching
+pending NIC is presented as a recovery candidate and verified in place. The
+recovery does not repeat the ARP probe against its own assigned address. If
+the live slot differs from the saved plan, the runner stops without changing
+it; inspect `pct config <CTID>` and the three network TSV artifacts before
+making a manual correction.
+
 ## 6. Verify host and guest routes
 
 Replace `<CTID>` with the selected container ID:

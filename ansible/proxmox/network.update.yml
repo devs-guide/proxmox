@@ -62,6 +62,11 @@
                 true
               )
           }}
+        proxmox_network_lxc_nic_helper_path_effective: >-
+          {{
+            proxmox_network_lxc_nic_helper_path
+            | default(playbook_dir + '/helper/network.lxc_nic.py', true)
+          }}
 
     - name: Stat update intent file
       stat:
@@ -141,6 +146,18 @@
           - not proxmox_network_plan_stat.stat.isdir
         fail_msg: "Missing update plan TSV: {{ proxmox_network_plan_path_effective }}"
 
+    - name: Stat canonical LXC NIC parser
+      stat:
+        path: "{{ proxmox_network_lxc_nic_helper_path_effective }}"
+      register: proxmox_network_lxc_nic_helper_stat
+
+    - name: Require canonical LXC NIC parser
+      assert:
+        that:
+          - proxmox_network_lxc_nic_helper_stat.stat.exists
+          - not proxmox_network_lxc_nic_helper_stat.stat.isdir
+        fail_msg: "Missing canonical LXC NIC parser: {{ proxmox_network_lxc_nic_helper_path_effective }}"
+
   tasks:
     - name: Execute guest network update plan
       shell: |
@@ -153,7 +170,9 @@
         errors=0
         expected_egress_if="{{ proxmox_network_expected_guest_egress_if | default('') }}"
         expected_data_if="{{ proxmox_network_expected_guest_data_if | default('') }}"
+        expected_data_bridge="{{ proxmox_network_expected_data_bridge | default('') }}"
         expected_data_cidr="{{ proxmox_network_expected_data_ipv4_cidr | default('') }}"
+        lxc_nic_helper="{{ proxmox_network_lxc_nic_helper_path_effective }}"
 
         while IFS="${tab}" read -r guest_type guest_id guest_name net_slot desired_value reason; do
           [ "${guest_type}" = "guest_type" ] && continue
@@ -166,39 +185,28 @@
           if [ "${guest_type}" = "lxc" ]; then
             live_config="$(pct config "${guest_id}" 2>/dev/null || true)"
             current_value="$(printf '%s\n' "${live_config}" | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
-            case ",${desired_value}," in
-              *,gw=*|*,gw6=*|*,ip=dhcp,*|*,ip6=dhcp,*)
-                echo "ERROR\tunsafe_data_route\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
-                errors=$((errors + 1))
-                continue
-                ;;
-            esac
-            case ",${desired_value}," in
-              *,firewall=1,*) ;;
-              *) echo "ERROR\tdata_nic_firewall_disabled\tlxc\t${guest_id}\t${desired_value}"; errors=$((errors + 1)); continue ;;
-            esac
+            expected_value="name=${expected_data_if},bridge=${expected_data_bridge},firewall=1,ip=${expected_data_cidr}"
+            if ! desired_check="$(python3 "${lxc_nic_helper}" compare --expected "${expected_value}" --actual "${desired_value}" 2>&1)"; then
+              desired_status="${desired_check%%${tab}*}"
+              desired_detail="${desired_check#*${tab}}"
+              echo "ERROR\tinvalid_lxc_plan\tlxc\t${guest_id}\t${net_slot}\t${desired_status}\t${desired_detail}"
+              errors=$((errors + 1))
+              continue
+            fi
             if [ -z "${expected_egress_if}" ] \
-              || ! printf '%s\n' "${live_config}" | grep -Eq "^net[0-9]+: .*name=${expected_egress_if}(,|$)"; then
+              || ! printf '%s\n' "${live_config}" | python3 "${lxc_nic_helper}" config-has-name --name "${expected_egress_if}" >/dev/null; then
               echo "ERROR\tmissing_preserved_egress_role\tlxc\t${guest_id}\t${expected_egress_if}"
               errors=$((errors + 1))
               continue
             fi
-            if [ -n "${expected_data_if}" ] && [ -n "${expected_data_cidr}" ]; then
-              case ",${desired_value}," in
-                *,name=${expected_data_if},*|*,name=${expected_data_if}) ;;
-                *) echo "ERROR\tdata_interface_mismatch\tlxc\t${guest_id}\t${desired_value}"; errors=$((errors + 1)); continue ;;
-              esac
-              case ",${desired_value}," in
-                *,ip=${expected_data_cidr},*|*,ip=${expected_data_cidr}) ;;
-                *) echo "ERROR\tdata_cidr_mismatch\tlxc\t${guest_id}\t${desired_value}"; errors=$((errors + 1)); continue ;;
-              esac
-            fi
-            if [ "${current_value}" = "${desired_value}" ]; then
-              echo "NOOP\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${desired_value}"
-              continue
-            fi
             if [ -n "${current_value}" ]; then
-              echo "ERROR\trefuse_live_slot_overwrite\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${current_value}"
+              if current_check="$(python3 "${lxc_nic_helper}" compare --expected "${desired_value}" --actual "${current_value}" 2>&1)"; then
+                echo "NOOP\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${current_value}"
+                continue
+              fi
+              current_status="${current_check%%${tab}*}"
+              current_detail="${current_check#*${tab}}"
+              echo "ERROR\trefuse_live_slot_overwrite\tlxc\t${guest_id}\t${guest_name}\t${net_slot}\t${current_status}\t${current_detail}\t${current_value}"
               errors=$((errors + 1))
               continue
             fi
