@@ -1,0 +1,13 @@
+---
+# Canonical non-LXC Proxmox/debian baseline policy layer.
+# Kept separate from container LXC runners so project-level and parent-OS policy
+# does not implicitly bleed into setup/lxc flows.
+proxmox_common_baseline_users:
+  access:
+    default_users:
+      - name: "root"
+        password: "root"
+      - name: "proxmox"
+        password: "proxmox"
+      - name: "agent"
+        password: "agent"

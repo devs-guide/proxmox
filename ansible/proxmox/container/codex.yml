@@ -1,0 +1,88 @@
+---
+# Canonical LXC entrypoint for Codex in Proxmox containers.
+# Two-tier intent:
+# - project/proxmox baseline vs LXC-common baseline
+# - debian/proxmox implementation details delegated, not duplicated
+- name: "[proxmox:lxc]: codex runtime prerequisites"
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_lxc_codex_common_defaults: "{{ lookup('file', playbook_dir ~ '/common.yml') | from_yaml }}"
+    proxmox_lxc_codex_runtime_packages_effective: >-
+      {{
+        proxmox_lxc_codex_runtime_packages
+        | default(proxmox_lxc_codex_common_defaults.proxmox_lxc_codex_runtime_packages | default([]))
+      }}
+    proxmox_lxc_codex_runtime_binaries_effective: >-
+      {{
+        proxmox_lxc_codex_runtime_binaries
+        | default(proxmox_lxc_codex_common_defaults.proxmox_lxc_codex_runtime_binaries | default([]))
+      }}
+
+  tasks:
+    - name: Ensure LXC Codex runtime packages are installed
+      ansible.builtin.apt:
+        name: "{{ proxmox_lxc_codex_runtime_packages_effective }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      when:
+        - codex_mode | default('apply') | lower == 'apply'
+        - (proxmox_lxc_codex_runtime_packages_effective | length) > 0
+
+    - name: Check LXC Codex runtime binaries
+      ansible.builtin.shell: |
+        set -e
+        command -v {{ item.command }}
+      args:
+        executable: /bin/bash
+      loop: "{{ proxmox_lxc_codex_runtime_binaries_effective }}"
+      loop_control:
+        label: "{{ item.name | default(item.command) }}"
+      register: proxmox_lxc_codex_runtime_binary_results
+      changed_when: false
+      failed_when: false
+
+    - name: Report LXC Codex runtime preflight summary
+      ansible.builtin.debug:
+        msg:
+          runtime_packages: "{{ proxmox_lxc_codex_runtime_packages_effective }}"
+          runtime_binary_checks: >-
+            {{
+              proxmox_lxc_codex_runtime_binary_results.results
+              | default([])
+              | map(attribute='stdout')
+              | list
+            }}
+      when: codex_mode | default('apply') | lower == 'preflight'
+
+    - name: Assert LXC Codex runtime binaries are present
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+        fail_msg: >-
+          Missing required LXC Codex runtime binary {{ item.item.command }}.
+          Ensure the LXC Codex runtime package contract in ansible/proxmox/container/common.yml is applied.
+      loop: "{{ proxmox_lxc_codex_runtime_binary_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name | default(item.item.command) }}"
+      when:
+        - codex_mode | default('apply') | lower == 'apply'
+        - item.item.required | default(true) | bool
+
+- import_playbook: ../../debian/cli.codex.yml
+  vars:
+    proxmox_container_entrypoint: "lxc"
+    ansible_python_interpreter_managed: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    codex_enable: true
+    codex_mode: "{{ codex_mode | default('apply') }}"
+    codex_node_install_scope: "{{ codex_node_install_scope | default('shared') }}"
+    codex_node_shared_nvm_dir: "{{ codex_node_shared_nvm_dir | default('/usr/local/lib/nvm') }}"
+    codex_nvm_dir: "{{ codex_nvm_dir | default('') }}"
+    codex_version: "{{ codex_version | default('latest') }}"
+    codex_install_docs_mcp: "{{ codex_install_docs_mcp | default(true) | bool }}"
+    codex_runtime_facts_path: "{{ codex_runtime_facts_path | default('/etc/ansible/proxmox/facts/lxc.codex.yml') }}"

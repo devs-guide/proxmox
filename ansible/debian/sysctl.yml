@@ -1,0 +1,27 @@
+---
+- name: "[debian]: sysctl hardening"
+  hosts: all
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    sysctl_settings:
+      net.ipv4.conf.all.rp_filter: 1
+      net.ipv4.conf.default.rp_filter: 1
+      net.ipv4.tcp_syncookies: 1
+      net.ipv4.conf.all.log_martians: 1
+      net.ipv4.conf.default.log_martians: 1
+      net.ipv4.icmp_echo_ignore_broadcasts: 1
+
+  tasks:
+    - name: Write sysctl settings
+      copy:
+        dest: /etc/sysctl.d/99-hardening.conf
+        mode: "0644"
+        content: |
+          {% for key, val in sysctl_settings.items() %}
+          {{ key }} = {{ val }}
+          {% endfor %}
+
+    - name: Apply sysctl settings
+      command: sysctl -p /etc/sysctl.d/99-hardening.conf

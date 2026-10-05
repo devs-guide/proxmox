@@ -1,0 +1,73 @@
+---
+- name: "[dell]: install iDRAC CLI when Dell hardware is present"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    dell_vendor_patterns:
+      - "dell"
+      - "dell inc."
+      - "dell emc"
+
+  tasks:
+    - name: Read system vendor
+      command: cat /sys/class/dmi/id/sys_vendor
+      register: sys_vendor
+      changed_when: false
+      failed_when: false
+
+    - name: Read product name
+      command: cat /sys/class/dmi/id/product_name
+      register: product_name
+      changed_when: false
+      failed_when: false
+
+    - name: Detect Dell hardware
+      set_fact:
+        is_dell: "{{ dell_vendor_patterns | select('in', sys_vendor.stdout | default('') | lower) | list | length > 0 }}"
+        product_name: "{{ product_name.stdout | default('unknown') }}"
+
+    - name: Skip iDRAC tools on non-Dell hardware
+      debug:
+        msg: "Non-Dell hardware detected (vendor={{ sys_vendor.stdout | default('unknown') }}); skipping iDRAC tooling."
+      when: not is_dell
+
+    - name: Check ipmitool availability
+      command: command -v ipmitool
+      register: ipmitool_check
+      changed_when: false
+      failed_when: false
+      when: is_dell
+
+    - name: Probe iDRAC via ipmitool
+      command: ipmitool mc info
+      register: idrac_probe
+      changed_when: false
+      failed_when: false
+      when:
+        - is_dell
+        - ipmitool_check.rc == 0
+
+    - name: Install Dell iDRAC CLI (srvadmin-idracadm7) when available
+      apt:
+        name: srvadmin-idracadm7
+        state: present
+        update_cache: false
+      register: idrac_install
+      failed_when: false  # package may be missing unless Dell OMSA repo is configured
+      when:
+        - is_dell
+        - ipmitool_check.rc == 0
+        - idrac_probe.rc is not defined or idrac_probe.rc == 0
+
+    - name: Report iDRAC install result
+      debug:
+        msg: >-
+          srvadmin-idracadm7 install attempted (rc={{ idrac_install.rc | default('n/a') }});
+          add Dell OMSA repo if package is unavailable on Buster.
+      when:
+        - is_dell
+        - ipmitool_check.rc == 0
+        - idrac_probe.rc is not defined or idrac_probe.rc == 0
