@@ -115,6 +115,13 @@ grep -q 'remove_managed_rules' "${ROOT}/setup/lxc/egress.sh" || fail 'egress app
 grep -q 'preflight|apply|revoke' "${ROOT}/setup/lxc/egress.sh" || fail 'egress revoke mode is missing'
 grep -q '/lxc/${CTID}/firewall/rules' "${ROOT}/setup/firewall.sh" || fail 'Proxmox LXC boundary rule is missing'
 grep -q -- '--iface "${DATA_SLOT}"' "${ROOT}/setup/firewall.sh" || fail 'LXC SMB rule is not bound to the discovered PVE NIC slot'
+grep -q '^set -Eeuo pipefail$' "${ROOT}/setup/firewall.sh" || fail 'firewall ERR rollback is not inherited by main'
+grep -q 'CLUSTER_BACKUP_PATH=' "${ROOT}/setup/firewall.sh" || fail 'cluster firewall rollback backup is missing'
+grep -q 'pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --policy_out ACCEPT' "${ROOT}/setup/firewall.sh" \
+  || fail 'cluster firewall does not own host default policies'
+! grep -q '"/nodes/${node}/firewall/options".*policy_in' "${ROOT}/setup/firewall.sh" \
+  || fail 'unsupported node-level firewall policy options remain'
+grep -q -- '--dhcp "${ct_dhcp_required}"' "${ROOT}/setup/firewall.sh" || fail 'LXC DHCP preservation is missing'
 ok 'Samba, storage, and hardening contract'
 
 for published in setup/network-link.sh setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md docs/development/feature-authoring.md; do

@@ -570,6 +570,32 @@ check_published_samba_runner_policy() {
   fi
 }
 
+check_published_firewall_runner_policy() {
+  local published_runner="${TMPDIR}/setup/firewall.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/firewall.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'set -Eeuo pipefail' \
+    'CLUSTER_BACKUP_PATH=' \
+    'ct_dhcp_required' \
+    'pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --policy_out ACCEPT'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published firewall runner is stale or missing marker: ${needle}"
+      rc=1
+    fi
+  done
+  if grep -F '"/nodes/${node}/firewall/options"' "${published_runner}" | grep -q 'policy_in'; then
+    echo '[validate.pages][error] published firewall runner uses unsupported node-level policy options'
+    rc=1
+  fi
+}
+
 check_published_vlan_runtime_policy() {
   local published_runner="${TMPDIR}/setup.vlan.sh"
   local published_common="${TMPDIR}/release.common.sh"
@@ -1034,6 +1060,7 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_vlan_runtime_policy
   check_published_network_link_policy
   check_published_samba_runner_policy
+  check_published_firewall_runner_policy
   check_published_release91_bootstrap_policy
   check_published_ansible_runtime_policy
   check_published_users_policy

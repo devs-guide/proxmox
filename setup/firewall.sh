@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ## Restrict Proxmox host management ingress to its discovered local LAN.
 
-set -euo pipefail
+set -Eeuo pipefail
 log() { printf '[setup.firewall] %s\n' "$*" >&2; }
 
 APPLY_ACTIVE=0
@@ -11,6 +11,9 @@ HOST_FW_EXISTED=0
 CT_FW_PATH=""
 CT_BACKUP_PATH=""
 CT_FW_EXISTED=0
+CLUSTER_FW_PATH=""
+CLUSTER_BACKUP_PATH=""
+CLUSTER_FW_EXISTED=0
 CLUSTER_ENABLE_BEFORE=0
 
 rollback.apply() {
@@ -28,9 +31,15 @@ rollback.apply() {
       rm -f -- "${CT_FW_PATH}"
     fi
   fi
-  pvesh set /cluster/firewall/options --enable "${CLUSTER_ENABLE_BEFORE}" >/dev/null 2>&1
+  if [[ -n "${CLUSTER_FW_PATH}" ]]; then
+    if ((CLUSTER_FW_EXISTED == 1)); then
+      cp -- "${CLUSTER_BACKUP_PATH}" "${CLUSTER_FW_PATH}"
+    else
+      rm -f -- "${CLUSTER_FW_PATH}"
+    fi
+  fi
   APPLY_ACTIVE=0
-  log "Apply failed; restored host/LXC firewall files and cluster firewall enable=${CLUSTER_ENABLE_BEFORE}."
+  log "Apply failed; restored host, LXC, and cluster firewall files (previous cluster enable=${CLUSTER_ENABLE_BEFORE})."
 }
 
 die() {
@@ -74,7 +83,7 @@ PY
 main() {
   local node default_if mgmt_if mgmt_ip connected_cidr confirm existing_rules existing_cluster_rules findings comment
   local applied_rules node_options cluster_options existing_ct_rules ct_findings applied_ct_rules ct_options
-  local line slot body net_ip net_bridge selected_body data_network
+  local line slot body net_ip net_bridge selected_body data_network backup_stamp ct_dhcp_required
   local -a containers=() candidate_slots=()
   [[ "$(id -u)" -eq 0 ]] || die 'Run as root on the Proxmox host.'
   command -v pveversion >/dev/null 2>&1 || die 'pveversion was not found.'
@@ -129,7 +138,19 @@ if interface.version != 4 or interface.network.is_global:
     raise SystemExit(1)
 print(interface.network)
 PY
-)" || die "${DATA_SLOT} does not contain a non-global static IPv4/CIDR."
+  )" || die "${DATA_SLOT} does not contain a non-global static IPv4/CIDR."
+  ct_dhcp_required=0
+  if pct config "${CTID}" | awk -F': ' '
+    $1 ~ /^net[0-9]+$/ {
+      count = split($2, fields, ",")
+      for (i = 1; i <= count; i++) {
+        if (fields[i] == "ip=dhcp") found = 1
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  '; then
+    ct_dhcp_required=1
+  fi
 
   existing_rules="$(pvesh get "/nodes/${node}/firewall/rules" --output-format json)"
   existing_cluster_rules="$(pvesh get /cluster/firewall/rules --output-format json)"
@@ -181,7 +202,8 @@ for rule in json.loads(sys.argv[3]):
   fi
 
   HOST_FW_PATH="/etc/pve/nodes/${node}/host.fw"
-  BACKUP_PATH="/var/backups/ingest-firewall/${node}.host.fw.$(date -u +%Y%m%dT%H%M%SZ).bak"
+  backup_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  BACKUP_PATH="/var/backups/ingest-firewall/${node}.host.fw.${backup_stamp}.bak"
   mkdir -p "$(dirname "${BACKUP_PATH}")"
   if [[ -f "${HOST_FW_PATH}" ]]; then
     cp -- "${HOST_FW_PATH}" "${BACKUP_PATH}"
@@ -190,12 +212,20 @@ for rule in json.loads(sys.argv[3]):
     : > "${BACKUP_PATH}"
   fi
   CT_FW_PATH="/etc/pve/firewall/${CTID}.fw"
-  CT_BACKUP_PATH="/var/backups/ingest-firewall/${CTID}.fw.$(date -u +%Y%m%dT%H%M%SZ).bak"
+  CT_BACKUP_PATH="/var/backups/ingest-firewall/${CTID}.fw.${backup_stamp}.bak"
   if [[ -f "${CT_FW_PATH}" ]]; then
     cp -- "${CT_FW_PATH}" "${CT_BACKUP_PATH}"
     CT_FW_EXISTED=1
   else
     : > "${CT_BACKUP_PATH}"
+  fi
+  CLUSTER_FW_PATH="/etc/pve/firewall/cluster.fw"
+  CLUSTER_BACKUP_PATH="/var/backups/ingest-firewall/cluster.fw.${backup_stamp}.bak"
+  if [[ -f "${CLUSTER_FW_PATH}" ]]; then
+    cp -- "${CLUSTER_FW_PATH}" "${CLUSTER_BACKUP_PATH}"
+    CLUSTER_FW_EXISTED=1
+  else
+    : > "${CLUSTER_BACKUP_PATH}"
   fi
   CLUSTER_ENABLE_BEFORE="$(pvesh get /cluster/firewall/options --output-format json | python3 -c 'import json,sys; print(int(bool(json.load(sys.stdin).get("enable", 0))))')"
   APPLY_ACTIVE=1
@@ -241,9 +271,9 @@ raise SystemExit(0 if any(matches(rule) for rule in json.loads(sys.argv[4])) els
     pvesh create "/nodes/${node}/lxc/${CTID}/firewall/rules" --type in --action ACCEPT --enable 1 \
       --iface "${DATA_SLOT}" --source "${data_network}" --proto tcp --dport 445 --comment "${comment}"
   fi
-  pvesh set "/nodes/${node}/firewall/options" --enable 1 --policy_in DROP --policy_out ACCEPT
-  pvesh set "/nodes/${node}/lxc/${CTID}/firewall/options" --enable 1 --policy_in DROP --policy_out ACCEPT
-  pvesh set /cluster/firewall/options --enable 1
+  pvesh set "/nodes/${node}/firewall/options" --enable 1
+  pvesh set "/nodes/${node}/lxc/${CTID}/firewall/options" --enable 1 --dhcp "${ct_dhcp_required}" --policy_in DROP --policy_out ACCEPT
+  pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --policy_out ACCEPT
   applied_rules="$(pvesh get "/nodes/${node}/firewall/rules" --output-format json)"
   node_options="$(pvesh get "/nodes/${node}/firewall/options" --output-format json)"
   cluster_options="$(pvesh get /cluster/firewall/options --output-format json)"
@@ -269,15 +299,16 @@ for port in ("22", "8006"):
             break
     if not found:
         raise SystemExit("missing verified management rule for tcp/{}".format(port))
-if not node.get("enable") or str(node.get("policy_in", "")).upper() != "DROP":
-    raise SystemExit("node firewall policy verification failed")
-if not cluster.get("enable"):
-    raise SystemExit("cluster firewall enable verification failed")
+if not node.get("enable"):
+    raise SystemExit("node firewall enable verification failed")
+if (not cluster.get("enable") or str(cluster.get("policy_in", "")).upper() != "DROP"
+        or str(cluster.get("policy_out", "")).upper() != "ACCEPT"):
+    raise SystemExit("cluster firewall policy verification failed")
 ' "${MGMT_CIDR}" "${applied_rules}" "${node_options}" "${cluster_options}"
   python3 -c '
 import ipaddress, json, sys
 source, slot = ipaddress.ip_network(sys.argv[1], strict=False), sys.argv[2]
-rules, options = json.loads(sys.argv[3]), json.loads(sys.argv[4])
+rules, options, dhcp_required = json.loads(sys.argv[3]), json.loads(sys.argv[4]), bool(int(sys.argv[5]))
 def matches(rule):
     try:
         actual = ipaddress.ip_network(rule.get("source", ""), strict=False)
@@ -288,9 +319,12 @@ def matches(rule):
             and str(rule.get("dport")) == "445" and actual == source and rule.get("enable", 1))
 if not any(matches(rule) for rule in rules):
     raise SystemExit("LXC SMB boundary rule verification failed")
-if not options.get("enable") or str(options.get("policy_in", "")).upper() != "DROP":
+if (not options.get("enable") or str(options.get("policy_in", "")).upper() != "DROP"
+        or str(options.get("policy_out", "")).upper() != "ACCEPT"):
     raise SystemExit("LXC firewall policy verification failed")
-' "${data_network}" "${DATA_SLOT}" "${applied_ct_rules}" "${ct_options}"
+if bool(options.get("dhcp", 0)) != dhcp_required:
+    raise SystemExit("LXC DHCP firewall option verification failed")
+' "${data_network}" "${DATA_SLOT}" "${applied_ct_rules}" "${ct_options}" "${ct_dhcp_required}"
   if command -v proxmox-firewall >/dev/null 2>&1; then
     proxmox-firewall compile >/dev/null
   elif command -v pve-firewall >/dev/null 2>&1; then
@@ -298,7 +332,7 @@ if not options.get("enable") or str(options.get("policy_in", "")).upper() != "DR
   fi
   ss -lnt | grep -Eq ':22[[:space:]]|:8006[[:space:]]' || die 'Management listeners were not detected after policy apply.'
   APPLY_ACTIVE=0
-  log "Host and LXC firewall boundaries enabled; recovery backups: ${BACKUP_PATH}, ${CT_BACKUP_PATH}"
+  log "Host and LXC firewall boundaries enabled; recovery backups: ${BACKUP_PATH}, ${CT_BACKUP_PATH}, ${CLUSTER_BACKUP_PATH}"
 }
 
 main "$@"

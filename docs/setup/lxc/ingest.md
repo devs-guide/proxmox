@@ -95,7 +95,11 @@ fallback when the native interpreter is below the supported minimum.
    static no-gateway PVE NIC slot, enables that guest firewall boundary, and
    permits only its data CIDR to TCP 445. Apply requires
    `PROXMOX_FIREWALL_CONFIRM_OOB=YES` and refuses pre-existing broad host,
-   cluster, or LXC inbound ACCEPT rules:
+   cluster, or LXC inbound ACCEPT rules. Host default policy is set at the
+   cluster scope supported by the Proxmox API; node scope is enabled without
+   unsupported policy fields. When the LXC has a DHCP management NIC, the
+   guest firewall's DHCP option is enabled so lease renewal survives its
+   default-DROP inbound policy:
 
    ```bash
    wget -qO- https://devs-guide.github.io/proxmox/setup/firewall.sh | bash -s -- preflight
