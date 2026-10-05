@@ -874,7 +874,7 @@
                   credential_mode: {{ proxmox_samba_effective.auth.credential_mode | to_json }}
                   username: {{ proxmox_samba_effective.auth.username | to_json }}
                 share_count: {{ proxmox_samba_effective.shares.explicit | default([]) | length }}
-                shares: {{ proxmox_samba_effective.shares.explicit | to_nice_yaml(indent=2) | indent(4, true) }}
+                shares: {{ proxmox_samba_effective.shares.explicit | to_json }}
 
         - name: Report Samba apply summary
           debug:

@@ -984,6 +984,7 @@ check_published_samba_playbook_policy() {
     'Build effective Samba model' \
     'credential_mode in' \
     'credential_mode:' \
+    'shares: {{ proxmox_samba_effective.shares.explicit | to_json }}' \
     'Report effective Samba share count before smb.conf render' \
     'Assert guest browse lists selected shares when guest mode is enabled' \
     'guest account ='; do

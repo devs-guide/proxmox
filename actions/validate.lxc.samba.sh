@@ -109,6 +109,8 @@ grep -q 'Stop and mask legacy NetBIOS discovery' "${SAMBA}" || fail 'NetBIOS dae
 grep -q 'credential_mode.*hostname' "${GROUP_VARS}" || fail 'hostname credential mode is not the default'
 grep -q 'remove.samba.secret.file' "${ROOT}/setup/lxc/samba.sh" || fail 'temporary Samba secret cleanup is missing'
 grep -q 'custom username and password' "${ROOT}/setup/lxc/samba.sh" || fail 'custom Samba credential selection is missing'
+grep -Fq 'shares: {{ proxmox_samba_effective.shares.explicit | to_json }}' "${SAMBA}" \
+  || fail 'runtime Samba share facts are not serialized as unambiguous inline JSON'
 grep -q 'setup/lxc/storage.sh' "${SAMBA}" || fail 'mapped host ACL remediation is missing'
 grep -q 'pct exec.*setpriv' "${ROOT}/setup/lxc/storage.sh" || fail 'mapped identity container verification is missing'
 grep -q 'remove_managed_rules' "${ROOT}/setup/lxc/egress.sh" || fail 'egress approval reconciliation is missing'
