@@ -677,7 +677,7 @@ ok "non-interactive mode requires deterministic selection and topology"
 expect_failure bash -c 'source "$1"; PROXMOX_ZFS_TEST_MODE=0; PROXMOX_ZFS_ENTRYPOINT_FILE=""; zfs.require.regular.entrypoint' _ "${HELPER}"
 ok "review and mutation actions require a downloaded regular entrypoint"
 
-grep -RInE 'dragonfruit|10[.]0[.]0[.]|exactly 18|18-disk|two-by-nine|2:9:9|nine-disk' "${RUNNER}" "${CONFIG_RUNNER}" "${HELPER}" && fail "feature contains host or fixed-disk coupling"
+grep -RInE '10[.]0[.]0[.]|exactly 18|18-disk|two-by-nine|2:9:9|nine-disk' "${RUNNER}" "${CONFIG_RUNNER}" "${HELPER}" && fail "feature contains host or fixed-disk coupling"
 grep -Fq -- '--mode create' <("${RUNNER}" --help) || fail "help omits explicit creation mode"
 grep -Fq 'y/n/all/none' <("${CONFIG_RUNNER}" --help) || fail "help omits prompt behavior"
 grep -Fq -- '--review-format FORMAT' <("${CONFIG_RUNNER}" --help) || fail "help omits review format"

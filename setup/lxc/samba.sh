@@ -45,20 +45,30 @@ FEATURE_INTERACTIVE="${PROXMOX_SAMBA_INTERACTIVE:-1}"
 FEATURE_REQUIRE_CONTAINER="${PROXMOX_SAMBA_REQUIRE_CONTAINER:-1}"
 FEATURE_ALLOW_HOST="${PROXMOX_SAMBA_ALLOW_HOST:-0}"
 FEATURE_ASSUME_CONTAINER="${PROXMOX_SAMBA_ASSUME_CONTAINER:-0}"
-PROXMOX_SAMBA_ENABLE_UFW="${PROXMOX_SAMBA_ENABLE_UFW:-0}"
+PROXMOX_SAMBA_ENABLE_UFW="${PROXMOX_SAMBA_ENABLE_UFW:-1}"
 PROXMOX_SAMBA_ENABLE_SSH="${PROXMOX_SAMBA_ENABLE_SSH:-0}"
-PROXMOX_SAMBA_ENABLE_AVAHI="${PROXMOX_SAMBA_ENABLE_AVAHI:-1}"
+PROXMOX_SAMBA_ENABLE_AVAHI="${PROXMOX_SAMBA_ENABLE_AVAHI:-0}"
 PROXMOX_SAMBA_REQUIRE_XATTR="${PROXMOX_SAMBA_REQUIRE_XATTR:-0}"
 PROXMOX_SAMBA_WORKGROUP="${PROXMOX_SAMBA_WORKGROUP:-WORKGROUP}"
 PROXMOX_SAMBA_NETBIOS_NAME="${PROXMOX_SAMBA_NETBIOS_NAME:-}"
 PROXMOX_SAMBA_MAP_TO_GUEST="${PROXMOX_SAMBA_MAP_TO_GUEST:-Bad User}"
 PROXMOX_SAMBA_GUEST_ACCOUNT="${PROXMOX_SAMBA_GUEST_ACCOUNT:-nobody}"
-PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-root}"
-PROXMOX_SAMBA_FORCE_GROUP="${PROXMOX_SAMBA_FORCE_GROUP:-root}"
+PROXMOX_SAMBA_FORCE_USER="${PROXMOX_SAMBA_FORCE_USER:-smb-ingest}"
+PROXMOX_SAMBA_FORCE_GROUP="${PROXMOX_SAMBA_FORCE_GROUP:-smb-ingest}"
 PROXMOX_SAMBA_GUEST_MODE="${PROXMOX_SAMBA_GUEST_MODE:-1}"
 PROXMOX_SAMBA_PROFILE="${PROXMOX_SAMBA_PROFILE:-modern_mac}"
-PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-10.0.0.0/24 192.168.0.0/16}"
+PROXMOX_SAMBA_ALLOW_SUBNETS="${PROXMOX_SAMBA_ALLOW_SUBNETS:-}"
+PROXMOX_SAMBA_DATA_INTERFACE="${PROXMOX_SAMBA_DATA_INTERFACE:-}"
+PROXMOX_SAMBA_EGRESS_INTERFACE="${PROXMOX_SAMBA_EGRESS_INTERFACE:-}"
+PROXMOX_SAMBA_DNS_SERVERS="${PROXMOX_SAMBA_DNS_SERVERS:-}"
+PROXMOX_SAMBA_CREDENTIAL_MODE="${PROXMOX_SAMBA_CREDENTIAL_MODE:-}"
+PROXMOX_SAMBA_AUTH_USER="${PROXMOX_SAMBA_AUTH_USER:-}"
+PROXMOX_SAMBA_AUTH_PASSWORD="${PROXMOX_SAMBA_AUTH_PASSWORD:-}"
+# Backward-compatible alias for callers that opted into the earlier hidden
+# hostname-password switch. New callers should select credential_mode=hostname.
+PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD="${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD:-0}"
 PROXMOX_SAMBA_SHARE_PATHS="${PROXMOX_SAMBA_SHARE_PATHS:-}"
+PROXMOX_SAMBA_SHARE_NAME="${PROXMOX_SAMBA_SHARE_NAME:-}"
 PROXMOX_SAMBA_ALLOW_EMPTY_SHARES="${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES:-0}"
 # Two-tier baseline policy for this stack:
 # - Generic LXC common baseline: root, app, agent
@@ -85,6 +95,7 @@ declare -a MOUNT_SHARE_NAME=()
 declare -a SELECTED_SHARES=()
 declare -a ALLOW_SUBNET_LIST=()
 declare -a CONTAINER_IPV4=()
+declare -a CONTAINER_IFACES=()
 declare -a PARSED_SHARE_INDEXES=()
 
 CONTAINER_HOSTNAME=""
@@ -95,6 +106,25 @@ CONTAINER_CTNAME="${PROXMOX_CTNAME:-}"
 OPEN_TTY=0
 ALLOW_EMPTY_SHARES="false"
 SHARE_SELECTION_ERROR=""
+
+remove.samba.secret.file() {
+  if [[ -n "${SAMBA_EXTRA_VARS_PATH:-}" && -f "${SAMBA_EXTRA_VARS_PATH}" ]]; then
+    rm -f -- "${SAMBA_EXTRA_VARS_PATH}" || true
+  fi
+}
+
+cleanup.samba.secrets() {
+  local exit_code=$?
+  set +e
+  remove.samba.secret.file
+  PROXMOX_SAMBA_AUTH_PASSWORD=""
+  return "${exit_code}"
+}
+
+trap cleanup.samba.secrets EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 source.lxc.common() {
   local script_dir=""
@@ -176,6 +206,12 @@ collect.sudo.env.args() {
     "PROXMOX_SAMBA_GUEST_MODE=${PROXMOX_SAMBA_GUEST_MODE}"
     "PROXMOX_SAMBA_PROFILE=${PROXMOX_SAMBA_PROFILE}"
     "PROXMOX_SAMBA_ALLOW_SUBNETS=${PROXMOX_SAMBA_ALLOW_SUBNETS}"
+    "PROXMOX_SAMBA_DATA_INTERFACE=${PROXMOX_SAMBA_DATA_INTERFACE}"
+    "PROXMOX_SAMBA_EGRESS_INTERFACE=${PROXMOX_SAMBA_EGRESS_INTERFACE}"
+    "PROXMOX_SAMBA_DNS_SERVERS=${PROXMOX_SAMBA_DNS_SERVERS}"
+    "PROXMOX_SAMBA_CREDENTIAL_MODE=${PROXMOX_SAMBA_CREDENTIAL_MODE}"
+    "PROXMOX_SAMBA_AUTH_USER=${PROXMOX_SAMBA_AUTH_USER}"
+    "PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD=${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD}"
     "PROXMOX_SAMBA_SHARE_PATHS=${PROXMOX_SAMBA_SHARE_PATHS}"
     "PROXMOX_SAMBA_ALLOW_EMPTY_SHARES=${PROXMOX_SAMBA_ALLOW_EMPTY_SHARES}"
     "PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE=${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}"
@@ -252,6 +288,14 @@ prompt.tty() {
     answer="${default}"
   fi
   printf '%s\n' "${answer}"
+}
+
+prompt.secret.tty() {
+  local prompt="$1" answer=""
+  printf '%s: ' "${prompt}" >&3
+  read -r -s -u 3 answer || true
+  printf '\n' >&3
+  printf '%s' "${answer}"
 }
 
 menu.tty() {
@@ -366,6 +410,115 @@ detect.container.identity() {
   CONTAINER_HOSTNAME="$(hostname)"
   CONTAINER_DEFAULT_ROUTE="$(ip route show default 2>/dev/null | awk 'NR==1 {print $3 " dev " $5}')"
   mapfile -t CONTAINER_IPV4 < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $2 "=" $4}')
+  mapfile -t CONTAINER_IFACES < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $2}' | sort -u)
+  if [[ -z "${PROXMOX_SAMBA_EGRESS_INTERFACE}" ]]; then
+    PROXMOX_SAMBA_EGRESS_INTERFACE="$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')"
+  fi
+  if [[ -z "${PROXMOX_SAMBA_DNS_SERVERS}" ]]; then
+    PROXMOX_SAMBA_DNS_SERVERS="$(awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ {print $2}' /etc/resolv.conf 2>/dev/null | sort -u | paste -sd' ' -)"
+  fi
+}
+
+normalize.credential.mode() {
+  if [[ -z "${PROXMOX_SAMBA_CREDENTIAL_MODE}" ]]; then
+    if is.true "${PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD}"; then
+      PROXMOX_SAMBA_CREDENTIAL_MODE="hostname"
+    elif [[ -n "${PROXMOX_SAMBA_AUTH_USER}" || -n "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+      PROXMOX_SAMBA_CREDENTIAL_MODE="custom"
+    else
+      PROXMOX_SAMBA_CREDENTIAL_MODE="hostname"
+    fi
+  fi
+
+  case "${PROXMOX_SAMBA_CREDENTIAL_MODE}" in
+    hostname|custom) ;;
+    *)
+      log.error "Unsupported Samba credential mode: ${PROXMOX_SAMBA_CREDENTIAL_MODE}"
+      log.error "Use one of: hostname, custom"
+      exit 1
+      ;;
+  esac
+}
+
+select.samba.credentials() {
+  local credential_choice="" password_confirm=""
+
+  normalize.credential.mode
+
+  if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+    credential_choice="$(menu.tty \
+      'Authenticated SMB credential mode' \
+      "LXC hostname compatibility (${CONTAINER_HOSTNAME}/${CONTAINER_HOSTNAME})" \
+      'custom username and password')"
+    case "${credential_choice}" in
+      1) PROXMOX_SAMBA_CREDENTIAL_MODE="hostname" ;;
+      2) PROXMOX_SAMBA_CREDENTIAL_MODE="custom" ;;
+    esac
+  fi
+
+  case "${PROXMOX_SAMBA_CREDENTIAL_MODE}" in
+    hostname)
+      PROXMOX_SAMBA_AUTH_USER="${CONTAINER_HOSTNAME}"
+      PROXMOX_SAMBA_AUTH_PASSWORD=""
+      if [[ "${FEATURE_MODE}" == apply ]]; then
+        PROXMOX_SAMBA_AUTH_PASSWORD="${CONTAINER_HOSTNAME}"
+        log.warn "Using the LXC hostname as the compatibility Samba username and password; select custom mode to supply separate credentials."
+      fi
+      ;;
+    custom)
+      if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+        PROXMOX_SAMBA_AUTH_USER="$(prompt.tty 'Enter authenticated SMB username' "${PROXMOX_SAMBA_AUTH_USER}")"
+        if [[ "${FEATURE_MODE}" == apply && -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+          PROXMOX_SAMBA_AUTH_PASSWORD="$(prompt.secret.tty 'Enter authenticated SMB password')"
+          password_confirm="$(prompt.secret.tty 'Confirm authenticated SMB password')"
+          [[ "${PROXMOX_SAMBA_AUTH_PASSWORD}" == "${password_confirm}" ]] \
+            || { log.error 'SMB passwords did not match.'; exit 1; }
+        fi
+      fi
+      ;;
+  esac
+
+  [[ "${PROXMOX_SAMBA_AUTH_USER}" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] \
+    || { log.error 'Select a valid lowercase SMB username.'; exit 1; }
+  [[ "${PROXMOX_SAMBA_AUTH_USER}" != "${PROXMOX_SAMBA_FORCE_USER}" \
+    && "${PROXMOX_SAMBA_AUTH_USER}" != "${PROXMOX_SAMBA_GUEST_ACCOUNT}" ]] \
+    || { log.error 'The authenticated SMB user must differ from the force and guest identities.'; exit 1; }
+  if [[ "${FEATURE_MODE}" == apply && -z "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+    log.error 'Custom apply requires an interactively entered secret or PROXMOX_SAMBA_AUTH_PASSWORD.'
+    exit 1
+  fi
+}
+
+select.network.roles() {
+  local candidate="" candidate_count=0 selected="" data_cidr=""
+  if [[ -z "${PROXMOX_SAMBA_DATA_INTERFACE}" ]]; then
+    for candidate in "${CONTAINER_IFACES[@]}"; do
+      [[ "${candidate}" != "${PROXMOX_SAMBA_EGRESS_INTERFACE}" ]] || continue
+      selected="${candidate}"
+      candidate_count=$((candidate_count + 1))
+    done
+    if ((candidate_count == 1)); then
+      PROXMOX_SAMBA_DATA_INTERFACE="${selected}"
+    fi
+  fi
+
+  if is.true "${FEATURE_INTERACTIVE}" && open.tty; then
+    printf '\nDiscovered container network roles:\n' >&3
+    printf '  egress/default-route interface: %s\n' "${PROXMOX_SAMBA_EGRESS_INTERFACE:-none}" >&3
+    printf '  interfaces with global IPv4: %s\n' "${CONTAINER_IFACES[*]:-none}" >&3
+    PROXMOX_SAMBA_DATA_INTERFACE="$(prompt.tty "Enter SMB data interface" "${PROXMOX_SAMBA_DATA_INTERFACE}")"
+  fi
+
+  [[ -n "${PROXMOX_SAMBA_DATA_INTERFACE}" ]] || { log.error "A discovered/operator-selected SMB data interface is required."; exit 1; }
+  [[ "${PROXMOX_SAMBA_DATA_INTERFACE}" != "${PROXMOX_SAMBA_EGRESS_INTERFACE}" ]] || { log.error "SMB data and Internet egress interfaces must differ."; exit 1; }
+  ip link show dev "${PROXMOX_SAMBA_DATA_INTERFACE}" >/dev/null 2>&1 || { log.error "Data interface does not exist: ${PROXMOX_SAMBA_DATA_INTERFACE}"; exit 1; }
+
+  if [[ -z "${PROXMOX_SAMBA_ALLOW_SUBNETS}" ]]; then
+    data_cidr="$(ip -4 route show dev "${PROXMOX_SAMBA_DATA_INTERFACE}" proto kernel scope link 2>/dev/null | awk 'NR==1 {print $1}')"
+    PROXMOX_SAMBA_ALLOW_SUBNETS="${data_cidr}"
+  fi
+  [[ -n "${PROXMOX_SAMBA_ALLOW_SUBNETS}" ]] || { log.error "Could not discover the local SMB data CIDR."; exit 1; }
+  select.samba.credentials
 }
 
 write.container.facts() {
@@ -514,6 +667,34 @@ mount.share.name.by.path() {
     printf '%s\n' "${MOUNT_SHARE_NAME[$idx]}"
   else
     normalize.share.name "${path}"
+  fi
+}
+
+selected.share.name.by.path() {
+  local path="${1:-}"
+  if [[ -n "${PROXMOX_SAMBA_SHARE_NAME}" ]]; then
+    printf '%s\n' "${PROXMOX_SAMBA_SHARE_NAME}"
+  else
+    mount.share.name.by.path "${path}"
+  fi
+}
+
+select.published.share.name() {
+  local default_name requested_name
+  ((${#SELECTED_SHARES[@]} > 0)) || return 0
+
+  if [[ -n "${PROXMOX_SAMBA_SHARE_NAME}" && ${#SELECTED_SHARES[@]} -ne 1 ]]; then
+    log.error "PROXMOX_SAMBA_SHARE_NAME can be used only when exactly one share path is selected."
+    exit 1
+  fi
+
+  if ((${#SELECTED_SHARES[@]} == 1)); then
+    default_name="$(mount.share.name.by.path "${SELECTED_SHARES[0]}")"
+    if is.true "${FEATURE_INTERACTIVE}" && ((OPEN_TTY == 1)); then
+      requested_name="$(prompt.tty "Enter published SMB share name" "${PROXMOX_SAMBA_SHARE_NAME:-${default_name}}")"
+      PROXMOX_SAMBA_SHARE_NAME="${requested_name}"
+    fi
+    PROXMOX_SAMBA_SHARE_NAME="$(normalize.share.name "${PROXMOX_SAMBA_SHARE_NAME:-${default_name}}")"
   fi
 }
 
@@ -746,7 +927,7 @@ validate.selection() {
       log.warn "Selected share ${path} was probed as read=no. Guest browse may list it, but access may still fail until permissions are corrected."
     fi
     if [[ "${writable}" != "yes" ]]; then
-      log.warn "Selected share ${path} was probed as write=no. It will be published read-only."
+      log.warn "Selected share ${path} was probed as write=no for the runner identity. Apply will verify the mapped Samba service identity before publishing it."
     fi
     if [[ "${xattr}" != "yes" ]]; then
       log.warn "Selected share ${path} was probed as xattr=no. macOS metadata compatibility may be reduced."
@@ -770,6 +951,16 @@ proxmox_samba_operator_selection:
     allow_subnets:
 $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
     bind_interfaces_only: true
+    interfaces:
+      - "lo"
+      - $(yaml.quote "${PROXMOX_SAMBA_DATA_INTERFACE}")
+    data_interface: $(yaml.quote "${PROXMOX_SAMBA_DATA_INTERFACE}")
+    egress_interface: $(yaml.quote "${PROXMOX_SAMBA_EGRESS_INTERFACE}")
+    dns_servers:
+$(for server in ${PROXMOX_SAMBA_DNS_SERVERS}; do printf '      - %s\n' "$(yaml.quote "${server}")"; done)
+  auth:
+    credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
+    username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
 EOF
   if ((${#SELECTED_SHARES[@]} > 0)); then
     {
@@ -777,7 +968,7 @@ EOF
       for path in "${SELECTED_SHARES[@]}"; do
         printf '    - path: %s\n      name: %s\n      guest_ok: %s\n      writable: %s\n      readable: %s\n      xattr: %s\n' \
           "$(yaml.quote "${path}")" \
-          "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
+          "$(yaml.quote "$(selected.share.name.by.path "${path}")")" \
           "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
           "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
           "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
@@ -798,6 +989,9 @@ proxmox_samba_runtime:
   default_route: $(yaml.scalar.or.null "${CONTAINER_DEFAULT_ROUTE}")
   mode: $(yaml.quote "${FEATURE_MODE}")
   allow_empty_shares: $(bool.yaml "${ALLOW_EMPTY_SHARES}")
+  auth:
+    credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
+    username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
 EOF
   if ((${#SELECTED_SHARES[@]} > 0)); then
     {
@@ -825,6 +1019,8 @@ collect.operator.selection() {
       exit 1
     fi
   fi
+  select.published.share.name
+  select.network.roles
   normalize.allow.subnets
   validate.selection
   if ((${#SELECTED_SHARES[@]} > 0)); then
@@ -885,6 +1081,8 @@ run.feature.playbook() {
 
 write.samba.extra.vars.file() {
   mkdir -p "${TMP_DIR}"
+  remove.samba.secret.file
+  (umask 077; : > "${SAMBA_EXTRA_VARS_PATH}")
   cat > "${SAMBA_EXTRA_VARS_PATH}" <<EOF
 ---
 proxmox_feature_defaults:
@@ -907,6 +1105,13 @@ proxmox_samba:
   network:
     allow_subnets:
 $(for subnet in "${ALLOW_SUBNET_LIST[@]}"; do printf '      - %s\n' "$(yaml.quote "${subnet}")"; done)
+    interfaces:
+      - "lo"
+      - $(yaml.quote "${PROXMOX_SAMBA_DATA_INTERFACE}")
+    data_interface: $(yaml.quote "${PROXMOX_SAMBA_DATA_INTERFACE}")
+    egress_interface: $(yaml.quote "${PROXMOX_SAMBA_EGRESS_INTERFACE}")
+    dns_servers:
+$(for server in ${PROXMOX_SAMBA_DNS_SERVERS}; do printf '      - %s\n' "$(yaml.quote "${server}")"; done)
   ssh:
     enabled: $(bool.yaml "${PROXMOX_SAMBA_ENABLE_SSH}")
     allow_users:
@@ -926,6 +1131,25 @@ $(for user in ${PROXMOX_SAMBA_BASELINE_USERS}; do printf '      - %s\n' "$(yaml.
     force_user: $(yaml.scalar.or.null "${PROXMOX_SAMBA_FORCE_USER}")
     force_group: $(yaml.quote "${PROXMOX_SAMBA_FORCE_GROUP}")
     guest_mode: $(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")
+  auth:
+    credential_mode: $(yaml.quote "${PROXMOX_SAMBA_CREDENTIAL_MODE}")
+    username: $(yaml.quote "${PROXMOX_SAMBA_AUTH_USER}")
+    password: $(yaml.quote "${PROXMOX_SAMBA_AUTH_PASSWORD}")
+  shares:
+$(if ((${#SELECTED_SHARES[@]} > 0)); then
+  printf '    explicit:\n'
+  for path in "${SELECTED_SHARES[@]}"; do
+    printf '      - path: %s\n        name: %s\n        guest_ok: %s\n        writable: %s\n        readable: %s\n        xattr: %s\n' \
+      "$(yaml.quote "${path}")" \
+      "$(yaml.quote "$(selected.share.name.by.path "${path}")")" \
+      "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
+      "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
+      "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
+      "$(bool.yaml "$(mount.xattr.by.path "${path}")")"
+  done
+else
+  printf '    explicit: []\n'
+fi)
 proxmox_samba_access_users_runner:
 $(if ((${#PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]} > 0)); then
   for user in "${PROXMOX_SAMBA_ALLOW_USERS_SELECTED[@]}"; do
@@ -946,23 +1170,7 @@ else
 fi)
 proxmox_samba_access_users_override: $(bool.yaml "${PROXMOX_SAMBA_ALLOW_USERS_OVERRIDE}")
 EOF
-  if ((${#SELECTED_SHARES[@]} > 0)); then
-    {
-      printf '  shares:\n'
-      printf '    explicit:\n'
-      for path in "${SELECTED_SHARES[@]}"; do
-        printf '      - path: %s\n        name: %s\n        guest_ok: %s\n        writable: %s\n        readable: %s\n        xattr: %s\n' \
-          "$(yaml.quote "${path}")" \
-          "$(yaml.quote "$(mount.share.name.by.path "${path}")")" \
-          "$(bool.yaml "${PROXMOX_SAMBA_GUEST_MODE}")" \
-          "$(bool.yaml "$(mount.writable.by.path "${path}")")" \
-          "$(bool.yaml "$(mount.readable.by.path "${path}")")" \
-          "$(bool.yaml "$(mount.xattr.by.path "${path}")")"
-      done
-    } >> "${SAMBA_EXTRA_VARS_PATH}"
-  else
-    printf '  shares:\n    explicit: []\n' >> "${SAMBA_EXTRA_VARS_PATH}"
-  fi
+  chmod 0600 "${SAMBA_EXTRA_VARS_PATH}"
   log "Prepared Samba extra-vars: ${SAMBA_EXTRA_VARS_PATH}"
 }
 
@@ -980,7 +1188,12 @@ run.samba.feature() {
 }
 
 main() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 && -n "${PROXMOX_SAMBA_AUTH_PASSWORD}" ]]; then
+    log.error 'For secret-safe elevation, run this command as root instead of passing a password through sudo re-exec.'
+    exit 1
+  fi
   ensure.root.or.sudo.reexec "${SAMBA_SUDO_REEXEC}" "${SAMBA_SELF_URL}" "$@"
+  remove.samba.secret.file
   require.root
   require.apt
   require.valid.mode
@@ -991,4 +1204,6 @@ main() {
   run.samba.feature
 }
 
-main "$@"
+if ! is.true "${PROXMOX_SAMBA_SOURCE_ONLY:-0}"; then
+  main "$@"
+fi

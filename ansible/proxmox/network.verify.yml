@@ -1,5 +1,5 @@
 ---
-- name: "[proxmox]: verify applied guest high-speed data NIC plan"
+- name: "[proxmox]: verify applied guest local DATA-Link NIC plan"
   hosts: localhost
   connection: local
   become: true
@@ -8,9 +8,7 @@
   vars:
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     proxmox_feature_group_vars_path: "{{ playbook_dir }}/../group_vars/proxmox.yml"
-    proxmox_network_facts_dir: "/etc/ansible/proxmox/facts"
-    proxmox_network_plan_path: "{{ proxmox_network_plan_path | default(proxmox_network_facts_dir + '/network.plan.tsv') }}"
-    proxmox_network_verify_path: "{{ proxmox_network_verify_path | default(proxmox_network_facts_dir + '/network.verify.tsv') }}"
+    proxmox_network_facts_dir_default: "/etc/ansible/proxmox/facts"
 
   pre_tasks:
     - name: Load manual Proxmox feature defaults when available
@@ -18,9 +16,50 @@
         file: "{{ proxmox_feature_group_vars_path }}"
       ignore_errors: true
 
+    - name: Resolve effective network verification facts directory
+      set_fact:
+        proxmox_network_facts_dir_effective: >-
+          {{
+            proxmox_network_facts_dir
+            | default(
+                (proxmox_network | default({})).get('facts_dir', proxmox_network_facts_dir_default),
+                true
+              )
+          }}
+
+    - name: Resolve effective network verification artifact paths
+      set_fact:
+        proxmox_network_plan_path_effective: >-
+          {{
+            proxmox_network_plan_path
+            | default(
+                (proxmox_network | default({})).get(
+                  'plan_path',
+                  proxmox_network_facts_dir_effective + '/network.plan.tsv'
+                ),
+                true
+              )
+          }}
+        proxmox_network_verify_path_effective: >-
+          {{
+            proxmox_network_verify_path
+            | default(
+                (proxmox_network | default({})).get(
+                  'verify_path',
+                  proxmox_network_facts_dir_effective + '/network.verify.tsv'
+                ),
+                true
+              )
+          }}
+        proxmox_network_lxc_nic_helper_path_effective: >-
+          {{
+            proxmox_network_lxc_nic_helper_path
+            | default(playbook_dir + '/helper/network.lxc_nic.py', true)
+          }}
+
     - name: Stat update plan TSV
       stat:
-        path: "{{ proxmox_network_plan_path }}"
+        path: "{{ proxmox_network_plan_path_effective }}"
       register: proxmox_network_plan_stat
 
     - name: Assert update plan TSV exists for verification
@@ -28,39 +67,82 @@
         that:
           - proxmox_network_plan_stat.stat.exists
           - not proxmox_network_plan_stat.stat.isdir
-        fail_msg: "Missing update plan TSV for verification: {{ proxmox_network_plan_path }}"
+        fail_msg: "Missing update plan TSV for verification: {{ proxmox_network_plan_path_effective }}"
+
+    - name: Stat canonical LXC NIC parser
+      stat:
+        path: "{{ proxmox_network_lxc_nic_helper_path_effective }}"
+      register: proxmox_network_lxc_nic_helper_stat
+
+    - name: Require canonical LXC NIC parser
+      assert:
+        that:
+          - proxmox_network_lxc_nic_helper_stat.stat.exists
+          - not proxmox_network_lxc_nic_helper_stat.stat.isdir
+        fail_msg: "Missing canonical LXC NIC parser: {{ proxmox_network_lxc_nic_helper_path_effective }}"
 
   tasks:
     - name: Verify guest network plan was applied
       shell: |
         set -euo pipefail
-        plan="{{ proxmox_network_plan_path }}"
-        verify="{{ proxmox_network_verify_path }}"
+        plan="{{ proxmox_network_plan_path_effective }}"
+        verify="{{ proxmox_network_verify_path_effective }}"
         tab="$(printf '\t')"
         errors=0
+        expected_egress_if="{{ proxmox_network_expected_guest_egress_if | default('') }}"
+        expected_data_if="{{ proxmox_network_expected_guest_data_if | default('') }}"
+        expected_data_bridge="{{ proxmox_network_expected_data_bridge | default('') }}"
+        expected_data_cidr="{{ proxmox_network_expected_data_ipv4_cidr | default('') }}"
+        lxc_nic_helper="{{ proxmox_network_lxc_nic_helper_path_effective }}"
 
-        printf 'guest_type\tguest_id\tguest_name\tnet_slot\tdesired_value\tactual_value\tstatus\n' > "${verify}"
+        printf 'guest_type\tguest_id\tguest_name\tnet_slot\tdesired_value\tactual_value\tstatus\tdetail\n' > "${verify}"
 
         while IFS="${tab}" read -r guest_type guest_id guest_name net_slot desired_value reason; do
           [ "${guest_type}" = "guest_type" ] && continue
           actual_value=""
           status="ok"
+          detail="semantic configuration matches"
 
           if [ "${guest_type}" = "lxc" ]; then
-            actual_value="$(pct config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            live_config="$(pct config "${guest_id}" 2>/dev/null || true)"
+            actual_value="$(printf '%s\n' "${live_config}" | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            expected_value="name=${expected_data_if},bridge=${expected_data_bridge},firewall=1,ip=${expected_data_cidr}"
+            if ! desired_check="$(python3 "${lxc_nic_helper}" compare --expected "${expected_value}" --actual "${desired_value}" 2>&1)"; then
+              status="invalid_lxc_plan"
+              detail="${desired_check#*${tab}}"
+              errors=$((errors + 1))
+            fi
+            if [ "${status}" = "ok" ] && { [ -z "${expected_egress_if}" ] \
+              || ! printf '%s\n' "${live_config}" | python3 "${lxc_nic_helper}" config-has-name --name "${expected_egress_if}" >/dev/null; }; then
+              status="egress_role_missing"
+              detail="management interface name=${expected_egress_if:-missing} was not found"
+              errors=$((errors + 1))
+            fi
+            if [ "${status}" = "ok" ]; then
+              if comparison="$(python3 "${lxc_nic_helper}" compare --expected "${desired_value}" --actual "${actual_value}" 2>&1)"; then
+                detail="${comparison#*${tab}}"
+              else
+                status="${comparison%%${tab}*}"
+                detail="${comparison#*${tab}}"
+                errors=$((errors + 1))
+              fi
+            fi
           elif [ "${guest_type}" = "vm" ]; then
             actual_value="$(qm config "${guest_id}" 2>/dev/null | sed -n "s/^${net_slot}: //p" | head -n1 || true)"
+            if [ "${actual_value}" != "${desired_value}" ]; then
+              status="mismatch"
+              detail="VM NIC serialization differs from the plan"
+              errors=$((errors + 1))
+            fi
           else
             status="unsupported_guest_type"
-          fi
-
-          if [ "${status}" = "ok" ] && [ "${actual_value}" != "${desired_value}" ]; then
-            status="mismatch"
+            detail="unsupported guest type=${guest_type}"
             errors=$((errors + 1))
           fi
 
-          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "${guest_type}" "${guest_id}" "${guest_name}" "${net_slot}" "${desired_value}" "${actual_value}" "${status}" >> "${verify}"
+          detail="$(printf '%s' "${detail}" | tr '\t\r\n' '   ')"
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "${guest_type}" "${guest_id}" "${guest_name}" "${net_slot}" "${desired_value}" "${actual_value}" "${status}" "${detail}" >> "${verify}"
         done < "${plan}"
 
         echo "__ERRORS__=${errors}"
@@ -73,5 +155,5 @@
     - name: Show verify output path
       debug:
         msg:
-          - "Verification TSV: {{ proxmox_network_verify_path }}"
+          - "Verification TSV: {{ proxmox_network_verify_path_effective }}"
           - "{{ proxmox_network_verify_exec.stdout_lines | default([]) }}"

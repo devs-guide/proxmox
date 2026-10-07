@@ -62,6 +62,7 @@ FILES=(
   "release.common.sh:bootstrap/release.common.sh"
   "ansible.runtime.sh:bootstrap/ansible.runtime.sh"
   "setup.vlan.sh:setup/vlan.sh"
+  "setup/network-link.sh:setup/network-link.sh"
   "setup/network.sh:setup/network.sh"
   "setup.cli.codex.sh:setup/cli.codex.sh"
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
@@ -552,6 +553,10 @@ check_published_samba_runner_policy() {
     'Select shares: single `4`, range `1-5`, CSV `1,4,6`, mixed `1-4,7`, `ALL`, or `NONE`' \
     'PROXMOX_SAMBA_MAP_TO_GUEST' \
     'PROXMOX_SAMBA_GUEST_ACCOUNT' \
+    'PROXMOX_SAMBA_CREDENTIAL_MODE' \
+    'LXC hostname compatibility' \
+    'custom username and password' \
+    'trap cleanup.samba.secrets EXIT' \
     'writable: %s' \
     'ensurepip --version'; do
     if ! grep -q -- "${needle}" "${published_runner}" && ! grep -q -- "${needle}" "${TMPDIR}/release.common.sh"; then
@@ -561,6 +566,135 @@ check_published_samba_runner_policy() {
   done
   if grep -q 'ensure.managed.ansible' "${published_runner}"; then
     echo "[validate.pages][error] published setup/lxc/samba.sh still uses the heavy managed-target Ansible bootstrap path"
+    rc=1
+  fi
+}
+
+check_published_firewall_runner_policy() {
+  local published_runner="${TMPDIR}/setup/firewall.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/firewall.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'set -Eeuo pipefail' \
+    'CLUSTER_BACKUP_PATH=' \
+    'host.ufw.is.active' \
+    'ufw --force disable' \
+    'ufw --force enable' \
+    'restart.proxmox.firewall' \
+    'ct_dhcp_required' \
+    'pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --policy_out ACCEPT'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published firewall runner is stale or missing marker: ${needle}"
+      rc=1
+    fi
+  done
+  if grep -F '"/nodes/${node}/firewall/options"' "${published_runner}" | grep -q 'policy_in'; then
+    echo '[validate.pages][error] published firewall runner uses unsupported node-level policy options'
+    rc=1
+  fi
+}
+
+check_published_vlan_runtime_policy() {
+  local published_runner="${TMPDIR}/setup.vlan.sh"
+  local published_common="${TMPDIR}/release.common.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup.vlan.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'require.host.network.ready()' \
+    'ensure.managed.ansible' \
+    'ansible.runtime.run' \
+    'PROXMOX_VLAN_MIN_DATA_SPEED_MBPS' \
+    'nic.meets.minimum.speed()'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup.vlan.sh is missing canonical runtime marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  for needle in \
+    'MANAGED_TARGET_HANDOFF_MARKER' \
+    'Run the baseline bootstrap first' \
+    'PROXMOX_FEATURE_SKIP_BASELINE_CHECK'; do
+    if grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup.vlan.sh retains stale runtime blocker: ${needle}"
+      rc=1
+    fi
+  done
+  if grep -Eq '\[\[[^]]*MANAGED_TARGET_PYTHON_PATH' "${published_runner}"; then
+    echo "[validate.pages][error] published setup.vlan.sh gates execution on a provisional managed Python path"
+    rc=1
+  fi
+
+  if [[ ! -f "${published_common}" ]] \
+    || ! grep -Fq 'provisional fallback values only' "${published_common}"; then
+    echo "[validate.pages][error] published release.common.sh does not define managed Python defaults as provisional"
+    rc=1
+  fi
+}
+
+check_published_network_link_policy() {
+  local published_runner="${TMPDIR}/setup/network-link.sh"
+  local needle
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/network-link.sh was not fetched"
+    rc=1
+    return
+  fi
+  for needle in \
+    'administratively down. Bring up this DATA-Link now?' \
+    'no physical carrier was detected' \
+    'PROXMOX_NETWORK_LINK_MIN_SPEED_MBPS' \
+    'network-link.ready.yml'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published DATA-Link runner is missing marker: ${needle}"
+      rc=1
+    fi
+  done
+}
+
+check_published_host_network_runner_policy() {
+  local published_runner="${TMPDIR}/setup/network.sh"
+  local needle
+
+  if [[ ! -f "${published_runner}" ]]; then
+    echo "[validate.pages][error] published setup/network.sh was not fetched"
+    rc=1
+    return
+  fi
+
+  for needle in \
+    'tsv.data.row.count()' \
+    'network.snapshot.status.yml' \
+    'network.snapshot.ready' \
+    'latest-report' \
+    'latest-ready' \
+    'require.live.update.topology()' \
+    'PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS' \
+    'PROXMOX_NETWORK_SOURCE_ONLY'; do
+    if ! grep -Fq -- "${needle}" "${published_runner}"; then
+      echo "[validate.pages][error] published setup/network.sh is missing fail-closed marker: ${needle}"
+      rc=1
+    fi
+  done
+
+  if grep -Fq 'NR > 1 ? NR - 1 : 0' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/network.sh retains the non-portable awk row-count expression"
+    rc=1
+  fi
+  if grep -Eq '10[.]0[.]0[.](4|40)|18:66:da:73:19' "${published_runner}"; then
+    echo "[validate.pages][error] published setup/network.sh contains acceptance-host addresses"
     rc=1
   fi
 }
@@ -848,6 +982,9 @@ check_published_samba_playbook_policy() {
     'share_count:' \
     'Normalize Samba selection payload' \
     'Build effective Samba model' \
+    'credential_mode in' \
+    'credential_mode:' \
+    'shares: {{ proxmox_samba_effective.shares.explicit | to_json }}' \
     'Report effective Samba share count before smb.conf render' \
     'Assert guest browse lists selected shares when guest mode is enabled' \
     'guest account ='; do
@@ -925,7 +1062,10 @@ check_published_network_playbook_policy() {
 }
 
 if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
+  check_published_vlan_runtime_policy
+  check_published_network_link_policy
   check_published_samba_runner_policy
+  check_published_firewall_runner_policy
   check_published_release91_bootstrap_policy
   check_published_ansible_runtime_policy
   check_published_users_policy
@@ -933,6 +1073,7 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_debian_lxc_playbook_policy
   check_published_debian_base_bootstrap
   check_published_samba_playbook_policy
+  check_published_host_network_runner_policy
   check_published_network_runner_policy
   check_published_network_playbook_policy
   check_generated_file_artifacts

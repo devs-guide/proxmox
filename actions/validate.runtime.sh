@@ -14,14 +14,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 files=(
+  "AGENTS.md"
+  "docs/development/feature-authoring.md"
   "bootstrap/release.9.1.sh"
   "bootstrap/release.6.4.sh"
   "bootstrap/release.common.sh"
   "bootstrap/ansible.runtime.sh"
   "tests/unit/ansible_runtime_policy_test.sh"
   "tests/unit/debian_lxc_template_policy_test.sh"
+  "tests/unit/network_snapshot_policy_test.sh"
+  "tests/unit/network_lxc_nic_policy_test.sh"
+  "tests/unit/network_update_playbook_policy_test.sh"
+  "tests/unit/network_update_transaction_policy_test.sh"
+  "tests/unit/data_link_policy_test.sh"
+  "tests/unit/data_link_ifreload_policy_test.sh"
+  "tests/unit/ansible_regex_presence_policy_test.sh"
   "actions/validate.release.sh"
   "setup/vlan.sh"
+  "setup/network-link.sh"
   "setup/network.sh"
   "setup/cli.codex.sh"
   "setup/lxc/debian.sh"
@@ -42,9 +52,13 @@ files=(
   "ansible/group_vars/proxmox.yml"
   "ansible/proxmox/helper/hardware.yml"
   "ansible/proxmox/helper/network.preflight.export.yml"
+  "ansible/proxmox/helper/network.lxc_nic.py"
   "ansible/proxmox/network.update.yml"
   "ansible/proxmox/network.verify.yml"
   "ansible/proxmox/vlan.yml"
+  "ansible/proxmox/tasks/data-link.candidate.yml"
+  "ansible/proxmox/tasks/data-link.ifreload.validate.yml"
+  "ansible/proxmox/templates/data-link.interfaces.j2"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/common.yml"
   "ansible/proxmox/container/debian.lxc.yml"
@@ -171,6 +185,24 @@ if ! grep -q 'Selectable VM/LXC data NICs:' "${ROOT}/setup/vlan.sh"; then
 fi
 echo "[validate.runtime][ok] setup/vlan.sh uses generated YAML extra-vars and exposes the readable NIC UI"
 
+echo "[validate.runtime] checking physical DATA-Link runner contract..."
+for marker in \
+  'preflight|up' \
+  'administratively down. Bring up this DATA-Link now?' \
+  'no physical carrier was detected' \
+  'network-link.ready.yml' \
+  'PROXMOX_NETWORK_LINK_MIN_SPEED_MBPS'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/network-link.sh"; then
+    echo "[validate.runtime][error] setup/network-link.sh is missing marker: ${marker}"
+    exit 1
+  fi
+done
+if ! grep -Fq 'ensure.data.link.ready()' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh does not delegate physical activation to the DATA-Link runner"
+  exit 1
+fi
+echo "[validate.runtime][ok] DATA-Link activation distinguishes admin state from physical carrier"
+
 echo "[validate.runtime] checking Proxmox network runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh does not define FEATURE_PLAYBOOKS array"
@@ -186,6 +218,11 @@ if ! grep -q '"proxmox/network.update.yml"' "${ROOT}/setup/network.sh"; then
 fi
 if ! grep -q '"proxmox/network.verify.yml"' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh FEATURE_PLAYBOOKS is missing proxmox/network.verify.yml"
+  exit 1
+fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/network.sh" \
+  || ! grep -q '"proxmox/helper/network.lxc_nic.py"' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh is missing the canonical LXC NIC support parser"
   exit 1
 fi
 if ! grep -q '/etc/ansible/proxmox/facts' "${ROOT}/setup/network.sh"; then
@@ -204,7 +241,54 @@ if ! grep -q 'network.plan.tsv' "${ROOT}/setup/network.sh"; then
   echo "[validate.runtime][error] setup/network.sh must persist network.plan.tsv"
   exit 1
 fi
+for marker in \
+  'normalize.ipv4.interface.cidr()' \
+  'PROXMOX_NETWORK_DEFAULT_DATA_PREFIX' \
+  'network.update.status.yml' \
+  'proxmox_network_update_runtime_facts_path' \
+  'Duplicate-address revalidation passed'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/network.sh"; then
+    echo "[validate.runtime][error] setup/network.sh is missing update safety marker: ${marker}"
+    exit 1
+  fi
+done
+if ! grep -Fxq '      - iputils-arping' "${ROOT}/ansible/debian/packages.yml"; then
+  echo "[validate.runtime][error] Debian networking baseline is missing iputils-arping"
+  exit 1
+fi
 echo "[validate.runtime][ok] setup/network.sh exposes preflight/export/update/verify contract"
+
+if grep -Fq 'NR > 1 ? NR - 1 : 0' "${ROOT}/setup/network.sh"; then
+  echo "[validate.runtime][error] setup/network.sh retains the non-portable awk row-count expression"
+  exit 1
+fi
+for marker in \
+  'tsv.data.row.count()' \
+  'network.snapshot.status.yml' \
+  'network.snapshot.ready' \
+  'latest-ready' \
+  'require.live.update.topology()' \
+  'PROXMOX_NETWORK_MIN_DATA_SPEED_MBPS' \
+  'Data CIDR ${derived} overlaps management CIDR'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/network.sh"; then
+    echo "[validate.runtime][error] setup/network.sh is missing fail-closed marker: ${marker}"
+    exit 1
+  fi
+done
+for marker in \
+  'PROXMOX_VLAN_MIN_DATA_SPEED_MBPS' \
+  'nic.meets.minimum.speed()' \
+  'data LAN policy requires at least'; do
+  if ! grep -Fq -- "${marker}" "${ROOT}/setup/vlan.sh"; then
+    echo "[validate.runtime][error] setup/vlan.sh is missing dynamic gigabit data-NIC marker: ${marker}"
+    exit 1
+  fi
+done
+echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gigabit data topology"
+"${ROOT}/tests/unit/data_link_policy_test.sh"
+"${ROOT}/tests/unit/data_link_ifreload_policy_test.sh"
+"${ROOT}/tests/unit/ansible_regex_presence_policy_test.sh"
+"${ROOT}/tests/unit/network_update_playbook_policy_test.sh"
 
 echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
@@ -454,6 +538,14 @@ if ! grep -q 'write.samba.extra.vars.file()' "${ROOT}/setup/lxc/samba.sh"; then
 fi
 if ! grep -q -- '-e "@${SAMBA_EXTRA_VARS_PATH}"' "${ROOT}/setup/lxc/samba.sh"; then
   echo "[validate.runtime][error] setup/lxc/samba.sh must pass generated YAML extra-vars with -e @file"
+  exit 1
+fi
+if ! grep -q 'PROXMOX_SAMBA_CREDENTIAL_MODE=' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh is missing explicit hostname/custom credential mode selection"
+  exit 1
+fi
+if ! grep -q 'trap cleanup.samba.secrets EXIT' "${ROOT}/setup/lxc/samba.sh"; then
+  echo "[validate.runtime][error] setup/lxc/samba.sh does not remove its temporary secret-bearing extra-vars file"
   exit 1
 fi
 if ! grep -q 'This Samba feature must be run inside the NAS LXC container, not on the Proxmox host.' "${ROOT}/setup/lxc/samba.sh"; then
@@ -867,24 +959,52 @@ if grep -Eq '^[[:space:]]+bridge-fd[[:space:]]+0([[:space:]]|$)' "${ROOT}/ansibl
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must not generate bridge-fd 0"
   exit 1
 fi
-if ! grep -q 'proxmox_vlan_data_nic_iface_manual_exists' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must avoid duplicate selected data NIC iface stanzas"
+if ! grep -q 'Collect selected physical NIC IPv4 methods by interface tokens' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml" \
+  || ! grep -q 'proxmox_vlan_data_nic_emit_manual' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"; then
+  echo "[validate.runtime][error] canonical DATA-Link task must count and canonicalize selected data NIC IPv4 stanzas"
   exit 1
 fi
-if ! grep -q 'Baseline ifreload syntax check before VLAN write' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must run baseline ifreload syntax check before writing vmbr1"
+if ! grep -q 'tasks/data-link.candidate.yml' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must include the canonical DATA-Link candidate task"
+  exit 1
+fi
+if ! grep -q 'tasks/data-link.ifreload.validate.yml' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must include shared no-action ifreload validation"
+  exit 1
+fi
+if ! grep -q 'Parse complete DATA-Link candidate interface list' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must parse the complete candidate before mutation"
+  exit 1
+fi
+if ! grep -q 'FEATURE_SUPPORT_FILES=(' "${ROOT}/setup/vlan.sh" \
+  || ! grep -q 'proxmox/tasks/data-link.candidate.yml' "${ROOT}/setup/vlan.sh" \
+  || ! grep -q 'proxmox/tasks/data-link.ifreload.validate.yml' "${ROOT}/setup/vlan.sh" \
+  || ! grep -q 'proxmox/templates/data-link.interfaces.j2' "${ROOT}/setup/vlan.sh"; then
+  echo "[validate.runtime][error] setup/vlan.sh must fetch and publish the DATA-Link task includes and template"
+  exit 1
+fi
+if [[ "$(grep -Ec '^[[:space:]]+- -n$' "${ROOT}/ansible/proxmox/tasks/data-link.ifreload.validate.yml")" -ne 2 ]]; then
+  echo "[validate.runtime][error] both DATA-Link ifreload checks must use no-action mode"
+  exit 1
+fi
+if ! grep -q 'Search rendered candidate for a literal backslash-n escape' "${ROOT}/ansible/proxmox/tasks/data-link.candidate.yml"; then
+  echo "[validate.runtime][error] canonical DATA-Link task must reject literal newline escapes"
   exit 1
 fi
 if ! grep -q 'Report write mode completion (staged config only)' "${ROOT}/ansible/proxmox/vlan.yml"; then
   echo "[validate.runtime][error] ansible/proxmox/vlan.yml must report that write mode stages config without live apply"
   exit 1
 fi
-if ! grep -q 'Attempt runtime bridge attachment remediation when selected NIC is missing from selected bridge' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must attempt runtime attachment remediation when apply leaves the NIC detached"
+if ! grep -q 'proxmox_vlan_fatal_parser_warning_pattern' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must reject zero-exit structural parser warnings"
   exit 1
 fi
-if ! grep -q 'Assert selected data NIC is attached to selected bridge after apply/remediation' "${ROOT}/ansible/proxmox/vlan.yml"; then
-  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after apply/remediation"
+if grep -q 'ip link set dev.*master' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must not force runtime bridge attachment"
+  exit 1
+fi
+if ! grep -q 'Assert selected data NIC is attached after normal interface reload' "${ROOT}/ansible/proxmox/vlan.yml"; then
+  echo "[validate.runtime][error] ansible/proxmox/vlan.yml must verify NIC attachment after normal reload"
   exit 1
 fi
 if ! grep -q 'Capture selected bridge port list after apply' "${ROOT}/ansible/proxmox/vlan.yml"; then
@@ -948,11 +1068,25 @@ if ! grep -q 'catia' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
   echo "[validate.runtime][error] samba.file.share.yml must configure macOS vfs objects"
   exit 1
 fi
-if ! grep -q 'ufw allow from' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
-  echo "[validate.runtime][error] samba.file.share.yml must configure UFW subnet rules"
+if ! grep -q 'Set UFW default-deny ingress and egress policy' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'Allow SMB only from trusted subnets on the selected data interface' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must enforce interface-scoped, default-deny UFW policy"
   exit 1
 fi
-echo "[validate.runtime][ok] samba.file.share.yml includes container/Samba/SSH/firewall safeguards"
+if grep -q '_RO]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || grep -q '_RW]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'guest only = no' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'read only = yes' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'write list =' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must render one guest-read/authenticated-write share per mount"
+  exit 1
+fi
+if ! grep -q 'Stop and mask SSH for the console-only ingest appliance' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'Require SSH listener to be absent for console-only mode' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must stop SSH and verify that port 22 is absent"
+  exit 1
+fi
+echo "[validate.runtime][ok] samba.file.share.yml includes isolated Samba/SSH/firewall safeguards"
 
 echo "[validate.runtime] checking LXC network playbook safety contract..."
 if ! grep -q 'This LXC network feature must run inside a Debian LXC container, not on the Proxmox host.' "${ROOT}/ansible/proxmox/container/network.access.yml"; then
@@ -1327,6 +1461,47 @@ for runner in \
     exit 1
   fi
 done
+for runner in \
+  setup/vlan.sh \
+  setup/network.sh \
+  setup/cli.codex.sh \
+  setup/lxc/debian.sh \
+  setup/lxc/samba.sh \
+  setup/lxc/network.sh \
+  setup/lxc/codex.sh \
+  setup/lxc/users.sh; do
+  if grep -Fq 'MANAGED_TARGET_HANDOFF_MARKER' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} treats a managed Python handoff marker as a feature prerequisite"
+    exit 1
+  fi
+  if grep -Eq '\[\[[^]]*MANAGED_TARGET_PYTHON_PATH' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} directly gates execution on a provisional managed Python path"
+    exit 1
+  fi
+  if grep -Fq 'Run the baseline bootstrap first' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} retains a blanket baseline-bootstrap blocker"
+    exit 1
+  fi
+  if grep -Fq 'PROXMOX_FEATURE_SKIP_BASELINE_CHECK' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] ${runner} retains the obsolete baseline readiness bypass"
+    exit 1
+  fi
+done
+for runner in \
+  setup/firewall.sh \
+  setup/lxc/storage.sh \
+  setup/lxc/egress.sh; do
+  if grep -Eq 'source\.release\.common|ensure\.(managed|container)\.ansible|ansible\.runtime\.' "${ROOT}/${runner}"; then
+    echo "[validate.runtime][error] shell-only runner ${runner} unexpectedly depends on the Ansible/Python bootstrap"
+    exit 1
+  fi
+done
+if grep -Eq '(^|[^[:alnum:]_])lsb(_release)?([^[:alnum:]_]|$)' \
+  "${ROOT}/bootstrap/ansible.runtime.sh" \
+  "${ROOT}/bootstrap/release.common.sh"; then
+  echo "[validate.runtime][error] canonical runtime detection must use /etc/os-release and must not require LSB tooling"
+  exit 1
+fi
 if grep -Fq 'meta: end_play' "${ROOT}/ansible/debian/ansible.venv.yml"; then
   echo "[validate.runtime][error] ansible.venv.yml still terminates the caller play"
   exit 1
@@ -1339,6 +1514,7 @@ echo "[validate.runtime][ok] production runners use the canonical managed Ansibl
 echo "[validate.runtime] running platform/runtime policy matrix..."
 bash "${ROOT}/tests/unit/ansible_runtime_policy_test.sh"
 bash "${ROOT}/tests/unit/debian_lxc_template_policy_test.sh"
+bash "${ROOT}/tests/unit/network_snapshot_policy_test.sh"
 if ! bash -u -c '
   log() { :; }
   log.error() { :; }
@@ -1526,6 +1702,10 @@ if ! grep -q 'setup/network.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured network runner path"
   exit 1
 fi
+if ! grep -q 'setup/network-link.sh' "${ROOT}/actions/www.pages.sh"; then
+  echo "[validate.runtime][error] actions/www.pages.sh must publish the structured DATA-Link runner path"
+  exit 1
+fi
 if ! grep -q 'setup/lxc/debian.sh' "${ROOT}/actions/www.pages.sh"; then
   echo "[validate.runtime][error] actions/www.pages.sh must publish the structured Debian LXC runner path"
   exit 1
@@ -1557,6 +1737,7 @@ bash -n "${ROOT}/bootstrap/release.9.1.sh"
 bash -n "${ROOT}/bootstrap/release.common.sh"
 bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VERSION:?}" "${ANSIBLE_CORE_SPEC:?}" "${MANAGED_TARGET_PYTHON_HOME:?}" "${MANAGED_TARGET_PYTHON_PATH:?}"' _ "${ROOT}/bootstrap/release.common.sh"
 bash -n "${ROOT}/setup/vlan.sh"
+bash -n "${ROOT}/setup/network-link.sh"
 bash -n "${ROOT}/setup/network.sh"
 bash -n "${ROOT}/setup/cli.codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
