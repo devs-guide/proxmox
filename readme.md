@@ -2,10 +2,16 @@
 
 ## Current Release
 
-Release `0.0.6` adds reviewed general local ZFS provisioning to the managed
-Proxmox runtime, networking, LXC, and VM restore baseline released in `0.0.5`.
+Release `0.0.7` adds an isolated ZFS-backed Samba ingest workflow to the
+reviewed local ZFS provisioning delivered in `0.0.6`. It discovers and
+preserves the Proxmox management path, builds a separate physical DATA-Link,
+adds a static no-gateway LXC data interface, maps an accepted ZFS dataset into
+an unprivileged container, and publishes one guest-read/authenticated-write
+SMB3 share behind host and container firewall boundaries.
+
 The published Proxmox VE 6.4/Buster and Proxmox VE 9.1/Trixie lanes remain
-supported.
+supported. Site-specific interfaces, bridges, addresses, CTIDs, storage paths,
+share names, and credentials are discovered or confirmed rather than defaults.
 
 ```bash
 # Proxmox VE 6.4 / Debian Buster
@@ -21,9 +27,11 @@ passwords default to their account names (`app`, `agent`, `proxmox`, and
 the Proxmox no-subscription repository. Update these values for the target
 environment before treating the setup as final.
 
-See [the 0.0.6 release notes](RELEASE_NOTES.md) for the complete scope and
-acceptance evidence. ZFS-backed LXC/Samba delivery is planned for `0.0.7`,
-whole-GPU passthrough for `0.0.8`, and Local Model Inventory for `0.0.9`.
+See [the 0.0.7 release notes](RELEASE_NOTES.md),
+[deployment runbook](docs/setup/lxc/ingest.md), and
+[human acceptance record](docs/setup/lxc/human.acceptance.md) for the complete
+scope and evidence. Whole-GPU passthrough remains planned for `0.0.8`, Local
+Model Inventory for `0.0.9`, and proxy-backed egress is unnumbered future work.
 
 ## Release Publication
 

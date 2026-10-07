@@ -123,3 +123,26 @@ provide serialized inputs and expected statuses, but must not duplicate its
 CSV parser or normalize values with test-only regexes. Any feature whose
 external tool canonicalizes written state must similarly reuse its production
 reader in check, apply, verify, rollback, and CI paths.
+
+## Release reconciliation after remote acceptance
+
+Automation can leave accepted feature commits on a remote feature branch while
+another local checkout has moved to later work. Before reconstructing or
+rewriting anything, inspect the complete previous-tag-to-feature range, branch
+and worktree metadata, reflogs, hosted workflow provenance, and publication
+artifacts. Preserve the original commits when they contain the accepted
+runtime behavior.
+
+Record an issue ledger that ties each observed failure to its root cause,
+production fix, regression artifact, commit, and human acceptance state. The
+release acceptance document must remain machine-neutral: exact hostnames,
+addresses, interface names, CTIDs, storage names, accounts, credentials, and
+raw logs stay in private operator evidence. Hosted CI establishes source and
+publication provenance; it does not replace human verification of networking,
+storage, firewall, authentication, reboot persistence, or real data transfer.
+
+Do not silently expand the feature while reconciling it. If a documented
+future extension was not implemented, move it outside the release boundary
+instead of making the completed feature wait on an unrelated promise. Any
+actual missing runtime artifact requires a separately reviewed remediation and
+a new hosted acceptance candidate.

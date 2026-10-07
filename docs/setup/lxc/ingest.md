@@ -1,6 +1,6 @@
 # ZFS-backed Samba ingest deployment (feature 0.0.7)
 
-This is the operator runbook for the unreleased 0.0.7 feature. All site values
+This is the operator runbook for the 0.0.7 feature. All site values
 are discovered or confirmed; examples are not defaults. Run every `preflight`
 before its corresponding mutation and keep physical or out-of-band console
 access during host network/firewall changes.
@@ -66,10 +66,10 @@ fallback when the native interpreter is below the supported minimum.
    slot replacement, rejects subnet and broadcast addresses, probes the host
    address before preview and again immediately before apply, verifies the
    running guest after hot-apply, and asks before restarting only when runtime
-   evidence shows activation is pending. A bare host address such as
-   `10.10.0.4` becomes `10.10.0.4/24` by default and is displayed alongside
-   its derived `10.10.0.0/24` subnet. The baseline installs the required
-   `iputils-arping` package. A declined/failed restart rolls the new NIC back.
+   evidence shows activation is pending. A bare host address receives the
+   configured default prefix (`/24` unless overridden) and is displayed
+   alongside its derived subnet. The baseline installs the required
+   `iputils-arping` package. A declined or failed restart rolls the new NIC back.
    Non-interactive restart requires
    `PROXMOX_NETWORK_ALLOW_LXC_RESTART=1`.
 
@@ -155,6 +155,11 @@ chmod 0700 /root/setup.lxc.egress.sh
    is removed, temporary `app`/`agent` logins are locked, and NetBIOS/Avahi
    discovery remains off.
 
+   The managed configuration intentionally leaves `aio write behind` unset.
+   Samba's normal asynchronous I/O support remains available, but the server
+   does not acknowledge write-behind data before the backing filesystem has
+   accepted it.
+
 2. Add a static destination approval before a download, then remove it when
    the transfer window closes:
 
@@ -186,9 +191,14 @@ chmod 0700 /root/setup.lxc.egress.sh
 - Reboot the LXC and host, then repeat route, mount, ACL, Samba, firewall, and
   `zpool status` checks before release acceptance.
 
-## Proxy extension contract
+The generalized 0.0.7 acceptance record is
+[`human.acceptance.md`](human.acceptance.md). Keep exact hostnames, addresses,
+container IDs, credentials, and raw logs in the deployment's private evidence.
 
-The final 0.0.7 proxy extension will consume the same egress policy file and
-add exact-host/URL brokerage, redirect revalidation, checksums, size limits,
-approval expiry, and audit logs. It must not add another default route, expose
-Samba on the egress role, or weaken the current static IP/port enforcement.
+## Deferred proxy extension
+
+A future, separately versioned proxy extension may consume the same egress
+policy file and add exact-host/URL brokerage, redirect revalidation, checksums,
+size limits, approval expiry, and audit logs. It is not part of 0.0.7 and must
+not add another default route, expose Samba on the egress role, or weaken the
+current static IP/port enforcement.

@@ -8,4 +8,6 @@ setup/lxc/egress.sh|setup/lxc/egress.sh|feature
 docs/setup/lxc/samba.zfs.plan|docs/setup/lxc/samba.zfs.plan|feature
 docs/setup/lxc/ingest.md|docs/setup/lxc/ingest.md|feature
 docs/setup/lxc/networking.md|docs/setup/lxc/networking.md|feature
+docs/setup/lxc/human.acceptance.md|docs/setup/lxc/human.acceptance.md|feature
+docs/setup/lxc/0.0.7.change-ledger.tsv|docs/setup/lxc/0.0.7.change-ledger.tsv|feature
 docs/development/feature-authoring.md|docs/development/feature-authoring.md|feature

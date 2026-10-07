@@ -118,11 +118,11 @@ During selection:
 - configure no gateway on the data interface; and
 - keep the Proxmox firewall flag enabled.
 
-An address entered without a prefix, such as `10.10.0.4`, is normalized to
-`10.10.0.4/24` by default; the runner then derives and displays the containing
-subnet (`10.10.0.0/24`). Enter the assignable host address, not the subnet
-identifier or broadcast address. Set `PROXMOX_NETWORK_DEFAULT_DATA_PREFIX`
-when the local DATA-Link uses a prefix other than `/24`.
+An address entered without a prefix is normalized with `/24` by default; the
+runner then derives and displays its containing subnet. Enter an assignable
+host address, not the subnet identifier or broadcast address. Set
+`PROXMOX_NETWORK_DEFAULT_DATA_PREFIX` when the local DATA-Link uses another
+prefix.
 
 The baseline package set installs `iputils-arping`. Both preflight and update
 require `arping`; update probes the normalized host address before preview and
@@ -167,6 +167,11 @@ pct exec <CTID> -- ip route
 Acceptance requires exactly one guest default route through the management
 interface, one static no-gateway data interface, no host address on the data
 bridge, and unchanged Proxmox management access.
+
+After the storage, firewall, and Samba stages, reboot both the LXC and the
+Proxmox host and repeat these route checks together with mount, ACL, Samba,
+firewall, link-carrier, and ZFS-health checks. The generalized release
+acceptance matrix is recorded in [`human.acceptance.md`](human.acceptance.md).
 
 Do not run `setup/lxc/network.sh` for the pure Samba ingest role. That runner
 configures SSH-oriented access. The Samba runner binds TCP 445 to the selected

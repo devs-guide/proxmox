@@ -4,9 +4,10 @@ Release 0.0.7 is the complete LXC/Samba feature boundary. It composes the
 existing Debian LXC, host networking, ZFS, container networking, and Samba
 features around an already accepted host dataset. The release includes
 discovery-led untagged or VLAN-backed data networking, mapped dataset
-permissions, a hardened two-share Samba role, static-destination egress, and
-the later proxy-backed egress extension. Whole-GPU passthrough remains 0.0.8
-and Local Model Inventory remains 0.0.9.
+permissions, one hardened guest-read/authenticated-write Samba share, and
+revocable static-destination egress. Proxy-backed egress is future work and is
+not a 0.0.7 release gate. Whole-GPU passthrough remains 0.0.8 and Local Model
+Inventory remains 0.0.9.
 
 The feature must remain independent of hostname, IP address, interface name,
 bridge name, VLAN, CTID, pool, dataset, mountpoint, account, and subnet.
@@ -120,16 +121,18 @@ role, and local data traffic on the selected data role.
 
 ## Gate 4: Samba policy
 
-One selected dataset is exported through two shares:
+Each selected dataset is exported through one operator-named share:
 
-- guest read-only, forced to the mapped service identity;
-- authenticated read/write, restricted to the selected Samba account.
+- guests can list and read but cannot create, rename, or delete; and
+- the selected authenticated account gains write access through `write list`.
 
 The accepted policy uses SMB3, file mode 0660, directory mode 0770, and the
 `catia`, `fruit`, and `streams_xattr` VFS stack. It disables SMB1, printers,
 Avahi, WSDD, broad private-network allowances, world-write modes, and root
 forcing. `interfaces`, `hosts allow`, and firewall rules are derived from the
-reviewed data role and CIDRs.
+reviewed data role and CIDRs. The role does not enable `aio write behind`;
+normal Samba asynchronous I/O must not be confused with write-behind
+acknowledgement of data that has not reached the backing filesystem.
 
 The default compatibility policy derives the authenticated username and
 initial password from the discovered LXC hostname, with a prominent warning.
@@ -150,7 +153,7 @@ until an equivalent policy is supplied.
 
 Approved URL metadata is validated by a download helper, but static firewall
 enforcement remains IP/port based and redirects are refused. The final URL
-must be explicitly approved. The proxy-backed 0.0.7 extension will later
+must be explicitly approved. A future, separately reviewed proxy extension may
 provide hostname policy, exact-URL broker downloads, checksums, size limits,
 approval windows, and audit logs without changing the network role model.
 
@@ -164,8 +167,8 @@ container, or configuration drift.
 Every new runner, helper, playbook, schema, and support file is added to the
 Pages manifest and local/published dependency validation in the same change.
 Intermediate feature commits may publish to Pages for remote acceptance, but
-no official 0.0.7 tag is created until every gate, including proxy egress,
-passes review.
+no official 0.0.7 tag is created until the implemented static-egress feature
+boundary and its acceptance evidence pass review.
 
 ## Contract tests
 
@@ -180,7 +183,8 @@ Automated coverage includes:
 - untagged data NIC serialization with no tag or gateway;
 - duplicate-address rejection and hot-apply versus restart detection;
 - unprivileged UID/GID translation and resumable ACL application;
-- guest-read/authenticated-write rendering, SMB3, xattrs, and no root force;
+- single-share guest-read/authenticated-write rendering, SMB3, xattrs, no
+  write-behind acknowledgement, and no root force;
 - stopped/masked SSH and default-deny static egress;
 - idempotent reruns, rollback artifacts, reboot persistence, and complete
   Pages publication.
@@ -210,7 +214,7 @@ parsers through policy checks.
    reachable through an out-of-band console.
 4. Discover and confirm the LXC egress role, then add the no-gateway data role.
 5. Accept mapped storage permissions and xattrs without changing ownership.
-6. Apply the two-share Samba role and container firewall/hardening policy.
+6. Apply the single-share Samba role and container firewall/hardening policy.
 7. From a data-network client, prove guest read denial of writes,
    authenticated create/rename/delete/xattr, reconnect, and sustained transfer.
 8. Prove host SSH/web access is management-CIDR-only, LXC SSH is unavailable,
@@ -219,3 +223,8 @@ parsers through policy checks.
    and ZFS health checks.
 10. Preserve private plans, checksums, facts, rollback files, and acceptance
     evidence for release review.
+
+The machine-neutral release evidence for these gates is maintained in
+[`human.acceptance.md`](human.acceptance.md). Deployment-specific names,
+addresses, credentials, and complete host logs remain operator-owned evidence,
+not repository defaults.
