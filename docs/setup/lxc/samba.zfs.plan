@@ -6,8 +6,9 @@ features around an already accepted host dataset. The release includes
 discovery-led untagged or VLAN-backed data networking, mapped dataset
 permissions, one hardened guest-read/authenticated-write Samba share, and
 revocable static-destination egress. Proxy-backed egress is future work and is
-not a 0.0.7 release gate. Whole-GPU passthrough remains 0.0.8 and Local Model
-Inventory remains 0.0.9.
+not a 0.0.7 release gate. Restricted DATA-Link rsync is 0.0.8,
+whole-GPU passthrough remains planned for 0.0.9, and Local Model Inventory for
+0.0.10.
 
 The feature must remain independent of hostname, IP address, interface name,
 bridge name, VLAN, CTID, pool, dataset, mountpoint, account, and subnet.

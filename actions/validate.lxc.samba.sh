@@ -12,8 +12,12 @@ SHELL_FILES=(
   "${ROOT}/setup/firewall.sh"
   "${ROOT}/setup/lxc/debian.sh"
   "${ROOT}/setup/lxc/samba.sh"
+  "${ROOT}/setup/lxc/transfer.sh"
   "${ROOT}/setup/lxc/storage.sh"
   "${ROOT}/setup/lxc/egress.sh"
+  "${ROOT}/cli/ssh/peer.sh"
+  "${ROOT}/cli/rsync/tree.sh"
+  "${ROOT}/cli/network/speed.sh"
 )
 for path in "${SHELL_FILES[@]}"; do [[ -f "${path}" ]] || fail "missing ${path#${ROOT}/}"; done
 bash -n "${SHELL_FILES[@]}"
@@ -140,10 +144,12 @@ grep -q 'pvesh set /cluster/firewall/options --enable 1 --policy_in DROP --polic
 grep -q -- '--dhcp "${ct_dhcp_required}"' "${ROOT}/setup/firewall.sh" || fail 'LXC DHCP preservation is missing'
 ok 'Samba, storage, and hardening contract'
 
-for published in setup/network-link.sh setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md docs/development/feature-authoring.md; do
+for published in setup/network-link.sh setup/firewall.sh setup/lxc/storage.sh setup/lxc/egress.sh setup/lxc/transfer.sh docs/setup/lxc/ingest.md docs/setup/lxc/networking.md docs/development/feature-authoring.md; do
   grep -q "^${published}|${published}|feature$" "${ROOT}/actions/pages.features.txt" \
     || fail "Pages manifest omits ${published}"
 done
+grep -q '^docs/setup/lxc/transfer.md|docs/setup/lxc/transfer.md|plain$' "${ROOT}/actions/pages.features.txt" \
+  || fail 'Pages manifest omits restricted transfer documentation'
 ok 'Pages feature manifest'
 
 if command -v ansible-playbook >/dev/null 2>&1; then
@@ -153,7 +159,8 @@ if command -v ansible-playbook >/dev/null 2>&1; then
     ansible/proxmox/vlan.yml \
     ansible/proxmox/network.update.yml \
     ansible/proxmox/network.verify.yml \
-    ansible/proxmox/container/samba.file.share.yml; do
+    ansible/proxmox/container/samba.file.share.yml \
+    ansible/proxmox/container/rsync.peer.yml; do
     ansible-playbook --syntax-check -i localhost, "${ROOT}/${playbook}" >/dev/null
   done
   ok 'Ansible syntax'

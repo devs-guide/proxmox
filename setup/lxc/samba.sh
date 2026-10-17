@@ -26,6 +26,9 @@ GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
 FEATURE_PLAYBOOKS=(
   "proxmox/container/samba.file.share.yml"
 )
+FEATURE_SUPPORT_FILES=(
+  "proxmox/tasks/lxc.transfer.ufw.yml"
+)
 SAMBA_PLAYBOOK_REL="${FEATURE_PLAYBOOKS[0]}"
 SAMBA_PLAYBOOK_URL="${PAGES_BASE_URL}/ansible/${SAMBA_PLAYBOOK_REL}"
 SAMBA_PLAYBOOK_PATH="${PLAYBOOK_ROOT}/${SAMBA_PLAYBOOK_REL}"
@@ -1033,11 +1036,14 @@ collect.operator.selection() {
 }
 
 use.local.feature.files() {
-  local script_dir repo_root
+  local script_dir repo_root ref
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   repo_root="$(cd "${script_dir}/../.." && pwd)"
 
   if [[ -r "${repo_root}/ansible/${SAMBA_PLAYBOOK_REL}" && -r "${repo_root}/ansible/group_vars/${GROUP_VARS_FILE}" ]]; then
+    for ref in "${FEATURE_SUPPORT_FILES[@]}"; do
+      [[ -r "${repo_root}/ansible/${ref}" ]] || return 1
+    done
     PLAYBOOK_ROOT="${repo_root}/ansible"
     PLAYBOOK_GROUP_VARS_DIR="${PLAYBOOK_ROOT}/group_vars"
     GROUP_VARS_PATH="${PLAYBOOK_GROUP_VARS_DIR}/${GROUP_VARS_FILE}"
@@ -1065,12 +1071,16 @@ fetch.feature.file() {
 }
 
 prepare.feature.files() {
+  local ref
   if use.local.feature.files; then
     return
   fi
   mkdir -p "${PLAYBOOK_GROUP_VARS_DIR}"
   fetch.feature.file "${GROUP_VARS_URL}" "${GROUP_VARS_PATH}"
   fetch.feature.file "${SAMBA_PLAYBOOK_URL}" "${SAMBA_PLAYBOOK_PATH}"
+  for ref in "${FEATURE_SUPPORT_FILES[@]}"; do
+    fetch.feature.file "${PAGES_BASE_URL}/ansible/${ref}" "${PLAYBOOK_ROOT}/${ref}"
+  done
 }
 
 run.feature.playbook() {

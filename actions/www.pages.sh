@@ -19,6 +19,7 @@ SETUP_NETWORK_LINK_RUNNER="setup/network-link.sh"
 SETUP_NETWORK_RUNNER="setup/network.sh"
 SETUP_CLI_CODEX_RUNNER="setup/cli.codex.sh"
 SETUP_SAMBA_RUNNER="setup/lxc/samba.sh"
+SETUP_LXC_TRANSFER_RUNNER="setup/lxc/transfer.sh"
 SETUP_DEBIAN_LXC_RUNNER="setup/lxc/debian.sh"
 SETUP_LXC_NETWORK_RUNNER="setup/lxc/network.sh"
 SETUP_LXC_CODEX_RUNNER="setup/lxc/codex.sh"
@@ -527,6 +528,10 @@ publish.ansible() {
   add.pkg.refs_to_shared_playbooks "setup_samba" shared_playbooks
   add.pkg.refs_to_shared_playbooks "setup_samba_support" shared_playbooks
 
+  load.setup.runner.refs "${SETUP_LXC_TRANSFER_RUNNER}" "setup_lxc_transfer"
+  add.pkg.refs_to_shared_playbooks "setup_lxc_transfer" shared_playbooks
+  add.pkg.refs_to_shared_playbooks "setup_lxc_transfer_support" shared_playbooks
+
   load.setup.runner.refs "${SETUP_LXC_NETWORK_RUNNER}" "setup_lxc_network"
   add.pkg.refs_to_shared_playbooks "setup_lxc_network" shared_playbooks
   add.pkg.refs_to_shared_playbooks "setup_lxc_network_support" shared_playbooks
@@ -562,6 +567,8 @@ publish.ansible() {
   log.pkg.entries "setup_cli_codex_support" "setup cli codex support entries"
   log.pkg.entries "setup_samba" "setup samba entries"
   log.pkg.entries "setup_samba_support" "setup samba support entries"
+  log.pkg.entries "setup_lxc_transfer" "setup LXC transfer entries"
+  log.pkg.entries "setup_lxc_transfer_support" "setup LXC transfer support entries"
   log.pkg.entries "setup_lxc_network" "setup lxc network entries"
   log.pkg.entries "setup_lxc_network_support" "setup lxc network support entries"
   log.pkg.entries "setup_lxc_codex" "setup lxc codex entries"

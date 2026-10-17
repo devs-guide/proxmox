@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+fail() { printf '[lxc_transfer_policy_test][error] %s\n' "$*" >&2; exit 1; }
+ok() { printf '[lxc_transfer_policy_test][ok] %s\n' "$*"; }
+
+export PROXMOX_LXC_TRANSFER_SOURCE_ONLY=1
+# shellcheck source=setup/lxc/transfer.sh
+source "${ROOT}/setup/lxc/transfer.sh"
+
+[[ "$(normalize.network '10.23.45.9/24')" == '10.23.45.0/24' ]] \
+  || fail 'host-form CIDR was not canonicalized to the complete network'
+[[ "$(normalize.network '172.24.19.61/20')" == '172.24.16.0/20' ]] \
+  || fail 'non-/24 private CIDR was not canonicalized'
+! normalize.network '10.23.45.9/32' >/dev/null 2>&1 \
+  || fail 'peer-specific /32 policy was accepted'
+! normalize.network '8.8.8.0/24' >/dev/null 2>&1 \
+  || fail 'public network was accepted as an isolated DATA-Link'
+ok 'production full-CIDR normalization and rejection policy'
+
+parsed="$(normalize.interface '192.168.77.31/24')"
+[[ "$(printf '%s\n' "${parsed}" | sed -n '1p')" == '192.168.77.31/24' \
+  && "$(printf '%s\n' "${parsed}" | sed -n '2p')" == '192.168.77.31' \
+  && "$(printf '%s\n' "${parsed}" | sed -n '3p')" == '192.168.77.0/24' ]] \
+  || fail 'production interface parser returned the wrong address/network tuple'
+ok 'production interface parser'
+
+key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestFixtureOnlyNotASecret'
+expected="$(python3 - "${key}" <<'PY'
+import hashlib, sys
+print(hashlib.sha256(sys.argv[1].encode()).hexdigest())
+PY
+)"
+[[ "$(client.id "${key}")" == "${expected}" ]] || fail 'client registry identifier is not deterministic'
+ok 'deterministic public-key registry identifier'
+
+fixture_dir="$(mktemp -d)"
+trap 'rm -rf "${fixture_dir}"' EXIT
+FACTS_DIR="${fixture_dir}/facts"
+SELECTION_PATH="${FACTS_DIR}/selection.yml"
+DATA_INTERFACE='ens_fixture'
+LOCAL_CIDR='172.29.41.7/24'
+LOCAL_ADDRESS='172.29.41.7'
+ALLOW_CIDR='172.29.41.0/24'
+TRANSFER_ROOT='/fixture/storage root'
+ACCESS_GROUP='fixture_group'
+SERVICE_USER='fixture_transfer'
+PORT='2222'
+write.selection
+python3 - "${SELECTION_PATH}" <<'PY'
+import json, pathlib, sys
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())["proxmox_lxc_transfer_operator_selection"]
+expected = {
+    "confirmed": True, "data_interface": "ens_fixture", "local_cidr": "172.29.41.7/24",
+    "allow_cidr": "172.29.41.0/24", "transfer_root": "/fixture/storage root",
+    "access_group": "fixture_group", "service_user": "fixture_transfer", "port": 2222,
+    "iperf_port": 5201,
+}
+assert all(data[key] == value for key, value in expected.items())
+PY
+
+CONFIG_DIR="${fixture_dir}/config"
+BUNDLE_OUT="${fixture_dir}/bundle.json"
+mkdir -p "${CONFIG_DIR}"
+ssh-keygen -q -t ed25519 -N '' -C fixture-client -f "${CONFIG_DIR}/id_ed25519"
+ssh-keygen -q -t ed25519 -N '' -C fixture-host -f "${CONFIG_DIR}/ssh_host_ed25519_key"
+generate.bundle >/dev/null
+python3 - "${BUNDLE_OUT}" <<'PY'
+import ipaddress, json, pathlib, sys
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert data["schema_version"] == 1 and data["kind"] == "server-peer"
+assert ipaddress.ip_address(data["endpoint"]) in ipaddress.ip_network(data["allow_cidr"])
+assert data["port"] == 2222 and data["service_user"] == "fixture_transfer"
+assert data["client_public_key"].startswith("ssh-ed25519 ")
+assert data["server_host_public_key"].startswith("ssh-ed25519 ")
+assert "PRIVATE" not in pathlib.Path(sys.argv[1]).read_text()
+PY
+ok 'production selection and public pairing-bundle renderers'
+
+client_bundle="${fixture_dir}/client.json"
+python3 - "${client_bundle}" "${CONFIG_DIR}/id_ed25519.pub" <<'PY'
+import json, pathlib, sys
+fields = pathlib.Path(sys.argv[2]).read_text().split()
+data = {"schema_version": 1, "kind": "client", "allow_cidr": "172.29.41.0/24",
+        "service_user": "fixture_transfer", "client_public_key": " ".join(fields[:2])}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(data) + "\n")
+PY
+PEER_BUNDLE="${client_bundle}"
+parse.peer.bundle
+[[ "${#PEER_FIELDS[@]}" -eq 8 && "${PEER_FIELDS[0]}" == client && "${PEER_FIELDS[1]}" == - && "${PEER_FIELDS[6]}" == - ]] \
+  || fail 'client-only bundle did not preserve the production parser field contract'
+ok 'additional LAN client bundle parser'
+
+for forbidden in '10.10.0.4' '10.10.0.10' '10.10.0.100' '10.0.0.4' '10.0.0.172' dragonfruit; do
+  if grep -Fq -- "${forbidden}" \
+    "${ROOT}/setup/lxc/transfer.sh" \
+    "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
+    "${ROOT}/ansible/proxmox/tasks/lxc.transfer.ufw.yml" \
+    "${ROOT}/cli/ssh/peer.sh" \
+    "${ROOT}/cli/rsync/tree.sh" \
+    "${ROOT}/cli/network/speed.sh" \
+    "${ROOT}/RELEASE_NOTES.md" \
+    "${ROOT}/docs/release/0.0.8.md" \
+    "${ROOT}/docs/setup/lxc/transfer.md"; then
+    fail "site topology leaked into production feature or release source: ${forbidden}"
+  fi
+done
+ok 'production source remains topology-neutral'
+
+operation_dir="${fixture_dir}/operation"
+mkdir -p "${operation_dir}/bin" "${operation_dir}/storage/source" "${operation_dir}/storage/destination"
+printf 'fixture\n' > "${operation_dir}/storage/source/file.txt"
+python3 - "${operation_dir}/selection.json" "${operation_dir}/storage" <<'PY'
+import json, pathlib, sys
+path, root = sys.argv[1:]
+data = {"proxmox_lxc_transfer_operator_selection": {
+    "confirmed": True, "source": "setup/lxc/transfer.sh", "data_interface": "ens_fixture",
+    "local_cidr": "172.29.41.7/24", "allow_cidr": "172.29.41.0/24",
+    "transfer_root": root, "access_group": "fixture_group", "service_user": "fixture_transfer",
+    "port": 2222, "iperf_port": 5201,
+}}
+pathlib.Path(path).write_text(json.dumps(data) + "\n")
+PY
+cat > "${operation_dir}/bin/rsync" <<'SH'
+#!/bin/sh
+printf '%s\n' "$@" > "${PROXMOX_TEST_ARGUMENTS}"
+SH
+cat > "${operation_dir}/bin/ip" <<'SH'
+#!/bin/sh
+printf '1: ens_fixture    inet 172.29.41.7/24 scope global ens_fixture\n'
+SH
+cat > "${operation_dir}/bin/iperf3" <<'SH'
+#!/bin/sh
+printf '%s\n' "$@" > "${PROXMOX_TEST_ARGUMENTS}"
+SH
+cat > "${operation_dir}/bin/ssh" <<'SH'
+#!/bin/sh
+printf '%s\n' "$@" > "${PROXMOX_TEST_ARGUMENTS}"
+SH
+cat > "${operation_dir}/ssh-wrapper" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod 0755 "${operation_dir}/bin/rsync" "${operation_dir}/bin/ip" "${operation_dir}/bin/iperf3" \
+  "${operation_dir}/bin/ssh" "${operation_dir}/ssh-wrapper"
+printf 'fixture-host-key\n' > "${CONFIG_DIR}/known_hosts"
+
+PATH="${operation_dir}/bin:${PATH}" \
+PROXMOX_TEST_ARGUMENTS="${operation_dir}/ssh-check.args" \
+PROXMOX_LXC_TRANSFER_CONFIG_DIR="${CONFIG_DIR}" \
+PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+  "${ROOT}/cli/ssh/peer.sh" check 172.29.41.8
+grep -Fxq -- 'fixture_transfer@172.29.41.8' "${operation_dir}/ssh-check.args" \
+  || fail 'SSH check omitted the selected service user and operator-entered peer'
+grep -Fxq -- '2222' "${operation_dir}/ssh-check.args" \
+  || fail 'SSH check omitted the saved non-default port'
+grep -Fxq -- 'proxmox-transfer-check' "${operation_dir}/ssh-check.args" \
+  || fail 'SSH check omitted the fixed server handshake command'
+ok 'key-only pinned-host SSH pairing check'
+
+for action in push verify-push; do
+  arguments="${operation_dir}/${action}.args"
+  PATH="${operation_dir}/bin:${PATH}" \
+  PROXMOX_TEST_ARGUMENTS="${arguments}" \
+  PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+  PROXMOX_LXC_TRANSFER_SSH_WRAPPER="${operation_dir}/ssh-wrapper" \
+    "${ROOT}/cli/rsync/tree.sh" "${action}" "${operation_dir}/storage/source/" '172.29.41.8:chosen/destination/'
+  ! grep -Eq -- '--delete|--remove-source-files' "${arguments}" || fail "${action} emitted a destructive rsync option"
+done
+for action in pull verify-pull; do
+  arguments="${operation_dir}/${action}.args"
+  PATH="${operation_dir}/bin:${PATH}" \
+  PROXMOX_TEST_ARGUMENTS="${arguments}" \
+  PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+  PROXMOX_LXC_TRANSFER_SSH_WRAPPER="${operation_dir}/ssh-wrapper" \
+    "${ROOT}/cli/rsync/tree.sh" "${action}" '172.29.41.8:chosen/source/' "${operation_dir}/storage/destination/"
+  ! grep -Eq -- '--delete|--remove-source-files' "${arguments}" || fail "${action} emitted a destructive rsync option"
+done
+grep -Fxq -- '--partial' "${operation_dir}/push.args" || fail 'push did not retain restartable partial-copy behavior'
+grep -Fxq -- '--partial' "${operation_dir}/pull.args" || fail 'pull did not retain restartable partial-copy behavior'
+! grep -Fxq -- '--dry-run' "${operation_dir}/push.args" || fail 'push unexpectedly became a dry run'
+! grep -Fxq -- '--dry-run' "${operation_dir}/pull.args" || fail 'pull unexpectedly became a dry run'
+grep -Fxq -- '--dry-run' "${operation_dir}/verify-push.args" || fail 'verify-push is not a dry run'
+grep -Fxq -- '--checksum' "${operation_dir}/verify-push.args" || fail 'verify-push does not compare checksums'
+grep -Fxq -- '--dry-run' "${operation_dir}/verify-pull.args" || fail 'verify-pull is not a dry run'
+grep -Fxq -- '--checksum' "${operation_dir}/verify-pull.args" || fail 'verify-pull does not compare checksums'
+ok 'non-deleting push/pull and separately selected verification arguments'
+
+PATH="${operation_dir}/bin:${PATH}" \
+PROXMOX_TEST_ARGUMENTS="${operation_dir}/speed-server.args" \
+PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+  "${ROOT}/cli/network/speed.sh" server
+grep -Fxq -- '--one-off' "${operation_dir}/speed-server.args" || fail 'iperf3 server is not one-shot'
+grep -Fxq -- '172.29.41.7' "${operation_dir}/speed-server.args" || fail 'iperf3 server is not bound to the selected DATA address'
+
+PATH="${operation_dir}/bin:${PATH}" \
+PROXMOX_TEST_ARGUMENTS="${operation_dir}/speed-client.args" \
+PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+  "${ROOT}/cli/network/speed.sh" client 172.29.41.8
+grep -Fxq -- '172.29.41.8' "${operation_dir}/speed-client.args" || fail 'iperf3 client omitted the operator-entered peer'
+grep -Fxq -- '5201' "${operation_dir}/speed-client.args" || fail 'iperf3 client omitted TCP 5201'
+ok 'one-shot selected-address iperf3 server and selected-peer client'

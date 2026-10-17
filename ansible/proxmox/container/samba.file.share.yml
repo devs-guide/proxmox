@@ -13,6 +13,7 @@
     proxmox_samba_runtime_facts_path: "{{ proxmox_samba.runtime_facts_path | default(proxmox_feature_facts_dir ~ '/samba.yml') }}"
     proxmox_samba_mounts_tsv_path: "{{ proxmox_samba.mounts_tsv_path | default(proxmox_feature_facts_dir ~ '/samba.mounts.tsv') }}"
     proxmox_samba_selection_path: "{{ proxmox_samba.selection_path | default(proxmox_feature_facts_dir ~ '/samba.selection.yml') }}"
+    proxmox_lxc_transfer_runtime_path: "{{ proxmox_feature_facts_dir ~ '/lxc.transfer.yml' }}"
     proxmox_samba_defaults_safe:
       samba:
         enabled: false
@@ -165,6 +166,16 @@
         file: "{{ proxmox_samba_selection_path }}"
       when: proxmox_samba_selection_stat.stat.exists
 
+    - name: Stat the restricted LXC transfer runtime facts
+      stat:
+        path: "{{ proxmox_lxc_transfer_runtime_path }}"
+      register: proxmox_lxc_transfer_runtime_stat
+
+    - name: Load restricted LXC transfer runtime facts
+      include_vars:
+        file: "{{ proxmox_lxc_transfer_runtime_path }}"
+      when: proxmox_lxc_transfer_runtime_stat.stat.exists
+
   tasks:
     - name: Assert this host is Debian-family
       assert:
@@ -198,6 +209,11 @@
     - name: Normalize Samba selection payload
       set_fact:
         proxmox_samba_selection: "{{ proxmox_samba_operator_selection | default({}) }}"
+        proxmox_lxc_transfer_preserved: >-
+          {{
+            {'enabled': false}
+            | combine(proxmox_lxc_transfer_runtime | default({}), recursive=true)
+          }}
 
     - name: Build effective Samba model
       set_fact:
@@ -268,7 +284,7 @@
             )
             + (
               proxmox_samba_defaults_effective.optional_packages.ssh.packages
-              if proxmox_samba_effective.ssh.enabled | bool
+              if (proxmox_samba_effective.ssh.enabled | bool) or (proxmox_lxc_transfer_preserved.enabled | bool)
               else []
             )
             + (
@@ -639,6 +655,19 @@
           changed_when: true
           when: proxmox_samba_effective.firewall.enabled | bool
 
+        - name: Restore the active LAN-wide restricted transfer policy after UFW reset
+          include_tasks: ../tasks/lxc.transfer.ufw.yml
+          vars:
+            proxmox_lxc_transfer_ufw_enabled: true
+            proxmox_lxc_transfer_ufw_data_interface: "{{ proxmox_lxc_transfer_preserved.data_interface }}"
+            proxmox_lxc_transfer_ufw_local_address: "{{ proxmox_lxc_transfer_preserved.local_address }}"
+            proxmox_lxc_transfer_ufw_allow_cidr: "{{ proxmox_lxc_transfer_preserved.allow_cidr }}"
+            proxmox_lxc_transfer_ufw_port: "{{ proxmox_lxc_transfer_preserved.port }}"
+            proxmox_lxc_transfer_ufw_iperf_port: "{{ proxmox_lxc_transfer_preserved.iperf_port | default(5201) }}"
+          when:
+            - proxmox_samba_effective.firewall.enabled | bool
+            - proxmox_lxc_transfer_preserved.enabled | bool
+
         - name: Enable UFW
           command:
             argv:
@@ -689,7 +718,9 @@
             state: absent
             purge: true
             autoremove: false
-          when: not (proxmox_samba_effective.ssh.enabled | bool)
+          when:
+            - not (proxmox_samba_effective.ssh.enabled | bool)
+            - not (proxmox_lxc_transfer_preserved.enabled | bool)
 
         - name: Read local account inventory before ingest hardening
           getent:

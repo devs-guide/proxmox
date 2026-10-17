@@ -96,6 +96,7 @@ OOB_ACK="${PROXMOX_FIREWALL_CONFIRM_OOB:-}"
 INTERACTIVE="${PROXMOX_FIREWALL_INTERACTIVE:-1}"
 CTID="${PROXMOX_FIREWALL_CTID:-}"
 DATA_SLOT="${PROXMOX_FIREWALL_LXC_DATA_SLOT:-}"
+TRANSFER_ENABLED="${PROXMOX_FIREWALL_ENABLE_LXC_TRANSFER:-0}"
 OPEN_TTY=0
 
 is_true() { case "${1,,}" in 1|true|yes|y|on) return 0 ;; *) return 1 ;; esac; }
@@ -124,7 +125,8 @@ main() {
   local node default_if mgmt_if mgmt_ip connected_cidr confirm existing_rules existing_cluster_rules findings comment
   local applied_rules node_options cluster_options existing_ct_rules ct_findings applied_ct_rules ct_options
   local line slot body net_ip net_bridge selected_body data_network backup_stamp ct_dhcp_required ufw_state
-  local -a containers=() candidate_slots=()
+  local transfer_port transfer_comment
+  local -a containers=() candidate_slots=() transfer_positions=()
   [[ "$(id -u)" -eq 0 ]] || die 'Run as root on the Proxmox host.'
   command -v pveversion >/dev/null 2>&1 || die 'pveversion was not found.'
   command -v pvesh >/dev/null 2>&1 || die 'pvesh was not found.'
@@ -216,6 +218,10 @@ for scope, payload in (("node", sys.argv[2]), ("cluster", sys.argv[3])):
 import ipaddress, json, sys
 allowed = ipaddress.ip_network(sys.argv[1], strict=False)
 slot = sys.argv[2]
+expected_ports = {"445"}
+transfer_enabled = sys.argv[4].lower() in {"1", "true", "yes", "y", "on"}
+if transfer_enabled:
+    expected_ports.update({"22", "5201"})
 for rule in json.loads(sys.argv[3]):
     if not rule.get("enable", 1) or rule.get("type") != "in" or str(rule.get("action", "")).upper() != "ACCEPT":
         continue
@@ -223,13 +229,19 @@ for rule in json.loads(sys.argv[3]):
         source = ipaddress.ip_network(rule.get("source", ""), strict=False)
     except ValueError:
         source = None
-    exact = (source == allowed and rule.get("iface") == slot and rule.get("proto") == "tcp"
-             and str(rule.get("dport")) == "445")
+    exact_scope = source == allowed and rule.get("iface") == slot and rule.get("proto") == "tcp"
+    managed_disabled_transfer = (not transfer_enabled and exact_scope
+        and (str(rule.get("dport")), rule.get("comment")) in {
+            ("22", "Restricted DATA-Link rsync SSH tcp/22"),
+            ("5201", "On-demand DATA-Link iperf3 tcp/5201"),
+        })
+    exact = exact_scope and str(rule.get("dport")) in expected_ports
+    exact = exact or managed_disabled_transfer
     if not exact:
         print("position={} iface={} source={} proto={} dport={} comment={}".format(
             rule.get("pos", "?"), rule.get("iface", "ANY"), rule.get("source", "ANY"),
             rule.get("proto", "ANY"), rule.get("dport", "ANY"), rule.get("comment", "")))
-' "${data_network}" "${DATA_SLOT}" "${existing_ct_rules}")"
+' "${data_network}" "${DATA_SLOT}" "${existing_ct_rules}" "${TRANSFER_ENABLED}")"
 
   ufw_state="not installed"
   if command -v ufw >/dev/null 2>&1; then
@@ -240,10 +252,11 @@ for rule in json.loads(sys.argv[3]):
     fi
   fi
 
-  printf '\nProxmox firewall plan:\n  node: %s\n  management interface: %s\n  host IP: %s\n  host allowed source: %s\n  host inbound ports: 22, 8006\n  LXC/data slot: %s/%s\n  LXC SMB source: %s -> tcp/445\n  input/output policy: DROP/ACCEPT\n  legacy host UFW: %s\n' \
-    "${node}" "${mgmt_if}" "${mgmt_ip}" "${MGMT_CIDR}" "${CTID}" "${DATA_SLOT}" "${data_network}" "${ufw_state}" >&2
+  printf '\nProxmox firewall plan:\n  node: %s\n  management interface: %s\n  host IP: %s\n  host allowed source: %s\n  host inbound ports: 22, 8006\n  LXC/data slot: %s/%s\n  LXC SMB source: %s -> tcp/445\n  LXC restricted transfer services: %s\n  input/output policy: DROP/ACCEPT\n  legacy host UFW: %s\n' \
+    "${node}" "${mgmt_if}" "${mgmt_ip}" "${MGMT_CIDR}" "${CTID}" "${DATA_SLOT}" "${data_network}" \
+    "$(if is_true "${TRANSFER_ENABLED}"; then printf '%s -> tcp/22, tcp/5201' "${data_network}"; else printf 'disabled (apply removes exact feature-owned rules)'; fi)" "${ufw_state}" >&2
   [[ -z "${findings}" ]] || { printf '  conflicting broad ACCEPT rules:\n%s\n' "${findings}" >&2; [[ "${MODE}" != apply ]] || die 'Remove or narrow conflicting inbound ACCEPT rules before apply.'; }
-  [[ -z "${ct_findings}" ]] || { printf '  conflicting LXC inbound ACCEPT rules:\n%s\n' "${ct_findings}" >&2; [[ "${MODE}" != apply ]] || die 'Remove non-SMB LXC inbound ACCEPT rules before apply.'; }
+  [[ -z "${ct_findings}" ]] || { printf '  conflicting LXC inbound ACCEPT rules:\n%s\n' "${ct_findings}" >&2; [[ "${MODE}" != apply ]] || die 'Remove LXC inbound ACCEPT rules outside the selected SMB/transfer policy before apply.'; }
   [[ "${MODE}" == apply ]] || { log 'Preflight complete; no firewall change made.'; return; }
   [[ "${OOB_ACK}" == YES ]] || die 'Apply requires PROXMOX_FIREWALL_CONFIRM_OOB=YES.'
   if is_true "${INTERACTIVE}" && ((OPEN_TTY == 1)); then
@@ -301,6 +314,32 @@ raise SystemExit(0 if any(matches(rule) for rule in json.load(sys.stdin)) else 1
         --source "${MGMT_CIDR}" --proto tcp --dport "${port}" --comment "${comment}"
     fi
   done
+  if ! is_true "${TRANSFER_ENABLED}"; then
+    mapfile -t transfer_positions < <(python3 -c '
+import ipaddress, json, sys
+source, slot = ipaddress.ip_network(sys.argv[1], strict=False), sys.argv[2]
+positions = []
+for rule in json.loads(sys.argv[3]):
+    try:
+        actual = ipaddress.ip_network(rule.get("source", ""), strict=False)
+    except ValueError:
+        continue
+    if ((rule.get("comment"), str(rule.get("dport"))) in {
+                ("Restricted DATA-Link rsync SSH tcp/22", "22"),
+                ("On-demand DATA-Link iperf3 tcp/5201", "5201"),
+            }
+            and rule.get("type") == "in" and str(rule.get("action", "")).upper() == "ACCEPT"
+            and rule.get("iface") == slot and rule.get("proto") == "tcp"
+            and actual == source):
+        positions.append(int(rule["pos"]))
+print("\n".join(str(value) for value in sorted(positions, reverse=True)))
+' "${data_network}" "${DATA_SLOT}" "${existing_ct_rules}")
+    for position in "${transfer_positions[@]:-}"; do
+      [[ "${position}" =~ ^[0-9]+$ ]] || continue
+      pvesh delete "/nodes/${node}/lxc/${CTID}/firewall/rules/${position}"
+    done
+    existing_ct_rules="$(pvesh get "/nodes/${node}/lxc/${CTID}/firewall/rules" --output-format json)"
+  fi
   comment="Samba ingest tcp/445"
   if ! python3 -c '
 import ipaddress, json, sys
@@ -319,6 +358,33 @@ raise SystemExit(0 if any(matches(rule) for rule in json.loads(sys.argv[4])) els
   then
     pvesh create "/nodes/${node}/lxc/${CTID}/firewall/rules" --type in --action ACCEPT --enable 1 \
       --iface "${DATA_SLOT}" --source "${data_network}" --proto tcp --dport 445 --comment "${comment}"
+  fi
+  if is_true "${TRANSFER_ENABLED}"; then
+    for transfer_port in 22 5201; do
+      if [[ "${transfer_port}" == 22 ]]; then
+        transfer_comment="Restricted DATA-Link rsync SSH tcp/22"
+      else
+        transfer_comment="On-demand DATA-Link iperf3 tcp/5201"
+      fi
+      if ! python3 -c '
+import ipaddress, json, sys
+source, slot, port = ipaddress.ip_network(sys.argv[1], strict=False), sys.argv[2], sys.argv[3]
+def matches(rule):
+    try:
+        actual = ipaddress.ip_network(rule.get("source", ""), strict=False)
+    except ValueError:
+        return False
+    return (rule.get("type") == "in"
+            and str(rule.get("action", "")).upper() == "ACCEPT" and rule.get("iface") == slot
+            and rule.get("proto") == "tcp" and str(rule.get("dport")) == port
+            and actual == source and rule.get("enable", 1))
+raise SystemExit(0 if any(matches(rule) for rule in json.loads(sys.argv[4])) else 1)
+' "${data_network}" "${DATA_SLOT}" "${transfer_port}" "${existing_ct_rules}"
+      then
+        pvesh create "/nodes/${node}/lxc/${CTID}/firewall/rules" --type in --action ACCEPT --enable 1 \
+          --iface "${DATA_SLOT}" --source "${data_network}" --proto tcp --dport "${transfer_port}" --comment "${transfer_comment}"
+      fi
+    done
   fi
   pvesh set "/nodes/${node}/firewall/options" --enable 1
   pvesh set "/nodes/${node}/lxc/${CTID}/firewall/options" --enable 1 --dhcp "${ct_dhcp_required}" --policy_in DROP --policy_out ACCEPT
@@ -358,22 +424,26 @@ if (not cluster.get("enable") or str(cluster.get("policy_in", "")).upper() != "D
 import ipaddress, json, sys
 source, slot = ipaddress.ip_network(sys.argv[1], strict=False), sys.argv[2]
 rules, options, dhcp_required = json.loads(sys.argv[3]), json.loads(sys.argv[4]), bool(int(sys.argv[5]))
-def matches(rule):
+required_ports = {"445"}
+if sys.argv[6].lower() in {"1", "true", "yes", "y", "on"}:
+    required_ports.update({"22", "5201"})
+def matches(rule, port):
     try:
         actual = ipaddress.ip_network(rule.get("source", ""), strict=False)
     except ValueError:
         return False
     return (rule.get("type") == "in" and str(rule.get("action", "")).upper() == "ACCEPT"
             and rule.get("iface") == slot and rule.get("proto") == "tcp"
-            and str(rule.get("dport")) == "445" and actual == source and rule.get("enable", 1))
-if not any(matches(rule) for rule in rules):
-    raise SystemExit("LXC SMB boundary rule verification failed")
+            and str(rule.get("dport")) == port and actual == source and rule.get("enable", 1))
+for port in required_ports:
+    if not any(matches(rule, port) for rule in rules):
+        raise SystemExit("LXC boundary rule verification failed for tcp/{}".format(port))
 if (not options.get("enable") or str(options.get("policy_in", "")).upper() != "DROP"
         or str(options.get("policy_out", "")).upper() != "ACCEPT"):
     raise SystemExit("LXC firewall policy verification failed")
 if bool(options.get("dhcp", 0)) != dhcp_required:
     raise SystemExit("LXC DHCP firewall option verification failed")
-' "${data_network}" "${DATA_SLOT}" "${applied_ct_rules}" "${ct_options}" "${ct_dhcp_required}"
+' "${data_network}" "${DATA_SLOT}" "${applied_ct_rules}" "${ct_options}" "${ct_dhcp_required}" "${TRANSFER_ENABLED}"
   if ((UFW_ACTIVE_BEFORE == 1)); then
     UFW_DISABLED_BY_APPLY=1
     ufw --force disable >/dev/null

@@ -1,0 +1,156 @@
+# Restricted LXC rsync and bandwidth testing on the DATA-Link
+
+Release 0.0.8 pairs operator-selected Debian LXCs for key-only rsync and an
+on-demand `iperf3` test on an existing isolated data network. It does not
+contain a site map or assign source and destination roles. Addresses,
+interfaces, CTIDs, storage roots, peers, and copy paths are discovered or
+entered by the operator.
+
+The selected directly connected IPv4 network is the firewall boundary. TCP 22
+and TCP 5201 are admitted on the selected DATA interface for that complete
+CIDR, not for hard-coded peers. SSH still requires an enrolled Ed25519 key,
+and TCP 5201 has no listener until an operator starts the one-shot speed test.
+
+The SSH service forces the distro `rrsync` command into the selected transfer
+root. It does not provide a shell, password login, PTY, forwarding, tunneling,
+or administrative SSH. Use the Proxmox LXC console for administration.
+
+## 1. Open the LXC boundary
+
+Run the firewall runner on each applicable Proxmox host. Select its LXC and
+discovered DATA NIC slot; do not assign an address or gateway to the host data
+bridge.
+
+```bash
+PROXMOX_FIREWALL_CTID=CTID \
+PROXMOX_FIREWALL_LXC_DATA_SLOT=NET_SLOT \
+PROXMOX_FIREWALL_ENABLE_LXC_TRANSFER=1 \
+./setup/firewall.sh preflight
+```
+
+Review the complete derived DATA CIDR, then run the existing out-of-band
+guarded `apply`. The transfer opt-in owns interface-specific LXC rules for TCP
+22 and TCP 5201 alongside the existing SMB rule.
+
+## 2. Prepare and pair each LXC
+
+From each LXC console, use `findmnt` and the generated Samba mount facts to
+review the available container paths. `lsblk` is supporting evidence only;
+Proxmox bind mounts may not appear as ordinary LXC block devices.
+
+Select an existing transfer root and an existing group with read, write, and
+traverse access:
+
+```bash
+export PROXMOX_LXC_TRANSFER_ROOT=/OPERATOR/SELECTED/ROOT
+export PROXMOX_LXC_TRANSFER_ACCESS_GROUP=EXISTING_STORAGE_GROUP
+
+./setup/lxc/transfer.sh preflight
+./setup/lxc/transfer.sh prepare
+```
+
+If discovery finds more than one directly connected static interface, select
+the DATA-Link interactively or provide the displayed interface and CIDR. The
+runner canonicalizes an address such as `HOST_ADDRESS/PREFIX` to the complete
+network and refuses a peer-specific `/32` policy.
+
+Exchange the generated public JSON bundles through a reviewed path. Apply the
+other LXC's bundle on each side:
+
+```bash
+PROXMOX_LXC_TRANSFER_PEER_BUNDLE=/PATH/TO/PEER.json \
+./setup/lxc/transfer.sh apply
+
+./setup/lxc/transfer.sh verify
+```
+
+Private keys remain root-readable under `/etc/proxmox-transfer`. Applying a
+bundle enrolls its client key and pins its server host key. Reapplying the
+Samba feature preserves the active SSH and speed-test UFW rules.
+
+## 3. Test the SSH pairing
+
+On either LXC, enter the other LXC's DATA address:
+
+```bash
+proxmox-transfer-ssh check PEER_DATA_IPV4
+```
+
+A successful check prints `proxmox-transfer-ssh-ok`. It verifies the dedicated
+client key, pinned server host key, enrolled public key, and restricted SSH
+listener without opening a shell or reading or writing backup content. Repeat
+in the opposite direction when bidirectional transfers are required.
+
+## 4. Measure DATA-Link bandwidth
+
+Choose the destination for this test and start its one-shot listener:
+
+```bash
+proxmox-transfer-speed-test server
+```
+
+From the selected source, enter the destination's DATA address:
+
+```bash
+proxmox-transfer-speed-test client PEER_DATA_IPV4
+```
+
+The client runs a 15-second, four-stream TCP test by default. Optional
+`PROXMOX_LXC_TRANSFER_IPERF_SECONDS` and
+`PROXMOX_LXC_TRANSFER_IPERF_STREAMS` values may adjust the run within the
+helper's bounded limits. The server binds only to the saved DATA address and
+exits after one client. Swap the two roles to measure the opposite direction.
+
+## 5. Copy operator-selected paths
+
+The local path must exist within that LXC's selected transfer root. The path
+after the colon is entered by the operator and is relative to the peer's
+selected transfer root. No destination layout is assumed or generated.
+
+```bash
+# Send an operator-selected local path to an operator-entered peer path.
+proxmox-transfer-rsync push /SELECTED/LOCAL/SOURCE/ \
+  PEER_DATA_IPV4:SELECTED/DESTINATION/
+
+# Or pull an operator-entered peer path into a selected local directory.
+proxmox-transfer-rsync pull \
+  PEER_DATA_IPV4:SELECTED/REMOTE/SOURCE/ /SELECTED/LOCAL/DESTINATION/
+```
+
+The helper copies files, directories, timestamps, modes, hard links, ACLs,
+xattrs, and sparse files. It never enables rsync deletion or source-file
+removal. Files present only at the destination remain in place. The forced
+server command rejects the same destructive options even if an enrolled key
+holder bypasses the helper and invokes rsync directly.
+
+## 6. Optional verification
+
+Verification is a separate operator-selected step after the copy. It performs
+a checksum-enabled rsync dry run and reports differences without changing
+either endpoint:
+
+```bash
+proxmox-transfer-rsync verify-push /SELECTED/LOCAL/SOURCE/ \
+  PEER_DATA_IPV4:SELECTED/DESTINATION/
+
+proxmox-transfer-rsync verify-pull \
+  PEER_DATA_IPV4:SELECTED/REMOTE/SOURCE/ /SELECTED/LOCAL/DESTINATION/
+```
+
+## Operations
+
+```bash
+./setup/lxc/transfer.sh verify
+./setup/lxc/transfer.sh rotate
+
+PROXMOX_LXC_TRANSFER_PEER_BUNDLE=/PATH/TO/BUNDLE.json \
+./setup/lxc/transfer.sh revoke
+
+PROXMOX_LXC_TRANSFER_CONFIRM_ROLLBACK=yes \
+./setup/lxc/transfer.sh rollback
+```
+
+After key rotation, apply the replacement bundle wherever that key should be
+accepted before revoking the old bundle. Rollback removes only feature-managed
+runtime configuration and firewall rules; it does not remove transferred
+content.

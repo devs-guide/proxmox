@@ -2,12 +2,14 @@
 
 ## Current Release
 
-Release `0.0.7` adds an isolated ZFS-backed Samba ingest workflow to the
-reviewed local ZFS provisioning delivered in `0.0.6`. It discovers and
-preserves the Proxmox management path, builds a separate physical DATA-Link,
-adds a static no-gateway LXC data interface, maps an accepted ZFS dataset into
-an unprivileged container, and publishes one guest-read/authenticated-write
-SMB3 share behind host and container firewall boundaries.
+Release `0.0.8` adds restricted, operator-selected rsync and on-demand
+`iperf3` testing to the isolated ZFS-backed Samba LXC workflow delivered in
+`0.0.7`. It discovers the existing static DATA-Link, admits TCP 22 and TCP
+5201 across its complete operator-selected local CIDR, and runs a key-only,
+forced-`rrsync` SSH service bound only to the LXC data address. Source paths,
+destination paths, and endpoint roles remain operator input; Proxmox
+management paths remain unchanged. A fixed SSH handshake verifies exchanged
+keys before the one-shot bandwidth test and any operator-selected copy.
 
 The published Proxmox VE 6.4/Buster and Proxmox VE 9.1/Trixie lanes remain
 supported. Site-specific interfaces, bridges, addresses, CTIDs, storage paths,
@@ -27,11 +29,11 @@ passwords default to their account names (`app`, `agent`, `proxmox`, and
 the Proxmox no-subscription repository. Update these values for the target
 environment before treating the setup as final.
 
-See [the 0.0.7 release notes](RELEASE_NOTES.md),
+See [the 0.0.8 release notes](RELEASE_NOTES.md),
 [deployment runbook](docs/setup/lxc/ingest.md), and
-[human acceptance record](docs/setup/lxc/human.acceptance.md) for the complete
-scope and evidence. Whole-GPU passthrough remains planned for `0.0.8`, Local
-Model Inventory for `0.0.9`, and proxy-backed egress is unnumbered future work.
+[restricted transfer runbook](docs/setup/lxc/transfer.md) for the complete
+scope. Whole-GPU passthrough remains planned for `0.0.9`, Local Model Inventory
+for `0.0.10`, and proxy-backed egress is unnumbered future work.
 
 ## Release Publication
 

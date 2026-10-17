@@ -1,91 +1,74 @@
-# 0.0.7 - Isolated ZFS Samba Ingest
+# 0.0.8 - Restricted DATA-Link LXC Transfers
 
-Release `0.0.7` adds a discovery-led Debian LXC workflow for exposing an
-existing, accepted ZFS dataset through a hardened Samba service on a separate
-local data network. The Proxmox management path remains the sole default route
-and administration path; an independently selected physical DATA-Link and
-unnumbered host bridge carry SMB traffic.
+Release `0.0.8` adds operator-selected rsync and an on-demand `iperf3`
+bandwidth test between authorized clients on an existing isolated LXC data
+network. It builds on the `0.0.7` ZFS-backed Samba workflow without assigning
+endpoint roles, choosing storage paths, changing Proxmox management
+networking, or enabling general container administration over SSH.
 
-The release composes host link and bridge management, transactional guest NIC
-updates, unprivileged mapped storage access, Proxmox and container firewall
-boundaries, one guest-read/authenticated-write Samba share, and revocable
-static-destination egress. Site values remain discovered or operator-selected.
+The feature discovers an existing directly connected static data interface,
+canonicalizes the complete selected network CIDR, and configures
+interface-specific TCP 22 and TCP 5201 ingress and egress for that CIDR.
+Deployment names, addresses, interfaces, storage roots, account groups,
+peers, source paths, and destination paths remain discovered or
+operator-selected.
 
 ## Scope
 
-- Release range: `0.0.6..0.0.7`
-- Published host entrypoints:
-  - `setup/network-link.sh`
-  - `setup/vlan.sh`
-  - `setup/network.sh`
-  - `setup/firewall.sh`
-- Published LXC entrypoints:
-  - `setup/lxc/storage.sh`
-  - `setup/lxc/egress.sh`
-  - `setup/lxc/samba.sh`
-- Human acceptance and incident evidence:
-  - `docs/setup/lxc/human.acceptance.md`
-  - `docs/setup/lxc/0.0.7.change-ledger.tsv`
+- Release range: `0.0.7..0.0.8`
+- LXC entrypoint: `setup/lxc/transfer.sh`
+- Host boundary integration: `setup/firewall.sh` with
+  `PROXMOX_FIREWALL_ENABLE_LXC_TRANSFER=1`
+- Transfer helpers: `proxmox-transfer-ssh`, `proxmox-transfer-rsync`, and
+  `proxmox-transfer-speed-test`
+- Operator runbook: `docs/setup/lxc/transfer.md`
 
-This release consumes an existing accepted ZFS dataset. It does not create or
-recreate a pool, add a host address to the DATA bridge, enable container SSH,
-or include proxy egress, GPU passthrough, or Local Model Inventory.
+This release does not assign DATA-Link addresses, add a gateway, modify either
+Proxmox host's management policy, or enable shell access to the containers.
 
 ## Highlights
 
-- Keeps Proxmox administration on the discovered management network while
-  placing SMB on a separate physical DATA-Link.
-- Builds an unnumbered untagged or VLAN-aware bridge with hardware identity,
-  carrier, parser, reload-plan, route, and rollback protection.
-- Adds one static no-gateway data NIC to an existing LXC without replacing its
-  management/egress interface.
-- Maps an existing ZFS mount into an unprivileged container through ACLs rather
-  than changing ownership or granting host-root access.
-- Publishes one operator-named share where guests read and one authenticated
-  account writes.
-- Restricts TCP 445 to the data role, removes container SSH, applies layered
-  firewall boundaries, and supports revocable static egress destinations.
+- Uses the complete operator-selected closed-LAN CIDR rather than hard-coded
+  peer `/32` rules, so any LAN client can reach the service at the network
+  layer.
+- Requires a separately enrolled Ed25519 key for every authorized client.
+- Runs a dedicated `sshd` bound only to the selected data address and forces
+  `rrsync` into one selected storage root.
+- Disables passwords, root login, PTYs, shell commands, forwarding, tunneling,
+  agent forwarding, and user environment changes.
+- Exchanges public-only pairing bundles and pins peer server host keys.
+- Provides a fixed, shell-free SSH handshake that proves key enrollment and
+  host-key pinning before any backup path is used.
+- Keeps the restricted transfer policy intact when Samba resets UFW.
+- Provides a one-shot `iperf3` server bound only to the selected DATA address.
+- Keeps copy operations non-deleting and makes checksum verification a
+  separate optional dry run.
+- Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.
 
 ## Safety and verification
 
-- Network and firewall mutations require explicit review and out-of-band
-  acknowledgement.
-- Both ifupdown2 no-action modes must accept the generated bridge candidate
-  without structural warnings.
-- Guest NIC updates use immutable intent, duplicate probing, semantic
-  verification, and ownership-safe rollback.
-- The host receives no DATA-Link address or gateway, and the LXC keeps exactly
-  one default route through its management/egress role.
-- Existing storage ownership is preserved; service access uses mapped ACLs.
-- The Samba role does not enable `aio write behind`.
-- Human acceptance covered container and complete Proxmox-host reboot
-  persistence plus mixed-file and large sequential data transfers.
-
-## Important fixes
-
-- Production and CI now share the parser that corrected `manual` being read as
-  `ma` through layered escaping.
-- Candidate rendering uses real lines and eliminates duplicate-interface,
-  invalid bridge-attribute, and unrecognized-interface warnings.
-- Address input accepts a bare assignable host address, applies the configured
-  default prefix, rejects subnet/broadcast values, and requires
-  `iputils-arping` duplicate checks.
-- Ansible fallback paths no longer define overridable variables recursively.
-- LXC verification compares parsed NIC meaning instead of raw PVE field order.
-- Proxmox firewall policy uses supported scopes and transactionally retires a
-  conflicting host UFW authority.
-- Samba converges one correctly nested and serialized share after boot.
+- The runner refuses Proxmox-host execution and validates a static,
+  directly-connected, no-gateway LXC network role.
+- The allow CIDR must equal the canonical network of the selected LXC address.
+- The dedicated listener must bind only to the selected data address.
+- Imported peer endpoints must be members of the same selected network.
+- Proxmox TCP 22 and on-demand TCP 5201 exposure is opt-in and bound to the
+  selected LXC data slot.
+- The supported rsync helper never requests destination deletion or source
+  removal.
+- Rollback removes managed runtime state and UFW rules while retaining private
+  recovery identities locally.
 
 ## Deferred work
 
 - Proxy-backed URL brokerage remains unnumbered future work.
-- `0.0.8`: whole-GPU passthrough inventory, preparation, attachment,
+- `0.0.9`: whole-GPU passthrough inventory, preparation, attachment,
   verification, and rollback.
-- `0.0.9`: Local Model Inventory.
+- `0.0.10`: Local Model Inventory.
 
 ## Release artifacts
 
-- GitHub-generated source archives for tag `0.0.7`
-- Published host/LXC runners, dependencies, and feature documentation through
+- GitHub-generated source archives for tag `0.0.8`
+- Published runners, playbooks, CLI helpers, and feature documentation through
   GitHub Pages
 - No additional binary assets

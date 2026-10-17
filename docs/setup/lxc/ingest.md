@@ -184,8 +184,11 @@ chmod 0700 /root/setup.lxc.egress.sh
   with no gateway on that NIC. Its management/Wi-Fi route remains its Internet path.
 - Prove guest listing/reads work and guest creates fail on `NAME`.
 - Prove the authenticated user can create, rename, and delete on that same `NAME`.
-- Confirm the LXC has exactly one default route, TCP 22 is not listening, TCP
-  445 is bound only to the data interface, and unapproved egress fails.
+- Confirm the LXC has exactly one default route, TCP 445 is bound only to the
+  data interface, and unapproved egress fails. When the optional 0.0.8
+  transfer profile is active, confirm its dedicated TCP 22 listener is bound
+  only to that interface; TCP 5201 has no listener outside an operator-started
+  one-shot bandwidth test.
 - Confirm the Proxmox data bridge has no host address and host ports 22/8006
   are reachable only from the management CIDR.
 - Reboot the LXC and host, then repeat route, mount, ACL, Samba, firewall, and

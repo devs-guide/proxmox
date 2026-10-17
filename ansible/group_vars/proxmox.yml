@@ -38,6 +38,11 @@ proxmox_feature_defaults:
     enabled: false
     mode: "apply"  # preflight | apply
     require_container: true
+  lxc_transfer:
+    enabled: false
+    mode: "apply"  # preflight | prepare | apply | verify | rotate | revoke | rollback
+    require_container: true
+    require_operator_selection: true
 
 proxmox_vlan_ui:
   enabled: true
@@ -232,6 +237,21 @@ proxmox_samba:
     credential_mode: "hostname"
     username: null
     password: null
+
+proxmox_lxc_transfer:
+  enabled: false
+  mode: "apply"
+  require_container: true
+  require_operator_selection: true
+  facts_dir: "/etc/ansible/proxmox/facts"
+  selection_path: "/etc/ansible/proxmox/facts/lxc.transfer.selection.yml"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.transfer.yml"
+  config_dir: "/etc/proxmox-transfer"
+  service_name: "proxmox-lxc-transfer-sshd.service"
+  service_user: "nas-transfer"
+  port: 22
+  iperf_port: 5201
+  rrsync_path: "/usr/bin/rrsync"
 
 proxmox_lxc_network:
   facts_dir: "/etc/ansible/proxmox/facts"

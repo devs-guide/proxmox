@@ -1,0 +1,591 @@
+---
+- name: "[proxmox]: configure rsync-only SSH inside a Debian LXC"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_lxc_transfer_defaults_safe:
+      enabled: false
+      mode: "apply"
+      require_container: true
+      require_operator_selection: true
+      facts_dir: "/etc/ansible/proxmox/facts"
+      selection_path: "/etc/ansible/proxmox/facts/lxc.transfer.selection.yml"
+      runtime_facts_path: "/etc/ansible/proxmox/facts/lxc.transfer.yml"
+      config_dir: "/etc/proxmox-transfer"
+      service_name: "proxmox-lxc-transfer-sshd.service"
+      service_user: "nas-transfer"
+      port: 22
+      iperf_port: 5201
+      packages:
+        - openssh-server
+        - openssh-client
+        - rsync
+        - ufw
+        - acl
+        - attr
+        - iproute2
+        - util-linux
+        - iperf3
+      rrsync_path: "/usr/bin/rrsync"
+
+  pre_tasks:
+    - name: Build effective LXC transfer model
+      set_fact:
+        proxmox_lxc_transfer_effective: >-
+          {{
+            proxmox_lxc_transfer_defaults_safe
+            | combine(proxmox_lxc_transfer | default({}), recursive=true)
+          }}
+
+    - name: Assert LXC transfer feature inputs are explicit
+      assert:
+        that:
+          - proxmox_lxc_transfer_effective.enabled | bool
+          - proxmox_lxc_transfer_effective.mode == 'apply'
+          - proxmox_lxc_transfer_effective.data_interface is match('^[A-Za-z0-9_.:-]+$')
+          - proxmox_lxc_transfer_effective.local_address is match('^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$')
+          - proxmox_lxc_transfer_effective.local_cidr is match('^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+/[0-9]+$')
+          - proxmox_lxc_transfer_effective.allow_cidr is match('^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+/[0-9]+$')
+          - proxmox_lxc_transfer_effective.transfer_root is match('^/[^\n]*$')
+          - proxmox_lxc_transfer_effective.transfer_root != '/'
+          - proxmox_lxc_transfer_effective.service_user is match('^[a-z_][a-z0-9_-]{0,30}$')
+          - proxmox_lxc_transfer_effective.access_group is match('^[a-z_][a-z0-9_-]{0,30}$')
+          - proxmox_lxc_transfer_effective.port | int >= 1
+          - proxmox_lxc_transfer_effective.port | int <= 65535
+          - proxmox_lxc_transfer_effective.iperf_port | int == 5201
+          - proxmox_lxc_transfer_effective.client_id is match('^[0-9a-f]{64}$')
+          - proxmox_lxc_transfer_effective.client_public_key is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}([ ]|$)')
+        fail_msg: "LXC transfer apply requires validated network, storage, account, and peer-key inputs."
+
+    - name: Stat the operator-confirmed transfer selection
+      stat:
+        path: "{{ proxmox_lxc_transfer_effective.selection_path }}"
+      register: proxmox_lxc_transfer_selection_stat
+
+    - name: Require the operator-confirmed transfer selection
+      assert:
+        that:
+          - proxmox_lxc_transfer_selection_stat.stat.exists
+          - proxmox_lxc_transfer_selection_stat.stat.isreg
+          - not proxmox_lxc_transfer_selection_stat.stat.islnk
+        fail_msg: "Run setup/lxc/transfer.sh preflight and prepare before apply."
+
+    - name: Load the operator-confirmed transfer selection
+      include_vars:
+        file: "{{ proxmox_lxc_transfer_effective.selection_path }}"
+
+    - name: Refuse stale or hand-edited transfer selection drift
+      assert:
+        that:
+          - proxmox_lxc_transfer_operator_selection.confirmed | bool
+          - proxmox_lxc_transfer_operator_selection.source == 'setup/lxc/transfer.sh'
+          - proxmox_lxc_transfer_operator_selection.data_interface == proxmox_lxc_transfer_effective.data_interface
+          - proxmox_lxc_transfer_operator_selection.local_cidr == proxmox_lxc_transfer_effective.local_cidr
+          - proxmox_lxc_transfer_operator_selection.allow_cidr == proxmox_lxc_transfer_effective.allow_cidr
+          - proxmox_lxc_transfer_operator_selection.transfer_root == proxmox_lxc_transfer_effective.transfer_root
+          - proxmox_lxc_transfer_operator_selection.access_group == proxmox_lxc_transfer_effective.access_group
+          - proxmox_lxc_transfer_operator_selection.service_user == proxmox_lxc_transfer_effective.service_user
+          - proxmox_lxc_transfer_operator_selection.port | int == proxmox_lxc_transfer_effective.port | int
+          - proxmox_lxc_transfer_operator_selection.iperf_port | int == proxmox_lxc_transfer_effective.iperf_port | int
+        fail_msg: "Live apply inputs differ from the operator-confirmed transfer selection."
+
+  tasks:
+    - name: Detect a Proxmox host filesystem
+      stat:
+        path: /etc/pve
+      register: proxmox_lxc_transfer_pve_fs
+
+    - name: Detect a Proxmox host command
+      command:
+        argv: [sh, -c, "command -v pveversion"]
+      register: proxmox_lxc_transfer_pve_command
+      changed_when: false
+      failed_when: false
+
+    - name: Assert this host is a Debian-family container
+      assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+          - not proxmox_lxc_transfer_pve_fs.stat.exists
+          - proxmox_lxc_transfer_pve_command.rc != 0
+        fail_msg: "Run the LXC transfer feature inside a Debian LXC, not on the Proxmox host."
+
+    - name: Install restricted transfer packages
+      package:
+        name: "{{ proxmox_lxc_transfer_effective.packages }}"
+        state: present
+
+    - name: Keep the distro iperf3 daemon disabled for on-demand testing
+      systemd:
+        name: iperf3.service
+        enabled: false
+        state: stopped
+      failed_when: false
+
+    - name: Confirm the selected DATA-Link interface owns the selected address
+      shell: |
+        set -euo pipefail
+        ip -o -4 addr show dev {{ proxmox_lxc_transfer_effective.data_interface | quote }} scope global \
+          | awk -v expected={{ proxmox_lxc_transfer_effective.local_cidr | quote }} \
+              '$4 == expected { found=1 } END { exit(found ? 0 : 1) }'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Revalidate canonical private DATA-Link address and complete CIDR
+      command:
+        argv:
+          - "{{ ansible_python_interpreter }}"
+          - -c
+          - |
+            import ipaddress, sys
+            interface = ipaddress.ip_interface(sys.argv[1])
+            allowed = ipaddress.ip_network(sys.argv[2], strict=False)
+            address = ipaddress.ip_address(sys.argv[3])
+            valid = (
+                interface.version == 4
+                and interface.ip == address
+                and interface.network == allowed
+                and str(allowed) == sys.argv[2]
+                and allowed.is_private
+                and not address.is_loopback
+                and not address.is_link_local
+                and not address.is_multicast
+                and 8 <= allowed.prefixlen <= 30
+            )
+            raise SystemExit(0 if valid else 1)
+          - "{{ proxmox_lxc_transfer_effective.local_cidr }}"
+          - "{{ proxmox_lxc_transfer_effective.allow_cidr }}"
+          - "{{ proxmox_lxc_transfer_effective.local_address }}"
+      changed_when: false
+
+    - name: Revalidate the selected interface as a directly connected no-gateway role
+      shell: |
+        set -euo pipefail
+        ! ip -4 route show default dev {{ proxmox_lxc_transfer_effective.data_interface | quote }} | grep -q .
+        route="$(ip -4 route show {{ proxmox_lxc_transfer_effective.allow_cidr | quote }} dev {{ proxmox_lxc_transfer_effective.data_interface | quote }})"
+        [[ -n "${route}" && " ${route} " != *' via '* ]]
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Confirm the selected transfer root is a real directory
+      stat:
+        path: "{{ proxmox_lxc_transfer_effective.transfer_root }}"
+        follow: false
+      register: proxmox_lxc_transfer_root_stat
+
+    - name: Refuse missing, symlinked, or root transfer paths
+      assert:
+        that:
+          - proxmox_lxc_transfer_root_stat.stat.exists
+          - proxmox_lxc_transfer_root_stat.stat.isdir
+          - not proxmox_lxc_transfer_root_stat.stat.islnk
+        fail_msg: "The selected transfer root must be an existing non-symlink directory below /."
+
+    - name: Ensure the approved storage access group exists
+      getent:
+        database: group
+        key: "{{ proxmox_lxc_transfer_effective.access_group }}"
+
+    - name: Create the restricted transfer account
+      user:
+        name: "{{ proxmox_lxc_transfer_effective.service_user }}"
+        comment: "Restricted rsync DATA-Link account"
+        home: "/var/lib/proxmox-transfer"
+        create_home: true
+        shell: /bin/sh
+        group: "{{ proxmox_lxc_transfer_effective.access_group }}"
+        password: "NP"
+        update_password: always
+        state: present
+
+    - name: Inspect executable distro rrsync locations
+      stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ proxmox_lxc_transfer_effective.rrsync_path }}"
+        - /usr/share/doc/rsync/scripts/rrsync
+      register: proxmox_lxc_transfer_rrsync_candidates
+
+    - name: Inspect the legacy compressed distro rrsync script
+      stat:
+        path: /usr/share/doc/rsync/scripts/rrsync.gz
+      register: proxmox_lxc_transfer_rrsync_gzip
+
+    - name: Install an uncompressed legacy distro rrsync script into a stable executable path
+      copy:
+        src: /usr/share/doc/rsync/scripts/rrsync
+        dest: /usr/local/libexec/proxmox-transfer-rrsync
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - not (proxmox_lxc_transfer_rrsync_candidates.results | selectattr('stat.executable', 'defined') | selectattr('stat.executable') | list | length > 0)
+        - proxmox_lxc_transfer_rrsync_candidates.results[1].stat.exists
+
+    - name: Install the legacy distro rrsync script into a stable executable path
+      shell: |
+        set -euo pipefail
+        temporary="$(mktemp)"
+        trap 'rm -f "${temporary}"' EXIT
+        gzip -dc /usr/share/doc/rsync/scripts/rrsync.gz > "${temporary}"
+        if [[ -x /usr/local/libexec/proxmox-transfer-rrsync ]] \
+          && cmp -s "${temporary}" /usr/local/libexec/proxmox-transfer-rrsync; then
+          printf 'UNCHANGED\n'
+          exit 0
+        fi
+        install -o root -g root -m 0755 "${temporary}" /usr/local/libexec/proxmox-transfer-rrsync
+        printf 'CHANGED\n'
+      args:
+        executable: /bin/bash
+      register: proxmox_lxc_transfer_rrsync_extract
+      changed_when: "'CHANGED' in proxmox_lxc_transfer_rrsync_extract.stdout"
+      when:
+        - not (proxmox_lxc_transfer_rrsync_candidates.results | selectattr('stat.executable', 'defined') | selectattr('stat.executable') | list | length > 0)
+        - not proxmox_lxc_transfer_rrsync_candidates.results[1].stat.exists
+        - proxmox_lxc_transfer_rrsync_gzip.stat.exists
+
+    - name: Inspect the stable legacy rrsync path
+      stat:
+        path: /usr/local/libexec/proxmox-transfer-rrsync
+      register: proxmox_lxc_transfer_rrsync_legacy
+
+    - name: Select the installed distro rrsync command
+      set_fact:
+        proxmox_lxc_transfer_rrsync_path_effective: >-
+          {{
+            (
+              proxmox_lxc_transfer_rrsync_candidates.results
+              | selectattr('stat.executable', 'defined')
+              | selectattr('stat.executable')
+              | map(attribute='item')
+              | list
+              + (
+                ['/usr/local/libexec/proxmox-transfer-rrsync']
+                if proxmox_lxc_transfer_rrsync_legacy.stat.executable | default(false)
+                else []
+              )
+            )
+            | first
+            | default('')
+          }}
+
+    - name: Refuse an rsync package without rrsync
+      assert:
+        that:
+          - proxmox_lxc_transfer_rrsync_path_effective | length > 0
+        fail_msg: "The installed rsync package does not provide the required rrsync command."
+
+    - name: Install the non-deleting rrsync command guard
+      copy:
+        dest: /usr/local/libexec/proxmox-transfer-rrsync-guard
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          set -eu
+          original_command="${SSH_ORIGINAL_COMMAND:-}"
+          if [ "${original_command}" = "proxmox-transfer-check" ]; then
+              printf 'proxmox-transfer-ssh-ok\n'
+              exit 0
+          fi
+          python3 - "${original_command}" <<'PY'
+          import shlex, sys
+
+          try:
+              arguments = shlex.split(sys.argv[1])
+          except ValueError:
+              raise SystemExit("invalid rsync command")
+          for argument in arguments:
+              if (argument == "--del" or argument.startswith("--delet")
+                      or argument.startswith("--remove-s")):
+                  raise SystemExit("rsync deletion and source-file removal are disabled")
+          PY
+          exec {{ proxmox_lxc_transfer_rrsync_path_effective | quote }} {{ proxmox_lxc_transfer_effective.transfer_root | quote }}
+
+    - name: Create restricted transfer configuration directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ proxmox_lxc_transfer_effective.config_dir }}", mode: "0755" }
+        - { path: "{{ proxmox_lxc_transfer_effective.config_dir }}/clients.d", mode: "0755" }
+        - { path: "{{ proxmox_lxc_transfer_effective.config_dir }}/peers.d", mode: "0755" }
+
+    - name: Require prepared dedicated server and client identities
+      stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ proxmox_lxc_transfer_effective.config_dir }}/ssh_host_ed25519_key"
+        - "{{ proxmox_lxc_transfer_effective.config_dir }}/id_ed25519"
+      register: proxmox_lxc_transfer_key_stats
+
+    - name: Refuse apply before prepare generated dedicated identities
+      assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - not item.stat.islnk
+        fail_msg: "Run setup/lxc/transfer.sh prepare before apply."
+      loop: "{{ proxmox_lxc_transfer_key_stats.results }}"
+
+    - name: Enforce private identity permissions
+      file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - "{{ proxmox_lxc_transfer_effective.config_dir }}/ssh_host_ed25519_key"
+        - "{{ proxmox_lxc_transfer_effective.config_dir }}/id_ed25519"
+
+    - name: Install the approved client public key registry entry
+      copy:
+        dest: "{{ proxmox_lxc_transfer_effective.config_dir }}/clients.d/{{ proxmox_lxc_transfer_effective.client_id }}.pub"
+        owner: root
+        group: root
+        mode: "0644"
+        content: "{{ proxmox_lxc_transfer_effective.client_public_key | trim }}\n"
+
+    - name: Archive an imported server pairing bundle
+      copy:
+        src: "{{ proxmox_lxc_transfer_effective.peer_bundle_path }}"
+        dest: "{{ proxmox_lxc_transfer_effective.config_dir }}/peers.d/{{ proxmox_lxc_transfer_effective.client_id }}.json"
+        owner: root
+        group: root
+        mode: "0644"
+        remote_src: true
+      when:
+        - proxmox_lxc_transfer_effective.peer_kind == 'server-peer'
+        - proxmox_lxc_transfer_effective.peer_bundle_path | length > 0
+
+    - name: Pin the imported peer server host key
+      lineinfile:
+        path: "{{ proxmox_lxc_transfer_effective.config_dir }}/known_hosts"
+        create: true
+        owner: root
+        group: root
+        mode: "0600"
+        line: "{{ proxmox_lxc_transfer_effective.peer_known_host_line }}"
+        state: present
+      when: proxmox_lxc_transfer_effective.peer_known_host_line | length > 0
+
+    - name: Install the dynamic restricted-key reader
+      copy:
+        dest: /usr/local/libexec/proxmox-transfer-authorized-keys
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          set -eu
+          requested_user="${1:-}"
+          [ "${requested_user}" = {{ proxmox_lxc_transfer_effective.service_user | quote }} ] || exit 0
+          for key_file in {{ proxmox_lxc_transfer_effective.config_dir | quote }}/clients.d/*.pub; do
+            [ -f "${key_file}" ] || continue
+            IFS= read -r public_key < "${key_file}" || continue
+            case "${public_key}" in
+              ssh-ed25519\ *) ;;
+              *) continue ;;
+            esac
+            printf 'restrict,from="%s" %s\n' {{ proxmox_lxc_transfer_effective.allow_cidr | quote }} "${public_key}"
+          done
+
+    - name: Install the exact DATA-Link readiness check
+      copy:
+        dest: /usr/local/libexec/proxmox-transfer-data-ready
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          set -eu
+          ip -o -4 addr show dev {{ proxmox_lxc_transfer_effective.data_interface | quote }} scope global \
+            | awk -v expected={{ proxmox_lxc_transfer_effective.local_cidr | quote }} '$4 == expected { found=1 } END { exit(found ? 0 : 1) }'
+
+    - name: Write the isolated rsync-only sshd configuration
+      copy:
+        dest: "{{ proxmox_lxc_transfer_effective.config_dir }}/sshd_config"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          Port {{ proxmox_lxc_transfer_effective.port }}
+          ListenAddress {{ proxmox_lxc_transfer_effective.local_address }}
+          AddressFamily inet
+          HostKey {{ proxmox_lxc_transfer_effective.config_dir }}/ssh_host_ed25519_key
+          PidFile /run/proxmox-lxc-transfer-sshd.pid
+          AuthorizedKeysFile none
+          AuthorizedKeysCommand /usr/local/libexec/proxmox-transfer-authorized-keys %u
+          AuthorizedKeysCommandUser {{ proxmox_lxc_transfer_effective.service_user }}
+          AuthenticationMethods publickey
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          ChallengeResponseAuthentication no
+          PermitRootLogin no
+          PermitEmptyPasswords no
+          UsePAM no
+          AllowUsers {{ proxmox_lxc_transfer_effective.service_user }}
+          PermitTTY no
+          X11Forwarding no
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          GatewayPorts no
+          PermitTunnel no
+          PermitUserEnvironment no
+          MaxAuthTries 3
+          MaxSessions 4
+          LogLevel VERBOSE
+          ForceCommand /usr/local/libexec/proxmox-transfer-rrsync-guard
+
+    - name: Validate the isolated sshd configuration
+      command:
+        argv:
+          - /usr/sbin/sshd
+          - -t
+          - -f
+          - "{{ proxmox_lxc_transfer_effective.config_dir }}/sshd_config"
+      changed_when: false
+
+    - name: Validate effective rsync-only user policy
+      command:
+        argv:
+          - /usr/sbin/sshd
+          - -T
+          - -f
+          - "{{ proxmox_lxc_transfer_effective.config_dir }}/sshd_config"
+          - -C
+          - "user={{ proxmox_lxc_transfer_effective.service_user }},addr={{ proxmox_lxc_transfer_effective.local_address }},host=localhost"
+      register: proxmox_lxc_transfer_sshd_effective
+      changed_when: false
+
+    - name: Require key-only, noninteractive effective SSH policy
+      assert:
+        that:
+          - "'passwordauthentication no' in proxmox_lxc_transfer_sshd_effective.stdout"
+          - "'kbdinteractiveauthentication no' in proxmox_lxc_transfer_sshd_effective.stdout"
+          - "'permitrootlogin no' in proxmox_lxc_transfer_sshd_effective.stdout"
+          - "'permittty no' in proxmox_lxc_transfer_sshd_effective.stdout"
+          - "'allowtcpforwarding no' in proxmox_lxc_transfer_sshd_effective.stdout"
+          - "'forcecommand /usr/local/libexec/proxmox-transfer-rrsync-guard' in proxmox_lxc_transfer_sshd_effective.stdout"
+
+    - name: Stop and mask stock administrative SSH units
+      systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+        masked: true
+      failed_when: false
+      loop:
+        - ssh.service
+        - ssh.socket
+        - sshd.service
+        - sshd.socket
+
+    - name: Write the dedicated transfer sshd unit
+      copy:
+        dest: "/etc/systemd/system/{{ proxmox_lxc_transfer_effective.service_name }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Restricted rsync SSH service on the local DATA-Link
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStartPre=/usr/local/libexec/proxmox-transfer-data-ready
+          ExecStart=/usr/sbin/sshd -D -e -f {{ proxmox_lxc_transfer_effective.config_dir }}/sshd_config
+          Restart=on-failure
+          RestartSec=5s
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Apply LAN-wide transfer UFW policy
+      include_tasks: ../tasks/lxc.transfer.ufw.yml
+      vars:
+        proxmox_lxc_transfer_ufw_enabled: true
+        proxmox_lxc_transfer_ufw_data_interface: "{{ proxmox_lxc_transfer_effective.data_interface }}"
+        proxmox_lxc_transfer_ufw_local_address: "{{ proxmox_lxc_transfer_effective.local_address }}"
+        proxmox_lxc_transfer_ufw_allow_cidr: "{{ proxmox_lxc_transfer_effective.allow_cidr }}"
+        proxmox_lxc_transfer_ufw_port: "{{ proxmox_lxc_transfer_effective.port }}"
+        proxmox_lxc_transfer_ufw_iperf_port: "{{ proxmox_lxc_transfer_effective.iperf_port }}"
+
+    - name: Enable UFW without changing its existing default policy
+      command:
+        argv: [ufw, --force, enable]
+      changed_when: false
+
+    - name: Reload systemd and start the dedicated transfer service
+      systemd:
+        name: "{{ proxmox_lxc_transfer_effective.service_name }}"
+        daemon_reload: true
+        enabled: true
+        state: restarted
+
+    - name: Confirm the transfer identity can access the selected root
+      command:
+        argv:
+          - runuser
+          - -u
+          - "{{ proxmox_lxc_transfer_effective.service_user }}"
+          - --
+          - sh
+          - -c
+          - 'test -r "$1" && test -w "$1" && test -x "$1"'
+          - proxmox-transfer-access-check
+          - "{{ proxmox_lxc_transfer_effective.transfer_root }}"
+      changed_when: false
+
+    - name: Capture the dedicated listener
+      shell: |
+        set -euo pipefail
+        ss -H -lnt4 "sport = :{{ proxmox_lxc_transfer_effective.port }}"
+      args:
+        executable: /bin/bash
+      register: proxmox_lxc_transfer_listener
+      changed_when: false
+
+    - name: Require the listener to use only the selected DATA-Link address
+      assert:
+        that:
+          - proxmox_lxc_transfer_listener.stdout_lines | length > 0
+          - proxmox_lxc_transfer_listener.stdout_lines | select('search', proxmox_lxc_transfer_effective.local_address ~ ':' ~ (proxmox_lxc_transfer_effective.port | string)) | list | length == proxmox_lxc_transfer_listener.stdout_lines | length
+        fail_msg: "The transfer sshd listener is absent or is exposed beyond the selected DATA-Link address."
+
+    - name: Persist LXC transfer runtime facts
+      copy:
+        dest: "{{ proxmox_lxc_transfer_effective.runtime_facts_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          ---
+          proxmox_lxc_transfer_runtime:
+            enabled: true
+            data_interface: {{ proxmox_lxc_transfer_effective.data_interface | to_json }}
+            local_address: {{ proxmox_lxc_transfer_effective.local_address | to_json }}
+            local_cidr: {{ proxmox_lxc_transfer_effective.local_cidr | to_json }}
+            allow_cidr: {{ proxmox_lxc_transfer_effective.allow_cidr | to_json }}
+            port: {{ proxmox_lxc_transfer_effective.port | int }}
+            iperf_port: {{ proxmox_lxc_transfer_effective.iperf_port | int }}
+            service_user: {{ proxmox_lxc_transfer_effective.service_user | to_json }}
+            transfer_root: {{ proxmox_lxc_transfer_effective.transfer_root | to_json }}
+            rrsync_path: {{ proxmox_lxc_transfer_rrsync_path_effective | to_json }}
+            service_name: {{ proxmox_lxc_transfer_effective.service_name | to_json }}
+            client_count: {{ lookup('fileglob', proxmox_lxc_transfer_effective.config_dir ~ '/clients.d/*.pub', wantlist=True) | length }}
