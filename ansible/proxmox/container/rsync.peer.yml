@@ -230,8 +230,7 @@
         create_home: true
         shell: /bin/sh
         group: "{{ proxmox_lxc_transfer_effective.access_group }}"
-        password: "NP"
-        update_password: on_create
+        password_lock: true
         state: present
       when: proxmox_lxc_transfer_service_user.rc != 0
 

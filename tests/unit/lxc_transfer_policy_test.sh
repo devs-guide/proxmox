@@ -145,6 +145,13 @@ grep -Fq 'PROXMOX_LXC_TRANSFER_IPERF_STREAMS:-1' "${ROOT}/cli/network/speed.sh" 
   || fail 'the basic iperf3 check is not single-stream by default'
 ok 'LXC operations sanitize host temp paths and use a basic speed-test default'
 
+grep -Fq 'password_lock: true' "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
+  || fail 'new restricted transfer accounts are not explicitly password-locked'
+if grep -Fq 'password: "NP"' "${ROOT}/ansible/proxmox/container/rsync.peer.yml"; then
+  fail 'new transfer accounts still use an invalid literal password hash'
+fi
+ok 'new restricted transfer accounts use native password locking'
+
 operation_dir="${fixture_dir}/operation"
 mkdir -p "${operation_dir}/bin" "${operation_dir}/storage/source" "${operation_dir}/storage/destination"
 printf 'fixture\n' > "${operation_dir}/storage/source/file.txt"
