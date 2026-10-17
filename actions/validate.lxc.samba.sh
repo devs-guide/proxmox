@@ -100,6 +100,8 @@ bash "${ROOT}/tests/unit/samba_credential_policy_test.sh"
 ok 'Samba hostname/custom credential and secret-cleanup fixtures'
 python3 "${ROOT}/tests/unit/samba_config_policy_test.py"
 ok 'production Samba config single-share render fixture'
+bash "${ROOT}/tests/unit/lxc_storage_reconcile_policy_test.sh"
+ok 'production post-transfer ACL reconciliation fixture'
 
 grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
 ! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'

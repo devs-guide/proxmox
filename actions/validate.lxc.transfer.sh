@@ -22,6 +22,8 @@ ok 'shell syntax'
 
 bash "${ROOT}/tests/unit/lxc_transfer_policy_test.sh"
 ok 'production parser and topology-neutral fixtures'
+bash "${ROOT}/tests/unit/lxc_storage_reconcile_policy_test.sh"
+ok 'production post-transfer ACL reconciliation fixture'
 
 grep -Fq 'ListenAddress {{ proxmox_lxc_transfer_effective.local_address }}' "${PLAYBOOK}" || fail 'dedicated sshd is not bound to the selected address'
 grep -Fq 'ForceCommand /usr/local/libexec/proxmox-transfer-rrsync-guard' "${PLAYBOOK}" || fail 'forced non-deleting rrsync guard is missing'

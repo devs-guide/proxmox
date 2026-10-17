@@ -100,6 +100,7 @@ for forbidden in '10.10.0.4' '10.10.0.10' '10.10.0.100' '10.0.0.4' '10.0.0.172' 
     "${ROOT}/cli/ssh/peer.sh" \
     "${ROOT}/cli/rsync/tree.sh" \
     "${ROOT}/cli/network/speed.sh" \
+    "${ROOT}/setup/lxc/storage.sh" \
     "${ROOT}/RELEASE_NOTES.md" \
     "${ROOT}/docs/release/0.0.8.md" \
     "${ROOT}/docs/setup/lxc/transfer.md"; then

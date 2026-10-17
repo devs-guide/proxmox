@@ -58,6 +58,10 @@ Proxmox host's management policy, or enable shell access to the containers.
   `rrsync` server intentionally disables.
 - Keeps copy operations non-deleting and makes checksum verification a
   separate optional dry run.
+- Reconciles additive Samba access on an operator-selected completed
+  destination while preserving ownership and avoiding `chown` or `chmod`.
+- Refuses reconciliation during an active rsync or against an inactive bind
+  mount, symlinked path, filesystem escape, or nested filesystem.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.
 
 ## Safety and verification
@@ -71,6 +75,9 @@ Proxmox host's management policy, or enable shell access to the containers.
   selected LXC data slot.
 - The supported rsync helper never requests destination deletion or source
   removal.
+- Storage and container mount lifecycle remain operator-managed; ACL
+  reconciliation never mounts, unmounts, edits persistent mount configuration,
+  or restarts a container.
 - Rollback removes managed runtime state and UFW rules while retaining private
   recovery identities locally.
 

@@ -149,6 +149,36 @@ proxmox-transfer-rsync verify-pull \
   PEER_DATA_IPV4:SELECTED/REMOTE/SOURCE/ /SELECTED/LOCAL/DESTINATION/
 ```
 
+## 7. Reconcile authenticated Samba access
+
+An rsync run that preserves source ACLs can replace inherited destination ACLs.
+After the copy has finished, the Proxmox host can add the Samba presentation
+identity back to one operator-selected destination subtree. The runner never
+mounts or unmounts storage, changes persistent mount configuration, or restarts
+the LXC. Its selected bind source must already be an active mountpoint.
+
+Run on the destination Proxmox host with values from that deployment:
+
+```bash
+export PROXMOX_LXC_STORAGE_CTID=OPERATOR_SELECTED_CTID
+export PROXMOX_LXC_STORAGE_CONTAINER_PATH=/OPERATOR/SELECTED/DESTINATION
+export PROXMOX_LXC_STORAGE_SERVICE_USER=OPERATOR_SELECTED_SAMBA_SERVICE_USER
+export PROXMOX_LXC_STORAGE_SERVICE_GROUP=OPERATOR_SELECTED_SAMBA_SERVICE_GROUP
+export PROXMOX_LXC_STORAGE_TRANSFER_USER=OPERATOR_SELECTED_TRANSFER_USER
+
+./setup/lxc/storage.sh preflight
+./setup/lxc/storage.sh apply
+./setup/lxc/storage.sh verify
+```
+
+The runner derives the bind source and host UID/GID mapping from live Proxmox
+and LXC state. It refuses an inactive bind-source mountpoint, active rsync,
+symlinked or escaping paths, nested filesystems, missing identities, and a
+stopped LXC. `apply` adds read/write ACLs to regular files plus
+read/write/traverse and inheritable ACLs to directories. It does not call
+`chown`, `chmod`, or any rsync deletion operation. Re-run reconciliation after
+any later copy that preserves source ACLs.
+
 ## Operations
 
 ```bash
