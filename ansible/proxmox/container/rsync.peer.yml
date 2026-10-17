@@ -414,7 +414,7 @@
 
     - name: Install the dynamic restricted-key reader
       copy:
-        dest: /usr/local/libexec/proxmox-transfer-authorized-keys
+        dest: "{{ proxmox_lxc_transfer_effective.config_dir }}/authorized-keys-command"
         owner: root
         group: root
         mode: "0755"
@@ -432,6 +432,11 @@
             esac
             printf 'restrict,from="%s" %s\n' {{ proxmox_lxc_transfer_effective.allow_cidr | quote }} "${public_key}"
           done
+
+    - name: Remove the obsolete restricted-key reader path
+      file:
+        path: /usr/local/libexec/proxmox-transfer-authorized-keys
+        state: absent
 
     - name: Install the exact DATA-Link readiness check
       copy:
@@ -458,7 +463,7 @@
           HostKey {{ proxmox_lxc_transfer_effective.config_dir }}/ssh_host_ed25519_key
           PidFile /run/proxmox-lxc-transfer-sshd.pid
           AuthorizedKeysFile none
-          AuthorizedKeysCommand /usr/local/libexec/proxmox-transfer-authorized-keys %u
+          AuthorizedKeysCommand {{ proxmox_lxc_transfer_effective.config_dir }}/authorized-keys-command %u
           AuthorizedKeysCommandUser {{ proxmox_lxc_transfer_effective.service_user }}
           AuthenticationMethods publickey
           PubkeyAuthentication yes

@@ -123,6 +123,18 @@ if printf '%s\n' \
 fi
 ok 'listener verification distinguishes local and peer address columns'
 
+grep -Fq 'dest: "{{ proxmox_lxc_transfer_effective.config_dir }}/authorized-keys-command"' \
+  "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
+  || fail 'restricted-key reader is not installed below the root-owned feature configuration tree'
+grep -Fq 'AuthorizedKeysCommand {{ proxmox_lxc_transfer_effective.config_dir }}/authorized-keys-command %u' \
+  "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
+  || fail 'sshd does not use the root-owned restricted-key reader path'
+if grep -Fq 'AuthorizedKeysCommand /usr/local/libexec/proxmox-transfer-authorized-keys' \
+  "${ROOT}/ansible/proxmox/container/rsync.peer.yml"; then
+  fail 'sshd still depends on legacy /usr/local ownership for key authentication'
+fi
+ok 'authorized-keys command remains safe on legacy shifted root filesystems'
+
 operation_dir="${fixture_dir}/operation"
 mkdir -p "${operation_dir}/bin" "${operation_dir}/storage/source" "${operation_dir}/storage/destination"
 printf 'fixture\n' > "${operation_dir}/storage/source/file.txt"

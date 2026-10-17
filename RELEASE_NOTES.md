@@ -47,6 +47,8 @@ Proxmox host's management policy, or enable shell access to the containers.
   `on` command token during live apply.
 - Verifies the SSH listener from the local-address column so the normal
   peer-column wildcard reported by `ss` does not cause a false failure.
+- Installs the OpenSSH authorized-keys command below the root-owned transfer
+  configuration tree, including on legacy shifted-root filesystems.
 - Keeps copy operations non-deleting and makes checksum verification a
   separate optional dry run.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.

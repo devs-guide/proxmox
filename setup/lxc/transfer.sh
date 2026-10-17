@@ -524,7 +524,7 @@ verify.feature() {
   ufw status | grep -Fq 'proxmox-transfer-ssh-out' || die 'Managed transfer SSH egress UFW rule is missing.'
   ufw status | grep -Fq 'proxmox-transfer-iperf-in' || die 'Managed iperf3 ingress UFW rule is missing.'
   ufw status | grep -Fq 'proxmox-transfer-iperf-out' || die 'Managed iperf3 egress UFW rule is missing.'
-  /usr/local/libexec/proxmox-transfer-authorized-keys "${SERVICE_USER}" | grep -Fq "from=\"${ALLOW_CIDR}\"" \
+  "${CONFIG_DIR}/authorized-keys-command" "${SERVICE_USER}" | grep -Fq "from=\"${ALLOW_CIDR}\"" \
     || die 'No authorized transfer client is constrained to the selected DATA-Link CIDR.'
   log "Verified rsync-only SSH on ${LOCAL_ADDRESS}:${PORT} and on-demand iperf3 tcp/${IPERF_PORT} across ${ALLOW_CIDR}."
 }
@@ -566,7 +566,8 @@ rollback.feature() {
     /usr/local/libexec/proxmox-transfer-rrsync /usr/local/libexec/proxmox-transfer-rrsync-guard \
     /usr/local/sbin/proxmox-transfer-ssh /usr/local/sbin/proxmox-transfer-rsync \
     /usr/local/sbin/proxmox-transfer-speed-test \
-    "${CONFIG_DIR}/sshd_config" "${CONFIG_DIR}/known_hosts" "${RUNTIME_FACTS_PATH}" "${SELECTION_PATH}"
+    "${CONFIG_DIR}/authorized-keys-command" "${CONFIG_DIR}/sshd_config" "${CONFIG_DIR}/known_hosts" \
+    "${RUNTIME_FACTS_PATH}" "${SELECTION_PATH}"
   if [[ -d "${CONFIG_DIR}/clients.d" ]]; then find "${CONFIG_DIR}/clients.d" -maxdepth 1 -type f -name '*.pub' -delete; fi
   if [[ -d "${CONFIG_DIR}/peers.d" ]]; then find "${CONFIG_DIR}/peers.d" -maxdepth 1 -type f -name '*.json' -delete; fi
   systemctl daemon-reload
