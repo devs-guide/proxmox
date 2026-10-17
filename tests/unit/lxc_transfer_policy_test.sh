@@ -147,6 +147,8 @@ ok 'LXC operations sanitize host temp paths and use a basic speed-test default'
 
 grep -Fq 'password_lock: true' "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
   || fail 'new restricted transfer accounts are not explicitly password-locked'
+grep -Fq 'update_password: on_create' "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
+  || fail 'new restricted transfer account password policy is not creation-only'
 if grep -Fq 'password: "NP"' "${ROOT}/ansible/proxmox/container/rsync.peer.yml"; then
   fail 'new transfer accounts still use an invalid literal password hash'
 fi
