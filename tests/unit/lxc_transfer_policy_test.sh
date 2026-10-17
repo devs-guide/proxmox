@@ -135,6 +135,16 @@ if grep -Fq 'AuthorizedKeysCommand /usr/local/libexec/proxmox-transfer-authorize
 fi
 ok 'authorized-keys command remains safe on legacy shifted root filesystems'
 
+for temp_safe_script in setup/lxc/transfer.sh cli/network/speed.sh; do
+  grep -Fq 'unset TMP TEMP' "${ROOT}/${temp_safe_script}" \
+    || fail "${temp_safe_script} does not discard inherited host temp paths"
+  grep -Fq 'export TMPDIR=/tmp' "${ROOT}/${temp_safe_script}" \
+    || fail "${temp_safe_script} does not select the LXC sticky temp directory"
+done
+grep -Fq 'PROXMOX_LXC_TRANSFER_IPERF_STREAMS:-1' "${ROOT}/cli/network/speed.sh" \
+  || fail 'the basic iperf3 check is not single-stream by default'
+ok 'LXC operations sanitize host temp paths and use a basic speed-test default'
+
 operation_dir="${fixture_dir}/operation"
 mkdir -p "${operation_dir}/bin" "${operation_dir}/storage/source" "${operation_dir}/storage/destination"
 printf 'fixture\n' > "${operation_dir}/storage/source/file.txt"

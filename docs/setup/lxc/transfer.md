@@ -107,7 +107,7 @@ From the selected source, enter the destination's DATA address:
 proxmox-transfer-speed-test client PEER_DATA_IPV4
 ```
 
-The client runs a 15-second, four-stream TCP test by default. Optional
+The client runs a basic 15-second, single-stream TCP test by default. Optional
 `PROXMOX_LXC_TRANSFER_IPERF_SECONDS` and
 `PROXMOX_LXC_TRANSFER_IPERF_STREAMS` values may adjust the run within the
 helper's bounded limits. The server binds only to the saved DATA address and

@@ -7,6 +7,12 @@
 
 set -Eeuo pipefail
 
+# Proxmox console/SSH environments can inherit stale per-login temp paths that
+# do not exist inside the LXC. Package maintainer scripts must use the LXC's
+# real sticky temporary directory.
+unset TMP TEMP 2>/dev/null || true
+export TMPDIR=/tmp
+
 log()       { printf '[setup.lxc.transfer] %s\n' "$*" >&2; }
 log.warn()  { printf '[setup.lxc.transfer][warn] %s\n' "$*" >&2; }
 log.error() { printf '[setup.lxc.transfer][error] %s\n' "$*" >&2; }

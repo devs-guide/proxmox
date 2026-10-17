@@ -3,12 +3,18 @@
 
 set -euo pipefail
 
+# Do not inherit a Proxmox host login's private temp path into the LXC. iperf3
+# creates worker state during a test and fails obscurely when that path is
+# absent in the container.
+unset TMP TEMP 2>/dev/null || true
+export TMPDIR=/tmp
+
 ACTION="${1:-}"
 PEER="${2:-}"
 SELECTION_PATH="${PROXMOX_LXC_TRANSFER_SELECTION_PATH:-/etc/ansible/proxmox/facts/lxc.transfer.selection.yml}"
 IPERF_PORT=5201
 IPERF_SECONDS="${PROXMOX_LXC_TRANSFER_IPERF_SECONDS:-15}"
-IPERF_STREAMS="${PROXMOX_LXC_TRANSFER_IPERF_STREAMS:-4}"
+IPERF_STREAMS="${PROXMOX_LXC_TRANSFER_IPERF_STREAMS:-1}"
 
 die() { printf '[proxmox-transfer-speed-test][error] %s\n' "$*" >&2; exit 1; }
 

@@ -49,6 +49,8 @@ Proxmox host's management policy, or enable shell access to the containers.
   peer-column wildcard reported by `ss` does not cause a false failure.
 - Installs the OpenSSH authorized-keys command below the root-owned transfer
   configuration tree, including on legacy shifted-root filesystems.
+- Sanitizes host-inherited temporary-directory variables inside the LXC and
+  uses a basic single-stream `iperf3` test by default.
 - Keeps copy operations non-deleting and makes checksum verification a
   separate optional dry run.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.
