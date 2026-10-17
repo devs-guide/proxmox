@@ -69,6 +69,7 @@ grep -Fq 'proxmox-transfer-ssh-ok' "${PLAYBOOK}" || fail 'SSH server pairing che
 for forbidden in --delete --delete-before --delete-after --delete-during --delete-excluded --remove-source-files; do
   ! grep -Fq -- "${forbidden}" "${RSYNC_HELPER}" || fail "rsync helper contains destructive option ${forbidden}"
 done
+! grep -Fq -- '--protect-args' "${RSYNC_HELPER}" || fail 'rsync helper requests server option -s, which distro rrsync disables'
 grep -Fq 'verify-push' "${RSYNC_HELPER}" || fail 'optional push verification is missing'
 grep -Fq 'verify-pull' "${RSYNC_HELPER}" || fail 'optional pull verification is missing'
 grep -Fq -- '--dry-run --checksum --itemize-changes --stats' "${RSYNC_HELPER}" || fail 'verification is not a checksum dry run'

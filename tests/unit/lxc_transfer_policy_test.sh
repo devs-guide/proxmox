@@ -216,6 +216,7 @@ for action in push verify-push; do
   PROXMOX_LXC_TRANSFER_SSH_WRAPPER="${operation_dir}/ssh-wrapper" \
     "${ROOT}/cli/rsync/tree.sh" "${action}" "${operation_dir}/storage/source/" '172.29.41.8:chosen/destination/'
   ! grep -Eq -- '--delete|--remove-source-files' "${arguments}" || fail "${action} emitted a destructive rsync option"
+  ! grep -Fxq -- '--protect-args' "${arguments}" || fail "${action} emitted rrsync-incompatible server option -s"
 done
 for action in pull verify-pull; do
   arguments="${operation_dir}/${action}.args"
@@ -225,6 +226,7 @@ for action in pull verify-pull; do
   PROXMOX_LXC_TRANSFER_SSH_WRAPPER="${operation_dir}/ssh-wrapper" \
     "${ROOT}/cli/rsync/tree.sh" "${action}" '172.29.41.8:chosen/source/' "${operation_dir}/storage/destination/"
   ! grep -Eq -- '--delete|--remove-source-files' "${arguments}" || fail "${action} emitted a destructive rsync option"
+  ! grep -Fxq -- '--protect-args' "${arguments}" || fail "${action} emitted rrsync-incompatible server option -s"
 done
 grep -Fxq -- '--partial' "${operation_dir}/push.args" || fail 'push did not retain restartable partial-copy behavior'
 grep -Fxq -- '--partial' "${operation_dir}/pull.args" || fail 'pull did not retain restartable partial-copy behavior'

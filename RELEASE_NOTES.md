@@ -54,6 +54,8 @@ Proxmox host's management policy, or enable shell access to the containers.
 - Gives newly created restricted transfer users an impossible password hash,
   preserving key-only SSH while existing operator-selected accounts remain
   unchanged.
+- Avoids rsync protected-argument option `-s`, which Debian's supported
+  `rrsync` server intentionally disables.
 - Keeps copy operations non-deleting and makes checksum verification a
   separate optional dry run.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.

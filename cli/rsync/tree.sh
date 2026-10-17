@@ -68,11 +68,11 @@ if [[ "${ACTION}" == push || "${ACTION}" == verify-push ]]; then
   parsed="$(validate.remote "${DESTINATION}")" || usage
   mapfile -t remote <<< "${parsed}"
   if [[ "${ACTION}" == verify-push ]]; then
-    exec rsync -rlptHAXS --safe-links --human-readable --protect-args \
+    exec rsync -rlptHAXS --safe-links --human-readable \
       --dry-run --checksum --itemize-changes --stats \
       -e "${SSH_WRAPPER}" -- "${SOURCE}" "${remote[2]}@${remote[0]}:${remote[1]}"
   fi
-  exec rsync -rlptHAXS --safe-links --partial --human-readable --info=progress2 --protect-args \
+  exec rsync -rlptHAXS --safe-links --partial --human-readable --info=progress2 \
     -e "${SSH_WRAPPER}" -- "${SOURCE}" "${remote[2]}@${remote[0]}:${remote[1]}"
 fi
 
@@ -81,9 +81,9 @@ mapfile -t remote <<< "${parsed}"
 [[ -d "${DESTINATION}" ]] || { printf '[proxmox-transfer-rsync][error] Local destination directory does not exist: %s\n' "${DESTINATION}" >&2; exit 1; }
 validate.local "${DESTINATION}" || { printf '[proxmox-transfer-rsync][error] Local destination must be within the selected transfer root.\n' >&2; exit 1; }
 if [[ "${ACTION}" == verify-pull ]]; then
-  exec rsync -rlptHAXS --safe-links --human-readable --protect-args \
+  exec rsync -rlptHAXS --safe-links --human-readable \
     --dry-run --checksum --itemize-changes --stats \
     -e "${SSH_WRAPPER}" -- "${remote[2]}@${remote[0]}:${remote[1]}" "${DESTINATION}"
 fi
-exec rsync -rlptHAXS --safe-links --partial --human-readable --info=progress2 --protect-args \
+exec rsync -rlptHAXS --safe-links --partial --human-readable --info=progress2 \
   -e "${SSH_WRAPPER}" -- "${remote[2]}@${remote[0]}:${remote[1]}" "${DESTINATION}"
