@@ -32,7 +32,7 @@
       - ufw
       - allow
       - in
-      - on
+      - "on"
       - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
       - from
       - "{{ proxmox_lxc_transfer_ufw_allow_cidr }}"
@@ -54,7 +54,7 @@
       - ufw
       - allow
       - out
-      - on
+      - "on"
       - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
       - from
       - "{{ proxmox_lxc_transfer_ufw_local_address }}"
@@ -76,7 +76,7 @@
       - ufw
       - allow
       - in
-      - on
+      - "on"
       - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
       - from
       - "{{ proxmox_lxc_transfer_ufw_allow_cidr }}"
@@ -98,7 +98,7 @@
       - ufw
       - allow
       - out
-      - on
+      - "on"
       - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
       - from
       - "{{ proxmox_lxc_transfer_ufw_local_address }}"

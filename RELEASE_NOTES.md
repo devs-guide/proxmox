@@ -43,6 +43,8 @@ Proxmox host's management policy, or enable shell access to the containers.
   host-key pinning before any backup path is used.
 - Keeps the restricted transfer policy intact when Samba resets UFW.
 - Provides a one-shot `iperf3` server bound only to the selected DATA address.
+- Prevents YAML Boolean coercion from corrupting the UFW interface-specific
+  `on` command token during live apply.
 - Keeps copy operations non-deleting and makes checksum verification a
   separate optional dry run.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.

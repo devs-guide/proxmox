@@ -50,6 +50,8 @@ grep -Fq 'Allow on-demand iperf3 ingress from the complete selected DATA-Link CI
 grep -Fq 'Allow on-demand iperf3 egress across the complete selected DATA-Link CIDR' "${UFW_TASKS}" || fail 'LAN-wide iperf3 egress task is missing'
 grep -Fq 'proxmox-transfer-iperf-in' "${UFW_TASKS}" || fail 'managed iperf3 ingress rule is missing'
 grep -Fq 'proxmox-transfer-iperf-out' "${UFW_TASKS}" || fail 'managed iperf3 egress rule is missing'
+[[ "$(grep -Fc -- '- "on"' "${UFW_TASKS}")" -eq 4 ]] || fail 'UFW interface tokens are not all quoted against YAML boolean coercion'
+! grep -Eq -- '^[[:space:]]*-[[:space:]]+on[[:space:]]*$' "${UFW_TASKS}" || fail 'an unquoted UFW interface token can become Boolean True'
 ! grep -Eq '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/32' "${UFW_TASKS}" || fail 'peer-specific /32 exists in UFW policy'
 grep -Fq 'PROXMOX_FIREWALL_ENABLE_LXC_TRANSFER' "${FIREWALL}" || fail 'Proxmox LXC boundary opt-in is missing'
 grep -Fq 'for transfer_port in 22 5201' "${FIREWALL}" || fail 'Proxmox transfer boundary does not manage TCP 22 and TCP 5201 together'
