@@ -108,6 +108,21 @@ for forbidden in '10.10.0.4' '10.10.0.10' '10.10.0.100' '10.0.0.4' '10.0.0.172' 
 done
 ok 'production source remains topology-neutral'
 
+grep -Fq '$4 == endpoint' "${ROOT}/setup/lxc/transfer.sh" \
+  || fail 'listener verification must compare the local-address column exactly'
+grep -Fq '$4 ~ /^0\.0\.0\.0:/' "${ROOT}/setup/lxc/transfer.sh" \
+  || fail 'listener verification must reject only a wildcard local-address column'
+printf '%s\n' \
+  'LISTEN 0 128 172.29.41.7:22 0.0.0.0:*' \
+  | awk -v endpoint='172.29.41.7:22' '$4 == endpoint {found=1} $4 ~ /^0\.0\.0\.0:/ {bad=1} END {exit(found && !bad ? 0 : 1)}' \
+  || fail 'listener verification rejected a peer-column wildcard'
+if printf '%s\n' \
+  'LISTEN 0 128 0.0.0.0:22 0.0.0.0:*' \
+  | awk -v endpoint='172.29.41.7:22' '$4 == endpoint {found=1} $4 ~ /^0\.0\.0\.0:/ {bad=1} END {exit(found && !bad ? 0 : 1)}'; then
+  fail 'listener verification accepted a wildcard local listener'
+fi
+ok 'listener verification distinguishes local and peer address columns'
+
 operation_dir="${fixture_dir}/operation"
 mkdir -p "${operation_dir}/bin" "${operation_dir}/storage/source" "${operation_dir}/storage/destination"
 printf 'fixture\n' > "${operation_dir}/storage/source/file.txt"

@@ -515,7 +515,7 @@ verify.feature() {
   done
   grep -Fq 'forcecommand /usr/local/libexec/proxmox-transfer-rrsync-guard' <<< "${effective}" \
     || die 'Effective sshd policy does not force the non-deleting rrsync guard.'
-  ss -H -lnt4 "sport = :${PORT}" | awk -v endpoint="${LOCAL_ADDRESS}:${PORT}" 'index($0, endpoint) {found=1} index($0,"0.0.0:") {bad=1} END {exit(found && !bad ? 0 : 1)}' \
+  ss -H -lnt4 "sport = :${PORT}" | awk -v endpoint="${LOCAL_ADDRESS}:${PORT}" '$4 == endpoint {found=1} $4 ~ /^0\.0\.0\.0:/ {bad=1} END {exit(found && !bad ? 0 : 1)}' \
     || die 'Dedicated sshd is not bound exclusively to the selected DATA-Link address.'
   command -v iperf3 >/dev/null 2>&1 || die 'iperf3 is not installed.'
   [[ -x /usr/local/sbin/proxmox-transfer-speed-test ]] || die 'The iperf3 speed-test helper is missing.'
