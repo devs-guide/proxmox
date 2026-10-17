@@ -44,10 +44,22 @@ traverse access:
 ```bash
 export PROXMOX_LXC_TRANSFER_ROOT=/OPERATOR/SELECTED/ROOT
 export PROXMOX_LXC_TRANSFER_ACCESS_GROUP=EXISTING_STORAGE_GROUP
+export PROXMOX_LXC_TRANSFER_USER=OPERATOR_SELECTED_AUTOMATION_USER
 
 ./setup/lxc/transfer.sh preflight
 ./setup/lxc/transfer.sh prepare
 ```
+
+If the selected user already exists, its UID, GID, home, shell, and password
+remain unchanged; it must already belong to the selected access group. If it
+does not exist, the runner creates a locked restricted account in that group.
+The dedicated DATA-Link SSH listener applies the same key-only forced-command
+policy in either case.
+
+When the LXC has default-deny outbound policy, use the existing
+`setup/lxc/egress.sh` workflow to approve the published Pages and required
+package endpoints for the installation window. Revoke those temporary rules
+after both peers have applied and verified the transfer feature.
 
 If discovery finds more than one directly connected static interface, select
 the DATA-Link interactively or provide the displayed interface and CIDR. The

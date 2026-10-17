@@ -192,7 +192,37 @@
         database: group
         key: "{{ proxmox_lxc_transfer_effective.access_group }}"
 
-    - name: Create the restricted transfer account
+    - name: Inspect the operator-selected transfer account
+      command:
+        argv:
+          - getent
+          - passwd
+          - "{{ proxmox_lxc_transfer_effective.service_user }}"
+      register: proxmox_lxc_transfer_service_user
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the existing transfer account group membership
+      command:
+        argv:
+          - id
+          - -nG
+          - "{{ proxmox_lxc_transfer_effective.service_user }}"
+      register: proxmox_lxc_transfer_service_user_groups
+      changed_when: false
+      when: proxmox_lxc_transfer_service_user.rc == 0
+
+    - name: Preserve existing transfer account and require approved storage membership
+      assert:
+        that:
+          - proxmox_lxc_transfer_effective.access_group in proxmox_lxc_transfer_service_user_groups.stdout.split()
+        fail_msg: >-
+          The existing selected transfer account is not a member of the approved
+          storage access group. Account UID, GID, home, shell, and password are
+          intentionally not changed by this feature.
+      when: proxmox_lxc_transfer_service_user.rc == 0
+
+    - name: Create the missing restricted transfer account
       user:
         name: "{{ proxmox_lxc_transfer_effective.service_user }}"
         comment: "Restricted rsync DATA-Link account"
@@ -201,8 +231,9 @@
         shell: /bin/sh
         group: "{{ proxmox_lxc_transfer_effective.access_group }}"
         password: "NP"
-        update_password: always
+        update_password: on_create
         state: present
+      when: proxmox_lxc_transfer_service_user.rc != 0
 
     - name: Inspect executable distro rrsync locations
       stat:

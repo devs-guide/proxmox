@@ -37,6 +37,8 @@ Proxmox host's management policy, or enable shell access to the containers.
 - Disables passwords, root login, PTYs, shell commands, forwarding, tunneling,
   agent forwarding, and user environment changes.
 - Exchanges public-only pairing bundles and pins peer server host keys.
+- Preserves an existing operator-selected automation account's UID, GID,
+  home, shell, and password while requiring approved storage-group membership.
 - Provides a fixed, shell-free SSH handshake that proves key enrollment and
   host-key pinning before any backup path is used.
 - Keeps the restricted transfer policy intact when Samba resets UFW.
