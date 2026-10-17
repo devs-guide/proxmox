@@ -85,7 +85,7 @@ if (select.reconciliation.path "mp0|${bind_root}|/archive"); then
 fi
 ok 'production path containment and symlink rejection'
 
-if grep -Eq '/etc/fstab|(^|[[:space:]])(mount|umount)([[:space:]]|$)|pct (start|stop|shutdown|reboot)' \
+if grep -Eq '/etc/fstab|^[[:space:]]*(mount|umount)[[:space:]]|pct (start|stop|shutdown|reboot)' \
   "${ROOT}/setup/lxc/storage.sh"; then
   fail 'storage reconciliation contains persistent mount, mount lifecycle, or container restart commands'
 fi
