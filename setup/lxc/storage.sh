@@ -293,8 +293,10 @@ write.selection() {
 
 count.inaccessible() {
   local count
-  count="$(pct exec "${CTID}" -- setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
-    /bin/bash -c '
+  count="$(pct exec "${CTID}" -- env -u BASH_ENV -u ENV \
+    setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
+    /bin/bash --noprofile --norc -c '
+      cd /
       set -o pipefail
       find -P "$1" -xdev \
         \( \( -type d \( ! -readable -o ! -writable -o ! -executable \) -printf x -prune \) \
@@ -358,12 +360,14 @@ verify.transfer.destination() {
     "default:mask::rwx"; do
     grep -Fxq "${entry}" <<< "${acl}" || die "The destination root is missing ACL entry: ${entry}."
   done
-  pct exec "${CTID}" -- setpriv "--reuid=${TRANSFER_UID}" "--regid=${TRANSFER_GID}" --clear-groups \
-    /bin/bash -c 'test -O "$1" && test -r "$1" && test -w "$1" && test -x "$1"' \
+  pct exec "${CTID}" -- env -u BASH_ENV -u ENV \
+    setpriv "--reuid=${TRANSFER_UID}" "--regid=${TRANSFER_GID}" --clear-groups \
+    /bin/sh -c 'cd / && test -O "$1" && test -r "$1" && test -w "$1" && test -x "$1"' \
     mapped-transfer-access "${SELECTED_CONTAINER_PATH}" \
     || die "Transfer identity ${TRANSFER_USER} does not own and have read/write/traverse access to the destination root."
-  pct exec "${CTID}" -- setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
-    /bin/bash -c 'test -r "$1" && test -w "$1" && test -x "$1"' \
+  pct exec "${CTID}" -- env -u BASH_ENV -u ENV \
+    setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
+    /bin/sh -c 'cd / && test -r "$1" && test -w "$1" && test -x "$1"' \
     mapped-service-access "${SELECTED_CONTAINER_PATH}" \
     || die "Service identity ${SERVICE_USER} cannot read/write/traverse the destination root."
   log "Transfer destination verification passed for ${SELECTED_CONTAINER_PATH}."
@@ -404,8 +408,9 @@ verify.legacy() {
     || die 'Mapped group ACL verification failed.'
   [[ "$(pct status "${CTID}" 2>/dev/null | awk '{print $2}')" == running ]] \
     || die "CT ${CTID} must be running for mapped identity verification."
-  pct exec "${CTID}" -- setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
-    /bin/bash -c 'test -r "$1" && test -w "$1" && test -x "$1"' mapped-storage-access "${SELECTED_CONTAINER_PATH}" \
+  pct exec "${CTID}" -- env -u BASH_ENV -u ENV \
+    setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
+    /bin/sh -c 'cd / && test -r "$1" && test -w "$1" && test -x "$1"' mapped-storage-access "${SELECTED_CONTAINER_PATH}" \
     || die 'Mapped service identity cannot read/write/traverse the container mount.'
 }
 

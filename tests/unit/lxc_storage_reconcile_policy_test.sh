@@ -111,3 +111,9 @@ if grep -Eq '/etc/fstab|^[[:space:]]*(mount|umount)[[:space:]]|pct (start|stop|s
   fail 'storage reconciliation contains persistent mount, mount lifecycle, or container restart commands'
 fi
 ok 'reconciliation leaves mount and container lifecycle to the operator'
+
+grep -Fq 'env -u BASH_ENV -u ENV' "${ROOT}/setup/lxc/storage.sh" \
+  || fail 'unprivileged storage probes inherit privileged shell startup hooks'
+grep -Fq 'cd /' "${ROOT}/setup/lxc/storage.sh" \
+  || fail 'unprivileged storage probes do not leave the privileged working directory'
+ok 'unprivileged probes clear root shell hooks and working-directory inheritance'
