@@ -366,19 +366,42 @@ find.selected() {
 
 count.missing.default.acls() {
   local service_host_uid="$1" service_host_gid="$2" transfer_host_uid="$3" transfer_host_gid="$4"
-  local root_host_uid="$5" root_host_gid="$6" path acl count=0 entry
-  while IFS= read -r -d '' path; do
-    acl="$(getfacl -ncp -- "${path}")"
-    for entry in \
-      "default:user:${service_host_uid}:rwx" "default:group:${service_host_gid}:rwx" \
-      "default:user:${transfer_host_uid}:rwx" "default:group:${transfer_host_gid}:rwx" \
-      "default:user:${root_host_uid}:rwx" "default:group:${root_host_gid}:rwx"; do
-      if ! grep -Fxq "${entry}" <<< "${acl}"; then
-        count=$((count + 1))
-        break
-      fi
-    done
-  done < <(find.selected d)
+  local root_host_uid="$5" root_host_gid="$6" count
+  if ! count="$(
+    find.selected d \
+      | xargs -0 -r -n 256 getfacl -ncp -- \
+      | awk \
+        -v service_user="default:user:${service_host_uid}:rwx" \
+        -v service_group="default:group:${service_host_gid}:rwx" \
+        -v transfer_user="default:user:${transfer_host_uid}:rwx" \
+        -v transfer_group="default:group:${transfer_host_gid}:rwx" \
+        -v root_user="default:user:${root_host_uid}:rwx" \
+        -v root_group="default:group:${root_host_gid}:rwx" '
+          BEGIN { RS = ""; missing = 0 }
+          {
+            found_service_user = found_service_group = 0
+            found_transfer_user = found_transfer_group = 0
+            found_root_user = found_root_group = 0
+            line_count = split($0, lines, "\n")
+            for (line = 1; line <= line_count; line++) {
+              if (lines[line] == service_user) found_service_user = 1
+              if (lines[line] == service_group) found_service_group = 1
+              if (lines[line] == transfer_user) found_transfer_user = 1
+              if (lines[line] == transfer_group) found_transfer_group = 1
+              if (lines[line] == root_user) found_root_user = 1
+              if (lines[line] == root_group) found_root_group = 1
+            }
+            if (!(found_service_user && found_service_group &&
+                  found_transfer_user && found_transfer_group &&
+                  found_root_user && found_root_group)) missing++
+          }
+          END { print missing + 0 }
+        '
+  )"; then
+    die 'Unable to verify inherited destination ACLs.'
+  fi
+  count="${count//[[:space:]]/}"
+  [[ "${count}" =~ ^[0-9]+$ ]] || die 'The missing-default-ACL count was not numeric.'
   printf '%s\n' "${count}"
 }
 

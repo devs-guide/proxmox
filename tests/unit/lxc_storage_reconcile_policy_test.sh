@@ -117,6 +117,7 @@ ok 'transfer destination preparation is root-only and identity-derived'
 EXCLUDE_CONTAINER_PATH='/archive/chosen/private'
 EXCLUDED_PATH="${bind_root}/chosen/private"
 printf 'fixture\n' > "${bind_root}/chosen/file.txt"
+mkdir -p "${bind_root}/chosen/nested"
 printf 'private\n' > "${bind_root}/chosen/private/private.txt"
 owner_before="$(stat -c '%u:%g' "${bind_root}/chosen")"
 apply.reconciliation 202002 302000 202003 302003 200000 300000
@@ -134,6 +135,13 @@ private_acl="$(getfacl -ncp "${bind_root}/chosen/private")"
 ! grep -Fq 'user:202002:rwx' <<< "${private_acl}" \
   || fail 'operator-excluded subtree received a reconciliation ACL'
 ok 'recursive reconciliation grants all identities while pruning the selected exclusion'
+
+[[ "$(count.missing.default.acls 202002 302000 202003 302003 200000 300000)" == 0 ]] \
+  || fail 'batched verifier rejected complete inherited ACLs'
+setfacl -x d:u:202003 "${bind_root}/chosen/nested"
+[[ "$(count.missing.default.acls 202002 302000 202003 302003 200000 300000)" == 1 ]] \
+  || fail 'batched verifier did not count a directory with an incomplete inherited ACL'
+ok 'batched inherited-ACL verification counts directory records accurately'
 
 if grep -Eq '/etc/fstab|^[[:space:]]*(mount|umount)[[:space:]]|pct (start|stop|shutdown|reboot)' \
   "${ROOT}/setup/lxc/storage.sh"; then
