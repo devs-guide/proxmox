@@ -97,13 +97,15 @@ bash "${ROOT}/tests/unit/network_update_transaction_policy_test.sh"
 ok 'production DATA-Link address, semantic parser, apply/verify, and rollback fixtures'
 
 bash "${ROOT}/tests/unit/samba_credential_policy_test.sh"
-ok 'Samba hostname/custom credential and secret-cleanup fixtures'
+ok 'Samba default/custom credential and secret-cleanup fixtures'
 python3 "${ROOT}/tests/unit/samba_config_policy_test.py"
 ok 'production Samba config single-share render fixture'
 bash "${ROOT}/tests/unit/lxc_storage_reconcile_policy_test.sh"
 ok 'production post-transfer ACL reconciliation fixture'
 
-grep -q 'force_user: "smb-ingest"' "${GROUP_VARS}" || fail 'non-root Samba service user is not the default'
+grep -q 'force_user: "samba"' "${GROUP_VARS}" || fail 'unified Samba service user is not the default'
+grep -q 'force_group: "samba"' "${GROUP_VARS}" || fail 'unified Samba service group is not the default'
+! grep -qE 'service_(uid|gid):' "${GROUP_VARS}" || fail 'Samba service identity still has release-fixed IDs'
 ! grep -q 'force_user: "root"' "${SAMBA}" || fail 'Samba root forcing remains'
 ! grep -q '_RO]' "${SAMBA}" && ! grep -q '_RW]' "${SAMBA}" || fail 'legacy dual Samba shares remain'
 grep -q 'guest only = no' "${SAMBA}" || fail 'single-share guest/auth policy is missing'
@@ -119,9 +121,14 @@ grep -q 'ExecStartPre={{ proxmox_samba_effective.samba.data_ready_script_path }}
 grep -q 'Restart=on-failure' "${SAMBA}" || fail 'smbd startup race retry is missing'
 grep -q 'ssh.socket' "${SAMBA}" || fail 'SSH socket masking is missing'
 grep -q 'Remove the SSH server package' "${SAMBA}" || fail 'SSH server removal is missing'
-grep -q 'Lock temporary interactive accounts' "${SAMBA}" || fail 'temporary account locking is missing'
+grep -q 'Lock temporary interactive accounts that are not the transfer identity' "${SAMBA}" || fail 'transfer-aware temporary account locking is missing'
+grep -q "proxmox_lxc_transfer_preserved.service_user" "${SAMBA}" || fail 'active transfer identity exclusion is missing'
 grep -q 'Stop and mask legacy NetBIOS discovery' "${SAMBA}" || fail 'NetBIOS daemon hardening is missing'
-grep -q 'credential_mode.*hostname' "${GROUP_VARS}" || fail 'hostname credential mode is not the default'
+grep -q 'credential_mode.*samba' "${GROUP_VARS}" || fail 'samba credential mode is not the default'
+grep -q 'preserve_password' "${SAMBA}" || fail 'existing Samba password preservation is missing'
+grep -q 'Resolve the effective Samba filesystem UID' "${SAMBA}" || fail 'runtime Samba UID discovery is missing'
+grep -q 'Resolve the effective Samba filesystem GID' "${SAMBA}" || fail 'runtime Samba GID discovery is missing'
+grep -q 'Reload the validated Samba configuration' "${SAMBA}" || fail 'validated Samba reload is missing'
 grep -q 'remove.samba.secret.file' "${ROOT}/setup/lxc/samba.sh" || fail 'temporary Samba secret cleanup is missing'
 grep -q 'custom username and password' "${ROOT}/setup/lxc/samba.sh" || fail 'custom Samba credential selection is missing'
 grep -Fq 'shares: {{ proxmox_samba_effective.shares.explicit | to_json }}' "${SAMBA}" \

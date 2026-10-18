@@ -61,8 +61,8 @@ effective = {
         "force_create_mode": "0660",
         "directory_mask": "0770",
         "force_directory_mode": "0770",
-        "force_user": "smb-ingest",
-        "force_group": "smb-ingest",
+        "force_user": "samba",
+        "force_group": "samba",
         "allocation_roundup_size": 4096,
         "macos_vfs_objects": ["catia", "fruit", "streams_xattr"],
         "fruit_aapl": True,
@@ -75,7 +75,7 @@ effective = {
         "load_printers": False,
         "guest_mode": True,
     },
-    "auth": {"username": "fixture-nas"},
+    "auth": {"username": "samba"},
     "shares": {
         "explicit": [
             {
@@ -104,7 +104,9 @@ assert share.get("path") == "/media/ARCHIVE"
 assert share.get("guest ok") == "yes"
 assert share.get("guest only") == "no"
 assert share.get("read only") == "yes"
-assert share.get("write list") == "fixture-nas"
+assert parser["global"].get("force user") == "samba"
+assert parser["global"].get("force group") == "samba"
+assert share.get("write list") == "samba"
 assert "valid users" not in share
 assert "FIXTURE_DATA_RO" not in parser
 assert "FIXTURE_DATA_RW" not in parser

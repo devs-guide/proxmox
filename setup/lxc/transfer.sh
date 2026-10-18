@@ -289,7 +289,7 @@ select.storage() {
   show.storage.candidates
   if is.true "${INTERACTIVE}" && ((OPEN_TTY == 1)); then
     TRANSFER_ROOT="$(prompt.tty 'Existing transfer root (restricted rsync root)' "${TRANSFER_ROOT}")"
-    ACCESS_GROUP="$(prompt.tty 'Existing group with read/write access to that root' "${ACCESS_GROUP:-smb-ingest}")"
+    ACCESS_GROUP="$(prompt.tty 'Existing group with read/write access to that root' "${ACCESS_GROUP:-samba}")"
   fi
   [[ "${TRANSFER_ROOT}" == /* && "${TRANSFER_ROOT}" != / && -d "${TRANSFER_ROOT}" && ! -L "${TRANSFER_ROOT}" ]] \
     || die 'PROXMOX_LXC_TRANSFER_ROOT must name an existing non-symlink directory below /.'

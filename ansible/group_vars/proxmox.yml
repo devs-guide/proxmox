@@ -189,10 +189,8 @@ proxmox_samba:
     guest_mode: true
     map_to_guest: "Bad User"
     guest_account: "nobody"
-    force_user: "smb-ingest"
-    force_group: "smb-ingest"
-    service_uid: 2000
-    service_gid: 2000
+    force_user: "samba"
+    force_group: "samba"
     create_mask: "0660"
     directory_mask: "0770"
     force_create_mode: "0660"
@@ -234,7 +232,8 @@ proxmox_samba:
     explicit: []
 
   auth:
-    credential_mode: "hostname"
+    credential_mode: "samba"
+    preserve_password: false
     username: null
     password: null
 

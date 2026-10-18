@@ -77,12 +77,24 @@ fallback when the native interpreter is below the supported minimum.
    wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash -s -- preflight
    wget -qO- https://devs-guide.github.io/proxmox/setup/network.sh | bash -s -- update
    ```
-6. Map the fixed container service UID/GID 2000 onto the selected host bind
-   mount without changing ownership:
+6. After the in-container Samba apply has created or preserved `samba:samba`,
+   return to the Proxmox host and map its discovered UID/GID onto the selected
+   bind mount without changing ownership. Defer this step until that identity
+   exists:
 
    ```bash
-   wget -qO- https://devs-guide.github.io/proxmox/setup/lxc/storage.sh | bash -s -- preflight
-   wget -qO- https://devs-guide.github.io/proxmox/setup/lxc/storage.sh | bash -s -- apply
+   samba_uid="$(pct exec OPERATOR_SELECTED_CTID -- id -u samba)"
+   samba_gid="$(pct exec OPERATOR_SELECTED_CTID -- id -g samba)"
+
+   PROXMOX_LXC_STORAGE_CTID=OPERATOR_SELECTED_CTID \
+   PROXMOX_LXC_STORAGE_SERVICE_UID="${samba_uid}" \
+   PROXMOX_LXC_STORAGE_SERVICE_GID="${samba_gid}" \
+     bash -c 'wget -qO- https://devs-guide.github.io/proxmox/setup/lxc/storage.sh | bash -s -- preflight'
+
+   PROXMOX_LXC_STORAGE_CTID=OPERATOR_SELECTED_CTID \
+   PROXMOX_LXC_STORAGE_SERVICE_UID="${samba_uid}" \
+   PROXMOX_LXC_STORAGE_SERVICE_GID="${samba_gid}" \
+     bash -c 'wget -qO- https://devs-guide.github.io/proxmox/setup/lxc/storage.sh | bash -s -- apply'
    ```
 
    `apply` sets access and default ACLs at the dataset root for new ingest.
@@ -135,16 +147,22 @@ chmod 0700 /root/setup.lxc.egress.sh
    are read-only, while the authenticated Samba user is granted write access
    through `write list`. When exactly one mount is selected, the runner prompts
    for its published name; non-interactive callers can set
-   `PROXMOX_SAMBA_SHARE_NAME`. Filesystem operations
-   are forced to non-login `smb-ingest` UID/GID 2000; root ownership is not
-   replaced. The credential menu defaults to LXC-hostname compatibility mode:
-   the discovered container hostname becomes both the authenticated username
-   and initial password. Select `custom username and password` to enter a
-   lowercase account name and a hidden, confirmed secret instead. For
-   non-interactive custom apply, set `PROXMOX_SAMBA_CREDENTIAL_MODE=custom`,
-   `PROXMOX_SAMBA_AUTH_USER`, and `PROXMOX_SAMBA_AUTH_PASSWORD` as root.
-   Passwords are not written to persistent facts or logs; the mode-restricted
-   temporary Ansible variables file is removed on success, failure, or signal.
+   `PROXMOX_SAMBA_SHARE_NAME`. Filesystem operations default to the non-login
+   `samba:samba` identity. The target preserves an existing user ID, manages
+   the named group's ID, and assigns no release-fixed IDs; root ownership is
+   not replaced. The credential menu defaults
+   to the authenticated `samba` account and preserves its existing Samba
+   password during a reapply. A first installation prompts for a hidden,
+   confirmed secret. Hostname compatibility and custom credential modes remain
+   explicit alternatives. For non-interactive first-time or password-changing
+   apply, set `PROXMOX_SAMBA_AUTH_PASSWORD` as root. Passwords are not written
+   to persistent facts or logs; the mode-restricted temporary Ansible variables
+   file is removed on success, failure, or signal.
+
+   On a first deployment, the runner can report that a selected bind awaits
+   mapped service ACLs. Complete host step 6 with the newly discovered
+   `samba:samba` IDs before accepting filesystem access; the runner does not
+   change mount configuration or recursively replace ownership.
 
    UFW is reset to the dedicated-appliance policy: deny inbound and outbound,
    allow SMB only on the data role, and allow DNS/DHCP only on the egress role.
@@ -153,7 +171,9 @@ chmod 0700 /root/setup.lxc.egress.sh
    boot-order failures.
    SSH/SSHD services and sockets are stopped and masked, the SSH server package
    is removed, temporary `app`/`agent` logins are locked, and NetBIOS/Avahi
-   discovery remains off.
+   discovery remains off. When the restricted transfer role is already active,
+   its service identity, dedicated listener, and LAN UFW allowance are
+   preserved.
 
    The managed configuration intentionally leaves `aio write behind` unset.
    Samba's normal asynchronous I/O support remains available, but the server

@@ -25,22 +25,25 @@ reset.fixture() {
   PROXMOX_SAMBA_CREDENTIAL_MODE=""
   PROXMOX_SAMBA_AUTH_USER=""
   PROXMOX_SAMBA_AUTH_PASSWORD=""
+  PROXMOX_SAMBA_PRESERVE_AUTH_PASSWORD=0
   PROXMOX_SAMBA_ALLOW_HOSTNAME_PASSWORD=0
 }
 
 reset.fixture
 FEATURE_MODE=preflight
 select.samba.credentials
-assert.equal hostname "${PROXMOX_SAMBA_CREDENTIAL_MODE}" 'default preflight credential mode'
-assert.equal fixture-nas "${PROXMOX_SAMBA_AUTH_USER}" 'hostname-derived preflight username'
+assert.equal samba "${PROXMOX_SAMBA_CREDENTIAL_MODE}" 'default preflight credential mode'
+assert.equal samba "${PROXMOX_SAMBA_AUTH_USER}" 'default preflight username'
 assert.equal '' "${PROXMOX_SAMBA_AUTH_PASSWORD}" 'preflight password remains empty'
 
 reset.fixture
 FEATURE_MODE=apply
+PROXMOX_SAMBA_PRESERVE_AUTH_PASSWORD=1
 select.samba.credentials
-assert.equal hostname "${PROXMOX_SAMBA_CREDENTIAL_MODE}" 'default apply credential mode'
-assert.equal fixture-nas "${PROXMOX_SAMBA_AUTH_USER}" 'hostname-derived apply username'
-assert.equal fixture-nas "${PROXMOX_SAMBA_AUTH_PASSWORD}" 'hostname-derived apply password'
+assert.equal samba "${PROXMOX_SAMBA_CREDENTIAL_MODE}" 'default apply credential mode'
+assert.equal samba "${PROXMOX_SAMBA_AUTH_USER}" 'default apply username'
+assert.equal '' "${PROXMOX_SAMBA_AUTH_PASSWORD}" 'existing Samba password is not exposed or replaced'
+assert.equal 1 "${PROXMOX_SAMBA_PRESERVE_AUTH_PASSWORD}" 'existing Samba password preservation'
 
 reset.fixture
 FEATURE_MODE=apply
@@ -121,4 +124,4 @@ assert "shares" not in payload
 assert payload["proxmox_samba_access_users_runner"] == ["root", "app", "agent"]
 PY
 
-printf '[samba_credential_policy_test][ok] hostname/custom credentials, secret cleanup, and production YAML rendering\n'
+printf '[samba_credential_policy_test][ok] samba/hostname/custom credentials, password preservation, secret cleanup, and production YAML rendering\n'

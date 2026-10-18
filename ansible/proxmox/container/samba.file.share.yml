@@ -86,10 +86,8 @@
           guest_mode: true
           map_to_guest: "Bad User"
           guest_account: "nobody"
-          force_user: "smb-ingest"
-          force_group: "smb-ingest"
-          service_uid: 2000
-          service_gid: 2000
+          force_user: "samba"
+          force_group: "samba"
           create_mask: "0660"
           directory_mask: "0770"
           force_create_mode: "0660"
@@ -113,9 +111,10 @@
         shares:
           explicit: []
         auth:
-          credential_mode: "hostname"
+          credential_mode: "samba"
           username: null
           password: null
+          preserve_password: false
 
   pre_tasks:
     - name: Load manual Proxmox feature defaults
@@ -312,10 +311,12 @@
           - proxmox_samba_effective.network.allow_subnets | length > 0
           - not (proxmox_samba_effective.firewall.enabled | bool) or (proxmox_samba_effective.network.dns_servers | length > 0)
           - (proxmox_samba_effective.auth.username | default('', true) | string | length) > 0
-          - proxmox_samba_effective.auth.credential_mode in ['hostname', 'custom']
-          - proxmox_samba_effective.auth.username != proxmox_samba_effective.samba.force_user
+          - proxmox_samba_effective.auth.credential_mode in ['samba', 'hostname', 'custom']
           - proxmox_samba_effective.auth.username != proxmox_samba_effective.samba.guest_account
-          - proxmox_samba_effective.mode != 'apply' or (proxmox_samba_effective.auth.password | default('', true) | length > 0)
+          - >-
+            proxmox_samba_effective.mode != 'apply'
+            or (proxmox_samba_effective.auth.password | default('', true) | length > 0)
+            or (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
         fail_msg: >-
           Samba ingest requires separate discovered data/egress interfaces, an explicit
           local data CIDR, a non-root mapped service identity, and apply-time credentials.
@@ -354,16 +355,25 @@
             name: "{{ proxmox_samba_packages_effective }}"
             state: present
 
+        - name: Confirm the preserved Samba credential exists
+          command:
+            argv:
+              - pdbedit
+              - -L
+              - -u
+              - "{{ proxmox_samba_effective.auth.username }}"
+          changed_when: false
+          when: proxmox_samba_effective.auth.preserve_password | default(false) | bool
+
         - name: Ensure Samba force group exists
           group:
             name: "{{ proxmox_samba_effective.samba.force_group }}"
-            gid: "{{ proxmox_samba_effective.samba.service_gid | int }}"
+            system: true
             state: present
 
-        - name: Ensure Samba force user exists when a non-root custom account is requested
+        - name: Ensure the effective Samba filesystem user exists
           user:
             name: "{{ proxmox_samba_effective.samba.force_user }}"
-            uid: "{{ proxmox_samba_effective.samba.service_uid | int }}"
             group: "{{ proxmox_samba_effective.samba.force_group }}"
             system: true
             create_home: false
@@ -393,13 +403,32 @@
             SAMBA_PASSWORD: "{{ proxmox_samba_effective.auth.password }}"
           no_log: true
           changed_when: true
+          when: not (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
+
+        - name: Resolve the effective Samba filesystem UID
+          command:
+            argv:
+              - id
+              - -u
+              - "{{ proxmox_samba_effective.samba.force_user }}"
+          register: proxmox_samba_force_uid
+          changed_when: false
+
+        - name: Resolve the effective Samba filesystem GID
+          command:
+            argv:
+              - id
+              - -g
+              - "{{ proxmox_samba_effective.samba.force_user }}"
+          register: proxmox_samba_force_gid
+          changed_when: false
 
         - name: Verify mapped service identity access without changing root ownership
           command:
             argv:
               - setpriv
-              - "--reuid={{ proxmox_samba_effective.samba.service_uid | int }}"
-              - "--regid={{ proxmox_samba_effective.samba.service_gid | int }}"
+              - "--reuid={{ proxmox_samba_force_uid.stdout | int }}"
+              - "--regid={{ proxmox_samba_force_gid.stdout | int }}"
               - --clear-groups
               - /bin/bash
               - -c
@@ -411,15 +440,14 @@
           changed_when: false
           failed_when: false
 
-        - name: Require mapped service access on every selected mount
-          assert:
-            that:
-              - item.rc == 0
-            fail_msg: >-
-              Unable to grant the mapped service identity access to {{ item.item.path }}.
-              Preserve root ownership and run setup/lxc/storage.sh on the Proxmox host
-              to apply the unprivileged-container host UID/GID ACL mapping.
+        - name: Report selected mounts awaiting mapped service ACLs
+          debug:
+            msg: >-
+              The mapped Samba identity cannot yet write {{ item.item.path }}.
+              Preserve ownership and run setup/lxc/storage.sh on the Proxmox host
+              with the discovered Samba UID/GID before accepting the share.
           loop: "{{ proxmox_samba_share_access.results | default([]) }}"
+          when: item.rc != 0
 
         - name: Ensure Samba guest account exists when a custom guest account is requested
           user:
@@ -677,11 +705,16 @@
           changed_when: false
           when: proxmox_samba_effective.firewall.enabled | bool
 
-        - name: Enable and restart smbd
+        - name: Enable and start smbd
           systemd:
             name: smbd
             enabled: true
-            state: restarted
+            state: started
+
+        - name: Reload the validated Samba configuration
+          systemd:
+            name: smbd
+            state: reloaded
 
         - name: Stop and mask legacy NetBIOS discovery
           systemd:
@@ -726,12 +759,18 @@
           getent:
             database: passwd
 
-        - name: Lock temporary interactive accounts for the ingest role
+        - name: Lock temporary interactive accounts that are not the transfer identity
           user:
             name: "{{ item }}"
             password_lock: true
             shell: /usr/sbin/nologin
-          loop: "{{ proxmox_samba_effective.hardening.lock_users | default([]) }}"
+          loop: >-
+            {{
+              proxmox_samba_effective.hardening.lock_users
+              | default([])
+              | reject('equalto', proxmox_lxc_transfer_preserved.service_user | default(''))
+              | list
+            }}
           when: item in (ansible_facts.getent_passwd | default({}))
 
         - name: Enable and restart avahi-daemon

@@ -60,6 +60,9 @@ Proxmox host's management policy, or enable shell access to the containers.
   separate optional dry run.
 - Prepares only an operator-selected destination root for the mapped transfer
   identity, with inheritable transfer and Samba ACLs, before rsync starts.
+- Uses `samba:samba` as the default authenticated and forced filesystem
+  identity, preserving an existing user ID and password while assigning no
+  release-fixed user or group ID.
 - Reconciles additive Samba access on an operator-selected completed
   destination while preserving ownership and avoiding `chown` or `chmod`.
 - Refuses reconciliation during an active rsync or against an inactive bind
