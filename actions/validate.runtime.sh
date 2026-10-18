@@ -1082,8 +1082,9 @@ if grep -q '_RO]' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
   exit 1
 fi
 if ! grep -q 'Stop and mask SSH for the console-only ingest appliance' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
-   || ! grep -q 'Require SSH listener to be absent for console-only mode' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
-  echo "[validate.runtime][error] samba.file.share.yml must stop SSH and verify that port 22 is absent"
+   || ! grep -q 'Require SSH listener to be absent when no transfer role is active' "${ROOT}/ansible/proxmox/container/samba.file.share.yml" \
+   || ! grep -q 'not (proxmox_lxc_transfer_preserved.enabled | bool)' "${ROOT}/ansible/proxmox/container/samba.file.share.yml"; then
+  echo "[validate.runtime][error] samba.file.share.yml must isolate stock SSH while preserving a recorded transfer listener"
   exit 1
 fi
 echo "[validate.runtime][ok] samba.file.share.yml includes isolated Samba/SSH/firewall safeguards"
