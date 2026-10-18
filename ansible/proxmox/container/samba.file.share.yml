@@ -440,6 +440,19 @@
           changed_when: false
           failed_when: false
 
+        - name: Record whether every selected share has mapped service access
+          set_fact:
+            proxmox_samba_service_access_ready: >-
+              {{
+                (
+                  proxmox_samba_share_access.results
+                  | default([])
+                  | rejectattr('rc', 'equalto', 0)
+                  | list
+                  | length
+                ) == 0
+              }}
+
         - name: Report selected mounts awaiting mapped service ACLs
           debug:
             msg: >-
@@ -915,6 +928,14 @@
           register: proxmox_samba_authenticated_probe
           changed_when: false
           no_log: true
+          when: not (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
+
+        - name: Defer authenticated probes when preserving an existing password
+          debug:
+            msg: >-
+              The existing Samba password was intentionally not materialized.
+              Authenticate externally after the mapped service ACL pass.
+          when: proxmox_samba_effective.auth.preserve_password | default(false) | bool
 
         - name: Check authenticated browse output for selected shares by fields
           command:
@@ -937,6 +958,7 @@
           failed_when: false
           no_log: true
           loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
+          when: not (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
 
         - name: Require authenticated browse to list every read-write share
           assert:
@@ -946,6 +968,7 @@
             fail_msg: "Authenticated browse did not list an expected share."
           no_log: true
           loop: "{{ proxmox_samba_authenticated_share_checks.results | default([]) }}"
+          when: not (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
 
         - name: Prove authenticated create rename and delete on every selected share
           command:
@@ -962,6 +985,9 @@
           changed_when: false
           loop: "{{ proxmox_samba_effective.shares.explicit | default([]) }}"
           no_log: true
+          when:
+            - not (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
+            - proxmox_samba_service_access_ready | default(false) | bool
 
         - name: Require authenticated write lifecycle probes to pass
           assert:
@@ -970,6 +996,9 @@
             fail_msg: "Authenticated create/rename/delete failed on a selected share."
           loop: "{{ proxmox_samba_authenticated_write_probe.results | default([]) }}"
           no_log: true
+          when:
+            - not (proxmox_samba_effective.auth.preserve_password | default(false) | bool)
+            - proxmox_samba_service_access_ready | default(false) | bool
 
         - name: Persist runtime Samba summary
           copy:

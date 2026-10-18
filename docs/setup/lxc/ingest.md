@@ -157,7 +157,9 @@ chmod 0700 /root/setup.lxc.egress.sh
    explicit alternatives. For non-interactive first-time or password-changing
    apply, set `PROXMOX_SAMBA_AUTH_PASSWORD` as root. Passwords are not written
    to persistent facts or logs; the mode-restricted temporary Ansible variables
-   file is removed on success, failure, or signal.
+   file is removed on success, failure, or signal. When an existing secret is
+   preserved, the in-container authenticated probe is deferred because the
+   plaintext password is deliberately unavailable.
 
    On a first deployment, the runner can report that a selected bind awaits
    mapped service ACLs. Complete host step 6 with the newly discovered

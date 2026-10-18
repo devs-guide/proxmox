@@ -126,6 +126,8 @@ grep -q "proxmox_lxc_transfer_preserved.service_user" "${SAMBA}" || fail 'active
 grep -q 'Stop and mask legacy NetBIOS discovery' "${SAMBA}" || fail 'NetBIOS daemon hardening is missing'
 grep -q 'credential_mode.*samba' "${GROUP_VARS}" || fail 'samba credential mode is not the default'
 grep -q 'preserve_password' "${SAMBA}" || fail 'existing Samba password preservation is missing'
+grep -q 'Defer authenticated probes when preserving an existing password' "${SAMBA}" || fail 'preserved-password probe deferral is missing'
+grep -q 'proxmox_samba_service_access_ready' "${SAMBA}" || fail 'mapped-service ACL gate is missing'
 grep -q 'Resolve the effective Samba filesystem UID' "${SAMBA}" || fail 'runtime Samba UID discovery is missing'
 grep -q 'Resolve the effective Samba filesystem GID' "${SAMBA}" || fail 'runtime Samba GID discovery is missing'
 grep -q 'Reload the validated Samba configuration' "${SAMBA}" || fail 'validated Samba reload is missing'
