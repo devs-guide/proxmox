@@ -249,7 +249,13 @@ subtree. It refuses an inactive bind-source mountpoint, active rsync, symlinked
 or escaping paths, nested filesystems, missing identities, and a stopped LXC.
 `apply` adds read/write ACLs to regular files plus read/write/traverse and
 inheritable ACLs to directories. It does not call `chown`, `chmod`, or any
-rsync deletion operation. Re-run reconciliation after any later metadata-
+rsync deletion operation. POSIX ACL owner precedence means a same-ID named ACL
+cannot grant access when mapped root, the transfer user, or the Samba
+presentation user already owns an entry with restrictive owner permissions.
+Reconciliation therefore adds missing owner read/write bits on regular files
+and read/write/traverse bits on directories owned by those identities. It
+preserves regular-file execute state and leaves other owners' mode bits
+unchanged. Re-run reconciliation after any later metadata-
 preserving copy; ACL-safe backup mode does not restore source ACLs.
 
 ## Operations

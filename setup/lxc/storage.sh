@@ -364,6 +364,28 @@ find.selected() {
   fi
 }
 
+find.selected.identity.owned() {
+  local type="$1" service_host_uid="$2" transfer_host_uid="$3" root_host_uid="$4"
+  local executable_filter="${5:-any}"
+  local -a permission_expression=()
+  case "${executable_filter}" in
+    any) ;;
+    executable) permission_expression=(-perm /0100) ;;
+    non-executable) permission_expression=('!' -perm /0100) ;;
+    *) die "Unsupported owner-access executable filter: ${executable_filter}" ;;
+  esac
+  if [[ -n "${EXCLUDED_PATH}" ]]; then
+    find -P "${SELECTED_PATH}" -xdev \( -path "${EXCLUDED_PATH}" -prune \) -o \
+      -type "${type}" \
+      \( -uid "${service_host_uid}" -o -uid "${transfer_host_uid}" -o -uid "${root_host_uid}" \) \
+      "${permission_expression[@]}" -print0
+  else
+    find -P "${SELECTED_PATH}" -xdev -type "${type}" \
+      \( -uid "${service_host_uid}" -o -uid "${transfer_host_uid}" -o -uid "${root_host_uid}" \) \
+      "${permission_expression[@]}" -print0
+  fi
+}
+
 count.missing.default.acls() {
   local service_host_uid="$1" service_host_gid="$2" transfer_host_uid="$3" transfer_host_gid="$4"
   local root_host_uid="$5" root_host_gid="$6" count
@@ -376,12 +398,14 @@ count.missing.default.acls() {
         -v transfer_user="default:user:${transfer_host_uid}:rwx" \
         -v transfer_group="default:group:${transfer_host_gid}:rwx" \
         -v root_user="default:user:${root_host_uid}:rwx" \
-        -v root_group="default:group:${root_host_gid}:rwx" '
+        -v root_group="default:group:${root_host_gid}:rwx" \
+        -v owner_default="default:user::rwx" '
           BEGIN { RS = ""; missing = 0 }
           {
             found_service_user = found_service_group = 0
             found_transfer_user = found_transfer_group = 0
             found_root_user = found_root_group = 0
+            found_owner_default = 0
             line_count = split($0, lines, "\n")
             for (line = 1; line <= line_count; line++) {
               if (lines[line] == service_user) found_service_user = 1
@@ -390,10 +414,12 @@ count.missing.default.acls() {
               if (lines[line] == transfer_group) found_transfer_group = 1
               if (lines[line] == root_user) found_root_user = 1
               if (lines[line] == root_group) found_root_group = 1
+              if (lines[line] == owner_default) found_owner_default = 1
             }
             if (!(found_service_user && found_service_group &&
                   found_transfer_user && found_transfer_group &&
-                  found_root_user && found_root_group)) missing++
+                  found_root_user && found_root_group &&
+                  found_owner_default)) missing++
           }
           END { print missing + 0 }
         '
@@ -403,6 +429,19 @@ count.missing.default.acls() {
   count="${count//[[:space:]]/}"
   [[ "${count}" =~ ^[0-9]+$ ]] || die 'The missing-default-ACL count was not numeric.'
   printf '%s\n' "${count}"
+}
+
+apply.identity.owner.access() {
+  local service_host_uid="$1" transfer_host_uid="$2" root_host_uid="$3"
+  # POSIX ACL lookup stops at user:: for a matching owner UID. A named entry
+  # for that UID cannot repair restrictive owner permissions, so lift only
+  # the three presentation identities and retain regular-file execute state.
+  find.selected.identity.owned d "${service_host_uid}" "${transfer_host_uid}" "${root_host_uid}" any \
+    | xargs -0 -r -n 256 setfacl -m 'u::rwx'
+  find.selected.identity.owned f "${service_host_uid}" "${transfer_host_uid}" "${root_host_uid}" executable \
+    | xargs -0 -r -n 256 setfacl -m 'u::rwx'
+  find.selected.identity.owned f "${service_host_uid}" "${transfer_host_uid}" "${root_host_uid}" non-executable \
+    | xargs -0 -r -n 256 setfacl -m 'u::rw-'
 }
 
 verify.reconciliation() {
@@ -431,19 +470,20 @@ apply.reconciliation() {
   local service_host_uid="$1" service_host_gid="$2" transfer_host_uid="$3" transfer_host_gid="$4"
   local root_host_uid="$5" root_host_gid="$6"
   refuse.active.transfer
-  log 'Applying restartable additive ACL batches without chown or chmod.'
+  log 'Applying restartable ACL batches without changing ownership or removing executable bits.'
   find.selected d \
     | xargs -0 -r -n 256 setfacl -m \
       "u:${service_host_uid}:rwx,g:${service_host_gid}:rwx,d:u:${service_host_uid}:rwx,d:g:${service_host_gid}:rwx" \
       -m "u:${transfer_host_uid}:rwx,g:${transfer_host_gid}:rwx,d:u:${transfer_host_uid}:rwx,d:g:${transfer_host_gid}:rwx" \
       -m "u:${root_host_uid}:rwx,g:${root_host_gid}:rwx,d:u:${root_host_uid}:rwx,d:g:${root_host_gid}:rwx" \
-      -m 'm::rwx,d:m::rwx'
+      -m 'm::rwx,d:u::rwx,d:m::rwx'
   find.selected f \
     | xargs -0 -r -n 256 setfacl -m \
       "u:${service_host_uid}:rw-,g:${service_host_gid}:rw-" \
       -m "u:${transfer_host_uid}:rw-,g:${transfer_host_gid}:rw-" \
       -m "u:${root_host_uid}:rw-,g:${root_host_gid}:rw-" \
       -m 'm::rwx'
+  apply.identity.owner.access "${service_host_uid}" "${transfer_host_uid}" "${root_host_uid}"
 }
 
 verify.transfer.destination() {

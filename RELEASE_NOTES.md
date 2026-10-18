@@ -72,6 +72,9 @@ Proxmox host's management policy, or enable shell access to the containers.
 - Reconciles additive Samba, transfer-user, and mapped container-root access
   on an operator-selected destination while preserving ownership and avoiding
   `chown` or `chmod`; an operator-selected private subtree can be excluded.
+  Paths already owned by one of those identities receive a repaired POSIX
+  owner ACL entry because a same-ID named ACL is ignored; regular-file execute
+  state is preserved.
 - Refuses reconciliation during an active rsync or against an inactive bind
   mount, symlinked path, filesystem escape, or nested filesystem.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.

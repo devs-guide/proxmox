@@ -136,6 +136,24 @@ private_acl="$(getfacl -ncp "${bind_root}/chosen/private")"
   || fail 'operator-excluded subtree received a reconciliation ACL'
 ok 'recursive reconciliation grants all identities while pruning the selected exclusion'
 
+owner_uid="$(id -u)"
+owner_dir="${bind_root}/chosen/owner-restricted"
+owner_plain="${bind_root}/chosen/owner-plain"
+owner_executable="${bind_root}/chosen/owner-executable"
+mkdir -p "${owner_dir}"
+: > "${owner_plain}"
+: > "${owner_executable}"
+chmod 100 "${owner_dir}" "${owner_executable}"
+chmod 000 "${owner_plain}"
+apply.identity.owner.access "${owner_uid}" "${owner_uid}" "${owner_uid}"
+getfacl -ncp "${owner_dir}" | grep -Fxq 'user::rwx' \
+  || fail 'identity-owned directory did not receive owner read/write/traverse access'
+getfacl -ncp "${owner_plain}" | grep -Fxq 'user::rw-' \
+  || fail 'identity-owned non-executable file did not retain a non-executable owner entry'
+getfacl -ncp "${owner_executable}" | grep -Fxq 'user::rwx' \
+  || fail 'identity-owned executable file did not retain its owner execute bit'
+ok 'identity-owner ACL repair preserves executable state while adding required access'
+
 [[ "$(count.missing.default.acls 202002 302000 202003 302003 200000 300000)" == 0 ]] \
   || fail 'batched verifier rejected complete inherited ACLs'
 setfacl -x d:u:202003 "${bind_root}/chosen/nested"
