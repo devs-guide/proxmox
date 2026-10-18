@@ -258,6 +258,28 @@ grep -Fxq -- '--checksum' "${operation_dir}/verify-backup-push.args" \
   || fail 'verify-backup-push does not compare checksums'
 ok 'metadata-preserving and ACL-safe non-deleting transfer arguments'
 
+mkdir -p "${operation_dir}/alternate-source"
+printf 'alternate\n' > "${operation_dir}/alternate-source/file.txt"
+PATH="${operation_dir}/bin:${PATH}" \
+PROXMOX_TEST_ARGUMENTS="${operation_dir}/alternate-backup.args" \
+PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+PROXMOX_LXC_TRANSFER_SSH_WRAPPER="${operation_dir}/ssh-wrapper" \
+PROXMOX_LXC_TRANSFER_LOCAL_ROOT="${operation_dir}/alternate-source" \
+  "${ROOT}/cli/rsync/tree.sh" backup-push "${operation_dir}/alternate-source/" \
+    '172.29.41.8:chosen/alternate/'
+grep -Fxq -- "${operation_dir}/alternate-source/" "${operation_dir}/alternate-backup.args" \
+  || fail 'operator-selected outbound local root was not accepted'
+if PATH="${operation_dir}/bin:${PATH}" \
+  PROXMOX_TEST_ARGUMENTS="${operation_dir}/unsafe-root.args" \
+  PROXMOX_LXC_TRANSFER_SELECTION_PATH="${operation_dir}/selection.json" \
+  PROXMOX_LXC_TRANSFER_SSH_WRAPPER="${operation_dir}/ssh-wrapper" \
+  PROXMOX_LXC_TRANSFER_LOCAL_ROOT=/ \
+    "${ROOT}/cli/rsync/tree.sh" backup-push "${operation_dir}/alternate-source/" \
+      '172.29.41.8:chosen/alternate/' >/dev/null 2>&1; then
+  fail 'filesystem root was accepted as an outbound local root'
+fi
+ok 'outbound source root is explicit, operator-selected, and bounded'
+
 job_state_dir="${operation_dir}/jobs"
 job_log_dir="${operation_dir}/job-logs"
 mkdir -p "${job_state_dir}" "${job_log_dir}"

@@ -178,6 +178,8 @@ name. The helper owns the Screen session, persistent log, PID, timestamps, and
 exit status:
 
 ```bash
+export PROXMOX_LXC_TRANSFER_LOCAL_ROOT=/SELECTED/LOCAL/ROOT
+
 proxmox-transfer-rsync start-backup-push JOB_NAME \
   /SELECTED/LOCAL/SOURCE/ PEER_DATA_IPV4:SELECTED/DESTINATION/
 
@@ -193,6 +195,10 @@ elapsed time, transferred-file count, remaining checks, and a best-effort
 current source file. A percentage is labelled provisional while rsync is still
 discovering the incremental file list. `watch` refreshes every two seconds;
 interrupting the viewer does not interrupt the background copy.
+`PROXMOX_LXC_TRANSFER_LOCAL_ROOT` permits an explicit outbound source root that
+differs from the inbound restricted-rsync root saved during pairing. It must be
+an existing, absolute, non-symlink directory below `/`; the selected local path
+must remain inside it.
 
 ## 7. Optional verification
 

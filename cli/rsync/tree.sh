@@ -8,6 +8,7 @@ SSH_WRAPPER="${PROXMOX_LXC_TRANSFER_SSH_WRAPPER:-/usr/local/sbin/proxmox-transfe
 SELECTION_PATH="${PROXMOX_LXC_TRANSFER_SELECTION_PATH:-/etc/ansible/proxmox/facts/lxc.transfer.selection.yml}"
 JOB_STATE_DIR="${PROXMOX_LXC_TRANSFER_JOB_STATE_DIR:-/var/lib/proxmox-transfer/jobs}"
 JOB_LOG_DIR="${PROXMOX_LXC_TRANSFER_JOB_LOG_DIR:-/var/log/proxmox-transfer}"
+LOCAL_ROOT="${PROXMOX_LXC_TRANSFER_LOCAL_ROOT:-}"
 SELF_PATH="$(realpath -e -- "${BASH_SOURCE[0]}")"
 
 die() { printf '[proxmox-transfer-rsync][error] %s\n' "$*" >&2; exit 1; }
@@ -65,11 +66,16 @@ PY
 }
 
 validate.local() {
-  python3 - "$1" "${SELECTION_PATH}" <<'PY'
+  python3 - "$1" "${SELECTION_PATH}" "${LOCAL_ROOT}" <<'PY'
 import json, pathlib, sys
 candidate = pathlib.Path(sys.argv[1])
 selection = json.loads(pathlib.Path(sys.argv[2]).read_text())["proxmox_lxc_transfer_operator_selection"]
-root = pathlib.Path(selection["transfer_root"]).resolve(strict=True)
+selected_root = sys.argv[3] or str(selection["transfer_root"])
+root_candidate = pathlib.Path(selected_root)
+if (not root_candidate.is_absolute() or selected_root == "/" or root_candidate.is_symlink()
+        or not root_candidate.is_dir()):
+    raise SystemExit(1)
+root = root_candidate.resolve(strict=True)
 resolved = candidate.resolve(strict=True)
 try:
     resolved.relative_to(root)

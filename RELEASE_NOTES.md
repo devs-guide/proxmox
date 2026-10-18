@@ -62,6 +62,8 @@ Proxmox host's management policy, or enable shell access to the containers.
   than restoring source POSIX modes and ACLs.
 - Runs named multi-day backup jobs in managed Screen sessions with durable
   logs, text or JSON status, and a live percentage/rate/ETA view.
+- Accepts an explicit outbound local root without widening the inbound
+  peer-facing restricted-rsync root.
 - Prepares only an operator-selected destination root for the mapped transfer
   identity, with inheritable transfer and Samba ACLs, before rsync starts.
 - Uses `samba:samba` as the default authenticated and forced filesystem
