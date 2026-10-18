@@ -837,7 +837,7 @@
             executable: /bin/bash
           changed_when: false
 
-        - name: Require SSH listener to be absent for console-only mode
+        - name: Require SSH listener to be absent when no transfer role is active
           command:
             argv:
               - ss
@@ -849,7 +849,9 @@
           failed_when: >-
             proxmox_samba_ssh_listener_probe.rc != 0
             or (proxmox_samba_ssh_listener_probe.stdout | trim | length) > 0
-          when: not (proxmox_samba_effective.ssh.enabled | bool)
+          when:
+            - not (proxmox_samba_effective.ssh.enabled | bool)
+            - not (proxmox_lxc_transfer_preserved.enabled | bool)
 
         - name: Probe Samba shares locally
           command:

@@ -175,7 +175,7 @@ chmod 0700 /root/setup.lxc.egress.sh
    is removed, temporary `app`/`agent` logins are locked, and NetBIOS/Avahi
    discovery remains off. When the restricted transfer role is already active,
    its service identity, dedicated listener, and LAN UFW allowance are
-   preserved.
+   preserved and excluded from the console-only SSH checks.
 
    The managed configuration intentionally leaves `aio write behind` unset.
    Samba's normal asynchronous I/O support remains available, but the server
