@@ -24,6 +24,7 @@
         - openssh-server
         - openssh-client
         - rsync
+        - screen
         - ufw
         - acl
         - attr
@@ -125,6 +126,11 @@
         enabled: false
         state: stopped
       failed_when: false
+
+    - name: Confirm managed transfer job dependencies
+      command:
+        argv: [sh, -c, 'command -v screen >/dev/null && command -v python3 >/dev/null']
+      changed_when: false
 
     - name: Confirm the selected DATA-Link interface owns the selected address
       shell: |

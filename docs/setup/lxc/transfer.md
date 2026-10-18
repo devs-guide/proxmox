@@ -163,6 +163,37 @@ removal. Files present only at the destination remain in place. The forced
 server command rejects the same destructive options even if an enrolled key
 holder bypasses the helper and invokes rsync directly.
 
+For a destination whose Samba and automation access ACLs must remain effective
+during a long copy, select the ACL-safe backup mode. It preserves timestamps,
+links, hard links, xattrs, and sparse files but deliberately does not restore
+source POSIX modes or ACLs. Destination default ACLs remain authoritative.
+
+```bash
+proxmox-transfer-rsync backup-push /SELECTED/LOCAL/SOURCE/ \
+  PEER_DATA_IPV4:SELECTED/DESTINATION/
+```
+
+For a detached, durable transfer with progress reporting, supply a unique job
+name. The helper owns the Screen session, persistent log, PID, timestamps, and
+exit status:
+
+```bash
+proxmox-transfer-rsync start-backup-push JOB_NAME \
+  /SELECTED/LOCAL/SOURCE/ PEER_DATA_IPV4:SELECTED/DESTINATION/
+
+proxmox-transfer-rsync status JOB_NAME
+proxmox-transfer-rsync status JOB_NAME --output json
+proxmox-transfer-rsync watch JOB_NAME
+proxmox-transfer-rsync log JOB_NAME
+proxmox-transfer-rsync list
+```
+
+`status` reports transferred bytes, whole-transfer percentage, rate, ETA,
+elapsed time, transferred-file count, remaining checks, and a best-effort
+current source file. A percentage is labelled provisional while rsync is still
+discovering the incremental file list. `watch` refreshes every two seconds;
+interrupting the viewer does not interrupt the background copy.
+
 ## 7. Optional verification
 
 Verification is a separate operator-selected step after the copy. It performs
@@ -175,6 +206,9 @@ proxmox-transfer-rsync verify-push /SELECTED/LOCAL/SOURCE/ \
 
 proxmox-transfer-rsync verify-pull \
   PEER_DATA_IPV4:SELECTED/REMOTE/SOURCE/ /SELECTED/LOCAL/DESTINATION/
+
+proxmox-transfer-rsync verify-backup-push /SELECTED/LOCAL/SOURCE/ \
+  PEER_DATA_IPV4:SELECTED/DESTINATION/
 ```
 
 ## 8. Reconcile authenticated Samba access
@@ -194,6 +228,8 @@ export PROXMOX_LXC_STORAGE_CONTAINER_PATH=/OPERATOR/SELECTED/DESTINATION
 export PROXMOX_LXC_STORAGE_SERVICE_USER=OPERATOR_SELECTED_SAMBA_SERVICE_USER
 export PROXMOX_LXC_STORAGE_SERVICE_GROUP=OPERATOR_SELECTED_SAMBA_SERVICE_GROUP
 export PROXMOX_LXC_STORAGE_TRANSFER_USER=OPERATOR_SELECTED_TRANSFER_USER
+# Optional private subtree below the selected destination:
+export PROXMOX_LXC_STORAGE_EXCLUDE_CONTAINER_PATH=/OPERATOR/SELECTED/PRIVATE_SUBTREE
 
 ./setup/lxc/storage.sh preflight
 ./setup/lxc/storage.sh apply
@@ -201,12 +237,14 @@ export PROXMOX_LXC_STORAGE_TRANSFER_USER=OPERATOR_SELECTED_TRANSFER_USER
 ```
 
 The runner derives the bind source and host UID/GID mapping from live Proxmox
-and LXC state. It refuses an inactive bind-source mountpoint, active rsync,
-symlinked or escaping paths, nested filesystems, missing identities, and a
-stopped LXC. `apply` adds read/write ACLs to regular files plus
-read/write/traverse and inheritable ACLs to directories. It does not call
-`chown`, `chmod`, or any rsync deletion operation. Re-run reconciliation after
-any later copy that preserves source ACLs.
+and LXC state. It grants additive access to the selected Samba identity,
+transfer identity, and mapped container root while pruning the optional private
+subtree. It refuses an inactive bind-source mountpoint, active rsync, symlinked
+or escaping paths, nested filesystems, missing identities, and a stopped LXC.
+`apply` adds read/write ACLs to regular files plus read/write/traverse and
+inheritable ACLs to directories. It does not call `chown`, `chmod`, or any
+rsync deletion operation. Re-run reconciliation after any later metadata-
+preserving copy; ACL-safe backup mode does not restore source ACLs.
 
 ## Operations
 

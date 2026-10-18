@@ -158,6 +158,10 @@ if grep -Fq 'password_lock: true' "${ROOT}/ansible/proxmox/container/rsync.peer.
 fi
 ok 'new restricted transfer accounts disable password login without blocking keys'
 
+grep -Fq -- '- screen' "${ROOT}/ansible/proxmox/container/rsync.peer.yml" \
+  || fail 'managed transfer jobs do not install GNU Screen'
+ok 'managed background transfer dependency'
+
 operation_dir="${fixture_dir}/operation"
 mkdir -p "${operation_dir}/bin" "${operation_dir}/storage/source" "${operation_dir}/storage/destination"
 printf 'fixture\n' > "${operation_dir}/storage/source/file.txt"
@@ -209,7 +213,7 @@ grep -Fxq -- 'proxmox-transfer-check' "${operation_dir}/ssh-check.args" \
   || fail 'SSH check omitted the fixed server handshake command'
 ok 'key-only pinned-host SSH pairing check'
 
-for action in push verify-push; do
+for action in push verify-push backup-push verify-backup-push; do
   arguments="${operation_dir}/${action}.args"
   PATH="${operation_dir}/bin:${PATH}" \
   PROXMOX_TEST_ARGUMENTS="${arguments}" \
@@ -219,7 +223,7 @@ for action in push verify-push; do
   ! grep -Eq -- '--delete|--remove-source-files' "${arguments}" || fail "${action} emitted a destructive rsync option"
   ! grep -Fxq -- '--protect-args' "${arguments}" || fail "${action} emitted rrsync-incompatible server option -s"
 done
-for action in pull verify-pull; do
+for action in pull verify-pull backup-pull verify-backup-pull; do
   arguments="${operation_dir}/${action}.args"
   PATH="${operation_dir}/bin:${PATH}" \
   PROXMOX_TEST_ARGUMENTS="${arguments}" \
@@ -231,13 +235,78 @@ for action in pull verify-pull; do
 done
 grep -Fxq -- '--partial' "${operation_dir}/push.args" || fail 'push did not retain restartable partial-copy behavior'
 grep -Fxq -- '--partial' "${operation_dir}/pull.args" || fail 'pull did not retain restartable partial-copy behavior'
+grep -Fxq -- '--partial' "${operation_dir}/backup-push.args" || fail 'backup-push did not retain restartable partial-copy behavior'
+grep -Fxq -- '--partial' "${operation_dir}/backup-pull.args" || fail 'backup-pull did not retain restartable partial-copy behavior'
 ! grep -Fxq -- '--dry-run' "${operation_dir}/push.args" || fail 'push unexpectedly became a dry run'
 ! grep -Fxq -- '--dry-run' "${operation_dir}/pull.args" || fail 'pull unexpectedly became a dry run'
 grep -Fxq -- '--dry-run' "${operation_dir}/verify-push.args" || fail 'verify-push is not a dry run'
 grep -Fxq -- '--checksum' "${operation_dir}/verify-push.args" || fail 'verify-push does not compare checksums'
 grep -Fxq -- '--dry-run' "${operation_dir}/verify-pull.args" || fail 'verify-pull is not a dry run'
 grep -Fxq -- '--checksum' "${operation_dir}/verify-pull.args" || fail 'verify-pull does not compare checksums'
-ok 'non-deleting push/pull and separately selected verification arguments'
+for action in backup-push backup-pull verify-backup-push verify-backup-pull; do
+  arguments="${operation_dir}/${action}.args"
+  grep -Fxq -- '-rltHXS' "${arguments}" || fail "${action} omitted the ACL-safe metadata policy"
+  grep -Fxq -- '--no-perms' "${arguments}" || fail "${action} can restore source modes"
+  grep -Fxq -- '--no-acls' "${arguments}" || fail "${action} can restore source ACLs"
+  grep -Fxq -- '--chmod=Du+rwx,Dg+rwx,Fu+rw,Fg+rw' "${arguments}" \
+    || fail "${action} omitted the inherited ACL mask policy"
+  ! grep -Fxq -- '-rlptHAXS' "${arguments}" || fail "${action} retained source permission/ACL preservation"
+done
+grep -Fxq -- '--dry-run' "${operation_dir}/verify-backup-push.args" \
+  || fail 'verify-backup-push is not a dry run'
+grep -Fxq -- '--checksum' "${operation_dir}/verify-backup-push.args" \
+  || fail 'verify-backup-push does not compare checksums'
+ok 'metadata-preserving and ACL-safe non-deleting transfer arguments'
+
+job_state_dir="${operation_dir}/jobs"
+job_log_dir="${operation_dir}/job-logs"
+mkdir -p "${job_state_dir}" "${job_log_dir}"
+printf '  469.91G  22%%  100.50MB/s    1:17:52 (xfr#913792, ir-chk=1000/4076320)\r' \
+  > "${job_log_dir}/fixture-job.log"
+python3 - "${job_state_dir}/fixture-job.json" "${job_log_dir}/fixture-job.log" <<'PY'
+import json, pathlib, sys
+state, log = sys.argv[1:]
+pathlib.Path(state).write_text(json.dumps({
+    "schema_version": 1,
+    "job": "fixture-job",
+    "operation": "backup-push",
+    "source": "/fixture/source/",
+    "destination": "172.29.41.8:fixture/",
+    "screen_session": "pxfer-fixture-job",
+    "status": "completed",
+    "runner_pid": 100,
+    "rsync_pid": 101,
+    "started_at": "2026-01-01T00:00:00Z",
+    "started_epoch": 100,
+    "finished_at": "2026-01-01T00:01:40Z",
+    "finished_epoch": 200,
+    "exit_code": 0,
+    "log_path": log,
+}) + "\n")
+PY
+status_json="$(
+  PROXMOX_LXC_TRANSFER_JOB_STATE_DIR="${job_state_dir}" \
+  PROXMOX_LXC_TRANSFER_JOB_LOG_DIR="${job_log_dir}" \
+    "${ROOT}/cli/rsync/tree.sh" status fixture-job --output json
+)"
+python3 - "${status_json}" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+assert data["status"] == "completed"
+assert data["elapsed_seconds"] == 100
+assert data["progress"]["percent"] == 22
+assert data["progress"]["files_transferred"] == 913792
+assert data["progress"]["percentage_provisional"] is True
+assert data["exit_code"] == 0
+PY
+if PROXMOX_LXC_TRANSFER_JOB_STATE_DIR="${job_state_dir}" \
+  PROXMOX_LXC_TRANSFER_JOB_LOG_DIR="${job_log_dir}" \
+    "${ROOT}/cli/rsync/tree.sh" status '../fixture-job' >/dev/null 2>&1; then
+  fail 'unsafe managed-transfer job name was accepted'
+fi
+grep -Fq 'screen -DmS "${session}"' "${ROOT}/cli/rsync/tree.sh" \
+  || fail 'managed transfers are not launched through the fixed Screen runner'
+ok 'durable job status parses provisional whole-transfer progress and rejects unsafe names'
 
 PATH="${operation_dir}/bin:${PATH}" \
 PROXMOX_TEST_ARGUMENTS="${operation_dir}/speed-server.args" \

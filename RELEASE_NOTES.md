@@ -58,13 +58,18 @@ Proxmox host's management policy, or enable shell access to the containers.
   `rrsync` server intentionally disables.
 - Keeps copy operations non-deleting and makes checksum verification a
   separate optional dry run.
+- Adds ACL-safe backup actions that preserve destination-managed access rather
+  than restoring source POSIX modes and ACLs.
+- Runs named multi-day backup jobs in managed Screen sessions with durable
+  logs, text or JSON status, and a live percentage/rate/ETA view.
 - Prepares only an operator-selected destination root for the mapped transfer
   identity, with inheritable transfer and Samba ACLs, before rsync starts.
 - Uses `samba:samba` as the default authenticated and forced filesystem
   identity, preserving an existing user ID and password while assigning no
   release-fixed user or group ID.
-- Reconciles additive Samba access on an operator-selected completed
-  destination while preserving ownership and avoiding `chown` or `chmod`.
+- Reconciles additive Samba, transfer-user, and mapped container-root access
+  on an operator-selected destination while preserving ownership and avoiding
+  `chown` or `chmod`; an operator-selected private subtree can be excluded.
 - Refuses reconciliation during an active rsync or against an inactive bind
   mount, symlinked path, filesystem escape, or nested filesystem.
 - Supports preflight, prepare, apply, verify, rotate, revoke, and rollback.

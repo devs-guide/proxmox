@@ -12,7 +12,7 @@ source "${ROOT}/setup/lxc/storage.sh"
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "${fixture_dir}"' EXIT
 bind_root="${fixture_dir}/archive"
-mkdir -p "${bind_root}/chosen" "${fixture_dir}/lxc"
+mkdir -p "${bind_root}/chosen/private" "${fixture_dir}/lxc"
 ln -s "${bind_root}/chosen" "${bind_root}/linked"
 cat > "${fixture_dir}/lxc/101.conf" <<'EOF'
 lxc.idmap: u 0 200000 65536
@@ -50,6 +50,7 @@ mountpoint() { [[ "${3:-}" == "${bind_root}" ]]; }
 CTID=101
 MOUNT_SLOT=''
 CONTAINER_PATH='/archive/chosen'
+EXCLUDE_CONTAINER_PATH='/archive/chosen/private'
 SERVICE_USER='share-user'
 SERVICE_GROUP='share-group'
 TRANSFER_USER='transfer-user'
@@ -60,7 +61,8 @@ LXC_CONFIG_DIR="${fixture_dir}/lxc"
 discover.selection
 [[ "${MOUNT_SLOT}" == mp0 && "${SELECTED_SOURCE}" == "${bind_root}" \
   && "${SELECTED_PATH}" == "${bind_root}/chosen" \
-  && "${SELECTED_CONTAINER_PATH}" == /archive/chosen ]] \
+  && "${SELECTED_CONTAINER_PATH}" == /archive/chosen \
+  && "${EXCLUDED_PATH}" == "${bind_root}/chosen/private" ]] \
   || fail 'production bind-mount path selection returned the wrong destination'
 resolve.reconciliation.identities
 [[ "${SERVICE_UID}" == 2002 && "${SERVICE_GID}" == 2000 \
@@ -73,12 +75,16 @@ resolve.reconciliation.identities
 [[ "$(map.container.id u "${TRANSFER_UID}")" == 202003 \
   && "$(map.container.id g "${TRANSFER_GID}")" == 302003 ]] \
   || fail 'production transfer identity map resolver returned the wrong host IDs'
+[[ "$(map.container.id u 0)" == 200000 && "$(map.container.id g 0)" == 300000 ]] \
+  || fail 'production container-root map resolver returned the wrong host IDs'
 refuse.active.transfer
 FAKE_ACTIVE_RSYNC=1
 if (refuse.active.transfer); then fail 'active rsync was accepted'; fi
 FAKE_ACTIVE_RSYNC=0
 ok 'production destination, identity, ID-map, and active-transfer gates'
 
+EXCLUDE_CONTAINER_PATH=''
+EXCLUDED_PATH=''
 CONTAINER_PATH='/archive/linked'
 if (select.reconciliation.path "mp0|${bind_root}|/archive"); then
   fail 'symlinked destination was accepted'
@@ -94,7 +100,7 @@ chown() { printf 'chown %s\n' "$*" >> "${operation_log}"; }
 setfacl() { printf 'setfacl %s\n' "$*" >> "${operation_log}"; }
 find() { fail 'transfer destination preparation attempted recursive traversal'; }
 SELECTED_PATH="${bind_root}/chosen"
-apply.transfer.destination 202002 302000 202003 302003
+apply.transfer.destination 202002 302000 202003 302003 200000 300000
 grep -Fqx "chown --no-dereference 202003:302003 ${SELECTED_PATH}" "${operation_log}" \
   || fail 'transfer destination preparation did not assign only the selected root to the mapped transfer identity'
 grep -Fq -- '--no-dereference' "${operation_log}" \
@@ -103,8 +109,31 @@ grep -Fq 'u:202002:rwx,g:302000:rwx' "${operation_log}" \
   || fail 'transfer destination preparation omitted the service identity ACL'
 grep -Fq 'u:202003:rwx,g:302003:rwx' "${operation_log}" \
   || fail 'transfer destination preparation omitted the transfer identity ACL'
+grep -Fq 'u:200000:rwx,g:300000:rwx' "${operation_log}" \
+  || fail 'transfer destination preparation omitted the mapped container-root ACL'
 unset -f chown setfacl find
 ok 'transfer destination preparation is root-only and identity-derived'
+
+EXCLUDE_CONTAINER_PATH='/archive/chosen/private'
+EXCLUDED_PATH="${bind_root}/chosen/private"
+printf 'fixture\n' > "${bind_root}/chosen/file.txt"
+printf 'private\n' > "${bind_root}/chosen/private/private.txt"
+owner_before="$(stat -c '%u:%g' "${bind_root}/chosen")"
+apply.reconciliation 202002 302000 202003 302003 200000 300000
+owner_after="$(stat -c '%u:%g' "${bind_root}/chosen")"
+[[ "${owner_before}" == "${owner_after}" ]] || fail 'recursive reconciliation changed destination ownership'
+acl="$(getfacl -ncp "${bind_root}/chosen")"
+for entry in \
+  'user:202002:rwx' 'group:302000:rwx' \
+  'user:202003:rwx' 'group:302003:rwx' \
+  'user:200000:rwx' 'group:300000:rwx' \
+  'default:user:202002:rwx' 'default:user:202003:rwx' 'default:user:200000:rwx'; do
+  grep -Fxq "${entry}" <<< "${acl}" || fail "recursive reconciliation omitted ${entry}"
+done
+private_acl="$(getfacl -ncp "${bind_root}/chosen/private")"
+! grep -Fq 'user:202002:rwx' <<< "${private_acl}" \
+  || fail 'operator-excluded subtree received a reconciliation ACL'
+ok 'recursive reconciliation grants all identities while pruning the selected exclusion'
 
 if grep -Eq '/etc/fstab|^[[:space:]]*(mount|umount)[[:space:]]|pct (start|stop|shutdown|reboot)' \
   "${ROOT}/setup/lxc/storage.sh"; then

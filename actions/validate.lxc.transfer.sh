@@ -44,6 +44,7 @@ grep -Fq 'update_password: on_create' "${PLAYBOOK}" || fail 'new-account passwor
 ! grep -Fq 'update_password: always' "${PLAYBOOK}" || fail 'transfer feature can still rewrite an existing account password'
 ! grep -Fq 'password_lock: true' "${PLAYBOOK}" || fail 'new transfer accounts are locked out of the isolated UsePAM=no SSH daemon'
 grep -Fq -- '- iperf3' "${PLAYBOOK}" || fail 'iperf3 is not installed by the transfer feature'
+grep -Fq -- '- screen' "${PLAYBOOK}" || fail 'GNU Screen is not installed for managed transfer jobs'
 grep -Fq 'Keep the distro iperf3 daemon disabled for on-demand testing' "${PLAYBOOK}" || fail 'persistent iperf3 daemon is not disabled'
 ok 'rsync-only SSH and account-preservation policy'
 

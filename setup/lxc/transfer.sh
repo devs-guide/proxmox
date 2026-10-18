@@ -525,6 +525,8 @@ verify.feature() {
     || die 'Dedicated sshd is not bound exclusively to the selected DATA-Link address.'
   command -v iperf3 >/dev/null 2>&1 || die 'iperf3 is not installed.'
   [[ -x /usr/local/sbin/proxmox-transfer-speed-test ]] || die 'The iperf3 speed-test helper is missing.'
+  [[ -x /usr/local/sbin/proxmox-transfer-rsync ]] || die 'The managed rsync helper is missing.'
+  command -v screen >/dev/null 2>&1 || die 'GNU Screen is missing for managed transfer jobs.'
   ! ss -H -lnt4 "sport = :${IPERF_PORT}" | grep -q . || die 'TCP/5201 has a listener outside an operator-started speed test.'
   ufw status | grep -Fq 'proxmox-transfer-ssh-in' || die 'Managed transfer SSH ingress UFW rule is missing.'
   ufw status | grep -Fq 'proxmox-transfer-ssh-out' || die 'Managed transfer SSH egress UFW rule is missing.'
