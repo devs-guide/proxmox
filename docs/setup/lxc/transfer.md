@@ -113,7 +113,35 @@ The client runs a basic 15-second, single-stream TCP test by default. Optional
 helper's bounded limits. The server binds only to the saved DATA address and
 exits after one client. Swap the two roles to measure the opposite direction.
 
-## 5. Copy operator-selected paths
+## 5. Prepare an operator-selected destination
+
+Before the first copy or a resumed copy, prepare the existing destination
+directory from its Proxmox host. Rsync runs as the restricted transfer user,
+so preserving directory times, modes, ACLs, and xattrs requires that identity
+to own the destination root. The Samba presentation identity also receives
+root and inheritable access before the copy starts.
+
+```bash
+export PROXMOX_LXC_STORAGE_PROFILE=transfer-destination
+export PROXMOX_LXC_STORAGE_CTID=OPERATOR_SELECTED_CTID
+export PROXMOX_LXC_STORAGE_CONTAINER_PATH=/OPERATOR/SELECTED/DESTINATION
+export PROXMOX_LXC_STORAGE_SERVICE_USER=OPERATOR_SELECTED_SAMBA_SERVICE_USER
+export PROXMOX_LXC_STORAGE_SERVICE_GROUP=OPERATOR_SELECTED_SAMBA_SERVICE_GROUP
+export PROXMOX_LXC_STORAGE_TRANSFER_USER=OPERATOR_SELECTED_TRANSFER_USER
+
+./setup/lxc/storage.sh preflight
+./setup/lxc/storage.sh apply
+./setup/lxc/storage.sh verify
+```
+
+The transfer-destination profile derives the bind source and mapped identities
+from live Proxmox and LXC state. It changes ownership only on the selected
+destination root and adds access/default ACLs only on that root; it does not
+traverse or change descendants. It refuses active rsync processes, inactive
+bind sources, symlinks, path escapes, nested filesystems, missing identities,
+and stopped LXCs. It never mounts storage or restarts a container.
+
+## 6. Copy operator-selected paths
 
 The local path must exist within that LXC's selected transfer root. The path
 after the colon is entered by the operator and is relative to the peer's
@@ -135,7 +163,7 @@ removal. Files present only at the destination remain in place. The forced
 server command rejects the same destructive options even if an enrolled key
 holder bypasses the helper and invokes rsync directly.
 
-## 6. Optional verification
+## 7. Optional verification
 
 Verification is a separate operator-selected step after the copy. It performs
 a checksum-enabled rsync dry run and reports differences without changing
@@ -149,7 +177,7 @@ proxmox-transfer-rsync verify-pull \
   PEER_DATA_IPV4:SELECTED/REMOTE/SOURCE/ /SELECTED/LOCAL/DESTINATION/
 ```
 
-## 7. Reconcile authenticated Samba access
+## 8. Reconcile authenticated Samba access
 
 An rsync run that preserves source ACLs can replace inherited destination ACLs.
 After the copy has finished, the Proxmox host can add the Samba presentation
@@ -160,6 +188,7 @@ the LXC. Its selected bind source must already be an active mountpoint.
 Run on the destination Proxmox host with values from that deployment:
 
 ```bash
+export PROXMOX_LXC_STORAGE_PROFILE=destination-reconciliation
 export PROXMOX_LXC_STORAGE_CTID=OPERATOR_SELECTED_CTID
 export PROXMOX_LXC_STORAGE_CONTAINER_PATH=/OPERATOR/SELECTED/DESTINATION
 export PROXMOX_LXC_STORAGE_SERVICE_USER=OPERATOR_SELECTED_SAMBA_SERVICE_USER

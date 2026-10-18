@@ -63,12 +63,16 @@ discover.selection
   && "${SELECTED_CONTAINER_PATH}" == /archive/chosen ]] \
   || fail 'production bind-mount path selection returned the wrong destination'
 resolve.reconciliation.identities
-[[ "${SERVICE_UID}" == 2002 && "${SERVICE_GID}" == 2000 && "${TRANSFER_UID}" == 2003 ]] \
+[[ "${SERVICE_UID}" == 2002 && "${SERVICE_GID}" == 2000 \
+  && "${TRANSFER_UID}" == 2003 && "${TRANSFER_GID}" == 2003 ]] \
   || fail 'production identity discovery returned the wrong IDs'
 [[ "$(map.container.id u "${SERVICE_UID}")" == 202002 ]] \
   || fail 'production UID map resolver returned the wrong host UID'
 [[ "$(map.container.id g "${SERVICE_GID}")" == 302000 ]] \
   || fail 'production GID map resolver returned the wrong host GID'
+[[ "$(map.container.id u "${TRANSFER_UID}")" == 202003 \
+  && "$(map.container.id g "${TRANSFER_GID}")" == 302003 ]] \
+  || fail 'production transfer identity map resolver returned the wrong host IDs'
 refuse.active.transfer
 FAKE_ACTIVE_RSYNC=1
 if (refuse.active.transfer); then fail 'active rsync was accepted'; fi
@@ -84,6 +88,23 @@ if (select.reconciliation.path "mp0|${bind_root}|/archive"); then
   fail 'container path outside the bind target was accepted'
 fi
 ok 'production path containment and symlink rejection'
+
+operation_log="${fixture_dir}/transfer-destination.log"
+chown() { printf 'chown %s\n' "$*" >> "${operation_log}"; }
+setfacl() { printf 'setfacl %s\n' "$*" >> "${operation_log}"; }
+find() { fail 'transfer destination preparation attempted recursive traversal'; }
+SELECTED_PATH="${bind_root}/chosen"
+apply.transfer.destination 202002 302000 202003 302003
+grep -Fqx "chown --no-dereference 202003:302003 ${SELECTED_PATH}" "${operation_log}" \
+  || fail 'transfer destination preparation did not assign only the selected root to the mapped transfer identity'
+grep -Fq -- '--no-dereference' "${operation_log}" \
+  || fail 'transfer destination ownership does not refuse symlink traversal'
+grep -Fq 'u:202002:rwx,g:302000:rwx' "${operation_log}" \
+  || fail 'transfer destination preparation omitted the service identity ACL'
+grep -Fq 'u:202003:rwx,g:302003:rwx' "${operation_log}" \
+  || fail 'transfer destination preparation omitted the transfer identity ACL'
+unset -f chown setfacl find
+ok 'transfer destination preparation is root-only and identity-derived'
 
 if grep -Eq '/etc/fstab|^[[:space:]]*(mount|umount)[[:space:]]|pct (start|stop|shutdown|reboot)' \
   "${ROOT}/setup/lxc/storage.sh"; then

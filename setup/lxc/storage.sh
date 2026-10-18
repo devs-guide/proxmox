@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-## Map a non-root Samba service identity onto a Proxmox bind mount.
+## Prepare transfer roots and map a Samba service identity onto Proxmox bind storage.
 ## Run on the Proxmox host after the LXC and operator-managed mountpoint exist.
 
 set -euo pipefail
@@ -9,6 +9,7 @@ log.error() { printf '[setup.lxc.storage][error] %s\n' "$*" >&2; }
 die()       { log.error "$*"; exit 1; }
 
 MODE="${1:-${PROXMOX_LXC_STORAGE_MODE:-preflight}}"
+PROFILE_INPUT="${PROXMOX_LXC_STORAGE_PROFILE:-}"
 CTID="${PROXMOX_LXC_STORAGE_CTID:-${PROXMOX_CTID:-}}"
 MOUNT_SLOT="${PROXMOX_LXC_STORAGE_MOUNT_SLOT:-}"
 SERVICE_UID="${PROXMOX_LXC_STORAGE_SERVICE_UID:-2000}"
@@ -25,11 +26,14 @@ SUBGID_PATH="${PROXMOX_LXC_STORAGE_SUBGID_PATH:-/etc/subgid}"
 INTERACTIVE="${PROXMOX_LXC_STORAGE_INTERACTIVE:-1}"
 OPEN_TTY=0
 RECONCILE=0
+PREPARE_TRANSFER=0
+STORAGE_PROFILE="mount-root"
 SELECTED_SOURCE=""
 SELECTED_TARGET=""
 SELECTED_PATH=""
 SELECTED_CONTAINER_PATH=""
 TRANSFER_UID=""
+TRANSFER_GID=""
 
 is.true() {
   case "${1,,}" in 1|true|yes|y|on) return 0 ;; *) return 1 ;; esac
@@ -84,8 +88,22 @@ require.host() {
     case "/${CONTAINER_PATH#/}/" in
       *'/../'*|*'/./'*|*'//'*) die 'The reconciliation container path must be canonical.' ;;
     esac
+    case "${PROFILE_INPUT:-destination-reconciliation}" in
+      destination-reconciliation)
+        STORAGE_PROFILE=destination-reconciliation
+        ;;
+      transfer-destination)
+        STORAGE_PROFILE=transfer-destination
+        PREPARE_TRANSFER=1
+        ;;
+      *)
+        die 'PROXMOX_LXC_STORAGE_PROFILE must be destination-reconciliation or transfer-destination.'
+        ;;
+    esac
   elif [[ -n "${SERVICE_USER}${SERVICE_GROUP}${TRANSFER_USER}" ]]; then
     die 'Named identities require PROXMOX_LXC_STORAGE_CONTAINER_PATH.'
+  elif [[ -n "${PROFILE_INPUT}" ]]; then
+    die 'PROXMOX_LXC_STORAGE_PROFILE requires PROXMOX_LXC_STORAGE_CONTAINER_PATH.'
   fi
 
   if [[ "${MODE}" == verify && ${RECONCILE} -ne 1 ]]; then
@@ -211,8 +229,9 @@ resolve.reconciliation.identities() {
 
   transfer_entry="$(pct exec "${CTID}" -- getent passwd "${TRANSFER_USER}")" \
     || die "Transfer user ${TRANSFER_USER} was not found in CT ${CTID}."
-  IFS=: read -r transfer_name password TRANSFER_UID _ _ _ _ <<< "${transfer_entry}"
-  [[ "${transfer_name}" == "${TRANSFER_USER}" && "${TRANSFER_UID}" =~ ^[0-9]+$ ]] \
+  IFS=: read -r transfer_name password TRANSFER_UID TRANSFER_GID _ _ _ <<< "${transfer_entry}"
+  [[ "${transfer_name}" == "${TRANSFER_USER}" && "${TRANSFER_UID}" =~ ^[0-9]+$ \
+    && "${TRANSFER_GID}" =~ ^[0-9]+$ ]] \
     || die 'The transfer-user identity record is invalid.'
   pct exec "${CTID}" -- /bin/sh -c 'command -v pgrep >/dev/null && command -v setpriv >/dev/null' \
     || die 'The container requires pgrep and setpriv for safe reconciliation.'
@@ -221,7 +240,7 @@ resolve.reconciliation.identities() {
 refuse.active.transfer() {
   local status
   if pct exec "${CTID}" -- pgrep -x rsync >/dev/null 2>&1; then
-    die "CT ${CTID} has an active rsync process; finish or stop it before reconciling ACLs."
+    die "CT ${CTID} has an active rsync process; finish or stop it before changing destination access."
   else
     status=$?
   fi
@@ -253,13 +272,12 @@ map.container.id() {
 }
 
 write.selection() {
-  local owner_before="$1" host_uid="$2" host_gid="$3" profile=mount-root
-  ((RECONCILE == 1)) && profile=destination-reconciliation
+  local owner_before="$1" host_uid="$2" host_gid="$3" transfer_host_uid="${4:-}" transfer_host_gid="${5:-}"
   mkdir -p "${FACTS_DIR}"
   umask 077
   {
     printf '%s\n' '---' 'proxmox_lxc_storage_selection:' '  confirmed: true'
-    printf '  profile: "%s"\n  ctid: %s\n  mount_slot: "%s"\n' "${profile}" "${CTID}" "${MOUNT_SLOT}"
+    printf '  profile: "%s"\n  ctid: %s\n  mount_slot: "%s"\n' "${STORAGE_PROFILE}" "${CTID}" "${MOUNT_SLOT}"
     printf '  mount_host_path: "%s"\n  host_path: "%s"\n  container_path: "%s"\n' \
       "${SELECTED_SOURCE}" "${SELECTED_PATH}" "${SELECTED_CONTAINER_PATH}"
     printf '  container_uid: %s\n  container_gid: %s\n  host_uid: %s\n  host_gid: %s\n  owner_before: "%s"\n' \
@@ -267,6 +285,8 @@ write.selection() {
     if ((RECONCILE == 1)); then
       printf '  service_user: "%s"\n  service_group: "%s"\n  transfer_user: "%s"\n' \
         "${SERVICE_USER}" "${SERVICE_GROUP}" "${TRANSFER_USER}"
+      printf '  transfer_container_uid: %s\n  transfer_container_gid: %s\n' "${TRANSFER_UID}" "${TRANSFER_GID}"
+      printf '  transfer_host_uid: %s\n  transfer_host_gid: %s\n' "${transfer_host_uid}" "${transfer_host_gid}"
     fi
   } > "${SELECTION_PATH}"
 }
@@ -321,6 +341,49 @@ apply.reconciliation() {
     | xargs -0 -r -n 256 setfacl -m "u:${host_uid}:rw-,g:${host_gid}:rw-"
 }
 
+verify.transfer.destination() {
+  local service_host_uid="$1" service_host_gid="$2" transfer_host_uid="$3" transfer_host_gid="$4"
+  local owner acl entry
+  refuse.active.transfer
+  owner="$(stat -c '%u:%g' "${SELECTED_PATH}")"
+  [[ "${owner}" == "${transfer_host_uid}:${transfer_host_gid}" ]] \
+    || die "The destination root is not owned by mapped ${TRANSFER_USER}: ${owner}."
+  acl="$(getfacl -ncp -- "${SELECTED_PATH}")"
+  for entry in \
+    "user:${service_host_uid}:rwx" "group:${service_host_gid}:rwx" \
+    "user:${transfer_host_uid}:rwx" "group:${transfer_host_gid}:rwx" \
+    "mask::rwx" \
+    "default:user:${service_host_uid}:rwx" "default:group:${service_host_gid}:rwx" \
+    "default:user:${transfer_host_uid}:rwx" "default:group:${transfer_host_gid}:rwx" \
+    "default:mask::rwx"; do
+    grep -Fxq "${entry}" <<< "${acl}" || die "The destination root is missing ACL entry: ${entry}."
+  done
+  pct exec "${CTID}" -- setpriv "--reuid=${TRANSFER_UID}" "--regid=${TRANSFER_GID}" --clear-groups \
+    /bin/bash -c 'test -O "$1" && test -r "$1" && test -w "$1" && test -x "$1"' \
+    mapped-transfer-access "${SELECTED_CONTAINER_PATH}" \
+    || die "Transfer identity ${TRANSFER_USER} does not own and have read/write/traverse access to the destination root."
+  pct exec "${CTID}" -- setpriv "--reuid=${SERVICE_UID}" "--regid=${SERVICE_GID}" --clear-groups \
+    /bin/bash -c 'test -r "$1" && test -w "$1" && test -x "$1"' \
+    mapped-service-access "${SELECTED_CONTAINER_PATH}" \
+    || die "Service identity ${SERVICE_USER} cannot read/write/traverse the destination root."
+  log "Transfer destination verification passed for ${SELECTED_CONTAINER_PATH}."
+}
+
+apply.transfer.destination() {
+  local service_host_uid="$1" service_host_gid="$2" transfer_host_uid="$3" transfer_host_gid="$4"
+  refuse.active.transfer
+  log 'Preparing only the selected destination root; descendants are not changed.'
+  chown --no-dereference "${transfer_host_uid}:${transfer_host_gid}" "${SELECTED_PATH}"
+  setfacl -m \
+    "u:${service_host_uid}:rwx,g:${service_host_gid}:rwx" \
+    -m "u:${transfer_host_uid}:rwx,g:${transfer_host_gid}:rwx" \
+    -m 'm::rwx' \
+    -m "d:u:${service_host_uid}:rwx,d:g:${service_host_gid}:rwx" \
+    -m "d:u:${transfer_host_uid}:rwx,d:g:${transfer_host_gid}:rwx" \
+    -m 'd:m::rwx' \
+    -- "${SELECTED_PATH}"
+}
+
 apply.legacy() {
   local host_uid="$1" host_gid="$2"
   setfacl -m "u:${host_uid}:rwx,g:${host_gid}:rwx,d:u:${host_uid}:rwx,d:g:${host_gid}:rwx" "${SELECTED_PATH}"
@@ -347,7 +410,7 @@ verify.legacy() {
 }
 
 main() {
-  local host_uid host_gid owner_before owner_after confirm inaccessible_before
+  local host_uid host_gid transfer_host_uid="" transfer_host_gid="" owner_before owner_after confirm inaccessible_before
   require.host
   discover.selection
   if ((RECONCILE == 1)); then
@@ -356,16 +419,23 @@ main() {
   fi
   host_uid="$(map.container.id u "${SERVICE_UID}")"
   host_gid="$(map.container.id g "${SERVICE_GID}")"
+  if ((RECONCILE == 1)); then
+    transfer_host_uid="$(map.container.id u "${TRANSFER_UID}")"
+    transfer_host_gid="$(map.container.id g "${TRANSFER_GID}")"
+  fi
   owner_before="$(stat -c '%u:%g' "${SELECTED_PATH}")"
-  write.selection "${owner_before}" "${host_uid}" "${host_gid}"
+  write.selection "${owner_before}" "${host_uid}" "${host_gid}" "${transfer_host_uid}" "${transfer_host_gid}"
 
-  printf '\nStorage ACL plan:\n  mode: %s\n  CT: %s\n  bind source: %s\n  host target: %s\n  container target: %s\n  mapped uid:gid: %s:%s\n  preserved owner: %s\n' \
-    "${MODE}" "${CTID}" "${SELECTED_SOURCE}" "${SELECTED_PATH}" "${SELECTED_CONTAINER_PATH}" \
+  printf '\nStorage ACL plan:\n  profile: %s\n  mode: %s\n  CT: %s\n  bind source: %s\n  host target: %s\n  container target: %s\n  service mapped uid:gid: %s:%s\n  owner before: %s\n' \
+    "${STORAGE_PROFILE}" "${MODE}" "${CTID}" "${SELECTED_SOURCE}" "${SELECTED_PATH}" "${SELECTED_CONTAINER_PATH}" \
     "${host_uid}" "${host_gid}" "${owner_before}" >&2
   if ((RECONCILE == 1)); then
-    inaccessible_before="$(count.inaccessible)"
-    printf '  service identity: %s:%s\n  transfer identity: %s\n  inaccessible entries before apply: %s\n' \
-      "${SERVICE_USER}" "${SERVICE_GROUP}" "${TRANSFER_USER}" "${inaccessible_before}" >&2
+    printf '  service identity: %s:%s\n  transfer identity: %s (%s:%s)\n' \
+      "${SERVICE_USER}" "${SERVICE_GROUP}" "${TRANSFER_USER}" "${transfer_host_uid}" "${transfer_host_gid}" >&2
+    if ((PREPARE_TRANSFER == 0)); then
+      inaccessible_before="$(count.inaccessible)"
+      printf '  inaccessible service entries before apply: %s\n' "${inaccessible_before}" >&2
+    fi
   fi
 
   if [[ "${MODE}" == preflight ]]; then
@@ -373,31 +443,49 @@ main() {
     return
   fi
   if [[ "${MODE}" == verify ]]; then
-    verify.reconciliation "${host_uid}" "${host_gid}"
+    if ((PREPARE_TRANSFER == 1)); then
+      verify.transfer.destination "${host_uid}" "${host_gid}" "${transfer_host_uid}" "${transfer_host_gid}"
+    else
+      verify.reconciliation "${host_uid}" "${host_gid}"
+    fi
     return
   fi
 
   if is.true "${INTERACTIVE}" && ((OPEN_TTY == 1)); then
-    confirm="$(prompt.tty "Type yes to apply mapped ACLs (${MODE}) without changing ownership" no)"
+    if ((PREPARE_TRANSFER == 1)); then
+      confirm="$(prompt.tty "Type yes to prepare the destination root for ${TRANSFER_USER} without changing descendants" no)"
+    else
+      confirm="$(prompt.tty "Type yes to apply mapped ACLs (${MODE}) without changing ownership" no)"
+    fi
     [[ "${confirm}" == yes ]] || die 'Operator aborted before mutation.'
   fi
 
-  if ((RECONCILE == 1)); then
+  if ((PREPARE_TRANSFER == 1)); then
+    [[ "${MODE}" == apply ]] || die 'Transfer destination preparation uses apply, not apply-recursive.'
+    apply.transfer.destination "${host_uid}" "${host_gid}" "${transfer_host_uid}" "${transfer_host_gid}"
+  elif ((RECONCILE == 1)); then
     [[ "${MODE}" == apply ]] || die 'Destination reconciliation uses apply, not apply-recursive.'
     apply.reconciliation "${host_uid}" "${host_gid}"
   else
     apply.legacy "${host_uid}" "${host_gid}"
   fi
   owner_after="$(stat -c '%u:%g' "${SELECTED_PATH}")"
-  [[ "${owner_after}" == "${owner_before}" ]] \
-    || die "Ownership changed unexpectedly (${owner_before} -> ${owner_after})."
+  if ((PREPARE_TRANSFER == 1)); then
+    [[ "${owner_after}" == "${transfer_host_uid}:${transfer_host_gid}" ]] \
+      || die "Destination-root ownership preparation failed (${owner_after})."
+  else
+    [[ "${owner_after}" == "${owner_before}" ]] \
+      || die "Ownership changed unexpectedly (${owner_before} -> ${owner_after})."
+  fi
 
-  if ((RECONCILE == 1)); then
+  if ((PREPARE_TRANSFER == 1)); then
+    verify.transfer.destination "${host_uid}" "${host_gid}" "${transfer_host_uid}" "${transfer_host_gid}"
+  elif ((RECONCILE == 1)); then
     verify.reconciliation "${host_uid}" "${host_gid}"
   else
     verify.legacy "${host_uid}" "${host_gid}"
   fi
-  log "Mapped ACL applied in ${MODE} mode; ownership remains ${owner_after}."
+  log "Mapped ACL operation completed in ${MODE} mode; ownership is ${owner_after}."
 }
 
 if ! is.true "${PROXMOX_LXC_STORAGE_SOURCE_ONLY:-0}"; then
