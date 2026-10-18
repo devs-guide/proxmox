@@ -1,0 +1,16 @@
+# Shared locations and filenames for published Ansible artifacts (GitHub Pages)
+repo_owner: "devs-guide"
+repo_name: "proxmox"
+
+# Base URL to the published assets (www branch)
+pages_base_url: "https://{{ repo_owner }}.github.io/{{ repo_name }}"
+
+# Directory under the published base that holds Ansible artifacts
+pages_ansible_dir: "ansible"
+
+# Common filenames
+playlist_filename: "install.playbooks.txt"
+package_catalog_filename: "debian.packages.yml"
+
+# Resolved URLs for common artifacts
+package_catalog_url: "{{ pages_base_url }}/{{ pages_ansible_dir }}/{{ package_catalog_filename }}"

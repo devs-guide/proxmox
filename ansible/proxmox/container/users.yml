@@ -1,0 +1,12 @@
+---
+# Container users entrypoint for setup/lxc/user runs.
+# Keeps a clean boundary:
+# - non-LXC/proxmox baseline (root/proxmox/agent) lives in ansible/proxmox/common.yml
+# - LXC runner baseline (root/app/agent) is defined in ansible/proxmox/container/common.yml
+# - this wrapper disables container-unsafe safety assertions from ansible/debian/users.yml.
+- import_playbook: ../../debian/users.yml
+  vars:
+    proxmox_users_default_defs: "{{ (lookup('file', playbook_dir ~ '/common.yml') | from_yaml).proxmox_lxc_common_default_users }}"
+    proxmox_users_scope: "lxc"
+    proxmox_users_skip_container_safety_checks: true
+    user_defs: "{{ user_defs | default(proxmox_users_default_defs, true) }}"

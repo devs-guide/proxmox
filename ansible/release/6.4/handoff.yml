@@ -1,0 +1,22 @@
+---
+- name: "[pve-6.4]: validate managed python handoff"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ bootstrap_bridge_python_interpreter | default(ansible_python_interpreter_system) }}"
+
+  tasks:
+    - name: Validate managed target python handoff boundary
+      raw: >-
+        test -x "{{ managed_target_python_path }}"
+        && test -f "{{ managed_target_handoff_marker }}"
+        && "{{ managed_target_python_path }}" --version
+        || {
+          echo "Managed target python handoff failed: {{ managed_target_python_path }} or {{ managed_target_handoff_marker }} is missing." >&2;
+          exit 1;
+        }
+      register: managed_target_python_gate
+      changed_when: false

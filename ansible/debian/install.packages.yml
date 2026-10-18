@@ -1,0 +1,156 @@
+---
+- name: Install Debian packages (grouped, user-tunable)
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    # Path to canonical package catalog (local) and remote fallback
+    package_catalog_file: "{{ playbook_dir }}/{{ package_catalog_filename | default('debian.packages.yml') }}"
+    package_catalog_url_effective: "{{ package_catalog_url | default(pages_base_url ~ '/' ~ pages_ansible_dir ~ '/' ~ package_catalog_filename) }}"
+    # Host platform flavor (proxmox or debian); default proxmox for safety
+    host_platform_family: "proxmox"
+    # Packages always excluded on Proxmox hosts to avoid pve-firmware conflicts
+    proxmox_excludes:
+      - firmware-amd-graphics
+      - firmware-realtek
+
+    # Groups that are disabled by default but can be opted into via overrides
+    # Keep desktop off by default everywhere; other optional groups are gated per host flavor.
+    default_disabled_groups_base:
+      - desktop_rdp_optional
+    # Computed effective defaults (adds Proxmox-only disables)
+    effective_disabled_groups: []
+
+  pre_tasks:
+    - name: Normalize package group override inputs
+      ansible.builtin.set_fact:
+        package_group_overrides_effective: "{{ package_group_overrides | default({}) }}"
+        package_overrides_effective: "{{ package_overrides | default({}) }}"
+        exclude_packages_effective: "{{ exclude_packages | default([]) }}"
+
+    - name: Add proxmox-specific excludes to global exclude list
+      ansible.builtin.set_fact:
+        exclude_packages_effective: "{{ exclude_packages_effective + proxmox_excludes }}"
+      when: host_platform_family == 'proxmox'
+
+    - name: Refresh package catalog from published source
+      ansible.builtin.get_url:
+        url: "{{ package_catalog_url_effective }}"
+        dest: "{{ package_catalog_file }}"
+        mode: "0644"
+
+    - name: Load canonical Debian package catalog
+      ansible.builtin.set_fact:
+        package_catalog: "{{ lookup('file', package_catalog_file) | from_yaml }}"
+
+    - name: Merge package overrides into catalog
+      ansible.builtin.set_fact:
+        effective_catalog: "{{ package_catalog.groups | combine(package_overrides_effective, recursive=True) }}"
+
+    - name: Apply host flavor gating
+      ansible.builtin.set_fact:
+        effective_catalog: >-
+          {{
+            effective_catalog
+            | dict2items
+            | rejectattr('key', 'in', (host_platform_family == 'proxmox') | ternary(['firmware', 'apple_media_optional'], []))
+            | list
+            | items2dict
+          }}
+
+    - name: Compute effective default-disabled groups
+      ansible.builtin.set_fact:
+        effective_disabled_groups: >-
+          {{
+            default_disabled_groups_base
+            + ((host_platform_family == 'proxmox') | ternary(['apple_media_optional', 'firmware'], []))
+            + ((host_platform_family == 'proxmox') | ternary(['gpu_vendor_optional'], []))
+          }}
+
+    - name: Check whether udftools is available from configured repositories
+      ansible.builtin.command:
+        argv:
+          - apt-cache
+          - show
+          - udftools
+      register: udftools_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: Remove udftools from archive_iso_tools when unavailable
+      ansible.builtin.set_fact:
+        effective_catalog: >-
+          {{
+            effective_catalog
+            | combine(
+                {
+                  'archive_iso_tools': (
+                    effective_catalog.get('archive_iso_tools', {})
+                    | combine(
+                        {
+                          'packages': (
+                            effective_catalog.get('archive_iso_tools', {}).get('packages', [])
+                            | difference(['udftools'])
+                          )
+                        },
+                        recursive=True
+                      )
+                  )
+                },
+                recursive=True
+              )
+          }}
+      when:
+        - effective_catalog.get('archive_iso_tools') is mapping
+        - udftools_package_check.rc != 0
+
+    - name: Report when udftools is unavailable on this host
+      ansible.builtin.debug:
+        msg: "Skipping udftools for archive_iso_tools because it is not available from configured repositories on this host."
+      when:
+        - effective_catalog.get('archive_iso_tools') is mapping
+        - udftools_package_check.rc != 0
+
+    - name: Show effective package groups (post-excludes)
+      debug:
+        msg: "Group {{ item.key }} packages: {{ item.value.packages | default([]) | difference(exclude_packages_effective) }}"
+      loop: "{{ effective_catalog | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Simulate package installs per group (detect proxmox meta removals)
+      ansible.builtin.command: >
+        apt-get -s install {{ (item.value.packages | default([]) | difference(exclude_packages_effective)) | join(' ') }}
+      register: sim_result
+      changed_when: false
+      failed_when: >
+        ('proxmox-ve' in sim_result.stdout)
+        or ('proxmox-default-kernel' in sim_result.stdout)
+        or ('pve-firmware' in sim_result.stdout)
+        or sim_result.rc != 0
+      loop: "{{ effective_catalog | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when:
+        - item.value.packages | default([]) | difference(exclude_packages_effective) | length > 0
+        - package_group_overrides_effective.get(item.key, item.key not in effective_disabled_groups)
+
+    - name: Refresh apt cache (honors apt_cache_valid_time/apt_skip_cache_refresh)
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - update
+      when: not apt_skip_cache_refresh | default(false)
+      changed_when: false
+
+  tasks:
+    - name: Install package groups (honor enabled/override flags and exclude list)
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-y', 'install'] + (item.value.packages | default([]) | difference(exclude_packages_effective)) }}"
+      loop: "{{ effective_catalog | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when:
+        - item.value.packages | default([]) | difference(exclude_packages_effective) | length > 0
+        - package_group_overrides_effective.get(item.key, item.key not in effective_disabled_groups)

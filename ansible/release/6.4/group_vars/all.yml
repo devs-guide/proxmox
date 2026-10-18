@@ -1,0 +1,46 @@
+repo_owner: devs-guide
+repo_name: proxmox
+pages_base_url: https://{{ repo_owner }}.github.io/{{ repo_name }}
+pages_ansible_dir: ansible/release/6.4
+playlist_filename: install.playbooks.txt
+package_catalog_filename: packages.yml
+package_catalog_url: '{{ pages_base_url }}/ansible/debian/{{ package_catalog_filename
+  }}'
+apt_cache_valid_time: 0
+apt_skip_cache_refresh: true
+controller_python_version: 3.12.3
+controller_python_major_minor: '3.12'
+controller_python_prefix: /usr/local
+controller_ansible_venv: /opt/ansible-venv
+controller_ansible_core_version: 2.20.5
+controller_ansible_core_spec: ansible-core=={{ controller_ansible_core_version }}
+controller_ansible_core_min: '{{ controller_ansible_core_version }}'
+managed_target_python_version: 3.12.3
+managed_target_python_major_minor: '3.12'
+managed_target_python_source_prefix: /usr/local
+managed_target_python_home: /opt/ansible/py312
+managed_target_python_path: '{{ managed_target_python_home }}/bin/python'
+managed_target_handoff_marker: '{{ managed_target_python_home }}/.handoff-ready'
+bootstrap_mode: bridge_required
+bootstrap_use_raw_only: true
+bootstrap_gather_facts: false
+bootstrap_needs_target_python_build: true
+ansible_python_interpreter_system: /usr/bin/python3
+ansible_python_interpreter_managed: '{{ managed_target_python_path }}'
+user_defs:
+- name: app
+- name: agent
+- name: proxmox
+- name: root
+ssh_allowed_users: []
+network_defaults:
+  allowed_users: []
+  allow_subnets:
+  - 10.0.0.0/24
+  allow_rdp: true
+  ssh_port: 22
+  rdp_port: 3389
+debian_release: buster
+bootstrap_bridge_python_interpreter: '{{ ansible_python_interpreter_system }}'
+exclude_packages:
+- udf-tools

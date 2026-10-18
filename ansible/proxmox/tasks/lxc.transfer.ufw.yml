@@ -1,0 +1,115 @@
+---
+# Shared container-side UFW policy for rsync SSH and on-demand iperf3.
+# Callers must validate and provide the six proxmox_lxc_transfer_ufw_* values.
+
+- name: Remove previously managed LXC transfer UFW rules
+  shell: |
+    set -euo pipefail
+    mapfile -t rule_numbers < <(
+      ufw status numbered 2>/dev/null \
+        | awk 'index($0, "# proxmox-transfer-") {
+            line=$0
+            sub(/^\[/, "", line)
+            sub(/\].*$/, "", line)
+            gsub(/[[:space:]]/, "", line)
+            print line
+          }' \
+        | sort -rn
+    )
+    for rule_number in "${rule_numbers[@]}"; do
+      [[ "${rule_number}" =~ ^[0-9]+$ ]] || continue
+      ufw --force delete "${rule_number}"
+    done
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_transfer_ufw_removed
+  changed_when: "'Rule deleted' in (proxmox_lxc_transfer_ufw_removed.stdout | default(''))"
+  when: proxmox_lxc_transfer_ufw_enabled | bool
+
+- name: Allow rsync SSH ingress from the complete selected DATA-Link CIDR
+  command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
+      - from
+      - "{{ proxmox_lxc_transfer_ufw_allow_cidr }}"
+      - to
+      - "{{ proxmox_lxc_transfer_ufw_local_address }}"
+      - port
+      - "{{ proxmox_lxc_transfer_ufw_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - proxmox-transfer-ssh-in
+  register: proxmox_lxc_transfer_ufw_ingress
+  changed_when: "'Rule added' in (proxmox_lxc_transfer_ufw_ingress.stdout | default(''))"
+  when: proxmox_lxc_transfer_ufw_enabled | bool
+
+- name: Allow rsync SSH egress across the complete selected DATA-Link CIDR
+  command:
+    argv:
+      - ufw
+      - allow
+      - out
+      - "on"
+      - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
+      - from
+      - "{{ proxmox_lxc_transfer_ufw_local_address }}"
+      - to
+      - "{{ proxmox_lxc_transfer_ufw_allow_cidr }}"
+      - port
+      - "{{ proxmox_lxc_transfer_ufw_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - proxmox-transfer-ssh-out
+  register: proxmox_lxc_transfer_ufw_egress
+  changed_when: "'Rule added' in (proxmox_lxc_transfer_ufw_egress.stdout | default(''))"
+  when: proxmox_lxc_transfer_ufw_enabled | bool
+
+- name: Allow on-demand iperf3 ingress from the complete selected DATA-Link CIDR
+  command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
+      - from
+      - "{{ proxmox_lxc_transfer_ufw_allow_cidr }}"
+      - to
+      - "{{ proxmox_lxc_transfer_ufw_local_address }}"
+      - port
+      - "{{ proxmox_lxc_transfer_ufw_iperf_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - proxmox-transfer-iperf-in
+  register: proxmox_lxc_transfer_ufw_iperf_ingress
+  changed_when: "'Rule added' in (proxmox_lxc_transfer_ufw_iperf_ingress.stdout | default(''))"
+  when: proxmox_lxc_transfer_ufw_enabled | bool
+
+- name: Allow on-demand iperf3 egress across the complete selected DATA-Link CIDR
+  command:
+    argv:
+      - ufw
+      - allow
+      - out
+      - "on"
+      - "{{ proxmox_lxc_transfer_ufw_data_interface }}"
+      - from
+      - "{{ proxmox_lxc_transfer_ufw_local_address }}"
+      - to
+      - "{{ proxmox_lxc_transfer_ufw_allow_cidr }}"
+      - port
+      - "{{ proxmox_lxc_transfer_ufw_iperf_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - proxmox-transfer-iperf-out
+  register: proxmox_lxc_transfer_ufw_iperf_egress
+  changed_when: "'Rule added' in (proxmox_lxc_transfer_ufw_iperf_egress.stdout | default(''))"
+  when: proxmox_lxc_transfer_ufw_enabled | bool

@@ -1,0 +1,27 @@
+---
+- name: "[debian]: update, upgrade, sanity check"
+  hosts: localhost
+  connection: local
+  gather_facts: false        # keep this as light as possible
+  become: false              # metal.sh already enforces root
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_system }}"
+    apt_cache_valid_time: 0  # always refresh; this is the initial run
+
+  tasks:
+    - name: "[debian]: update apt cache"
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: "{{ apt_cache_valid_time }}"
+
+    - name: Perform safe upgrade of packages
+      ansible.builtin.apt:
+        upgrade: safe
+
+    - name: "[bootstrap]: sanity check"
+      ansible.builtin.debug:
+        msg:
+          - "Apt bootstrap complete."
+          - "System packages have been updated (safe upgrade)."
+          - "Next steps (base packages, hardening, etc.) should live in separate playbooks."
