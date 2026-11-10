@@ -212,7 +212,8 @@ Never stream prepare, attach, detach, or unprepare through wget | bash.
 
 ## Human acceptance
 
-Before release promotion, a human tests the exact published feature commit:
+For final hardware acceptance, a human tests the exact published feature
+commit:
 
 1. Run or rerun the bootstrap and confirm BOOTSTRAP COMPLETE.
 2. Reboot if required; validate services, LVM-thin storage, SSH, and firewall.
@@ -230,6 +231,3 @@ Before release promotion, a human tests the exact published feature commit:
 10. Attach one physical GPU to one stopped Q35 VM and test its guest driver.
 11. Stop and start the guest, detach, unprepare, reboot, and confirm amdgpu and
    temperature readings return.
-
-Do not run host acceptance on a local macOS workstation. Do not create a
-release tag until the human-operated remote PVE sequence passes.

@@ -95,10 +95,11 @@ reviewed temperature evidence and --confirm-temperature-reviewed.
 
 ## Current Release
 
-Release `0.0.6` adds reviewed general local ZFS provisioning to the managed
-Proxmox runtime, networking, LXC, and VM restore baseline released in `0.0.5`.
-The published Proxmox VE 6.4/Buster and Proxmox VE 9.1/Trixie lanes remain
-supported.
+The current stable release is `0.0.6`, which adds reviewed general local ZFS
+provisioning to the managed Proxmox baseline. Prerelease `0.0.8-rc.1` publishes
+the whole-GPU passthrough candidate together with the PVE 9 AMDGPU restoration
+and temperature gate. The published Proxmox VE 6.4/Buster and Proxmox VE
+9.x/Trixie lanes remain supported by the candidate implementation.
 
 ```bash
 # Proxmox VE 6.4 / Debian Buster
@@ -111,9 +112,11 @@ wget -qO- https://devs-guide.github.io/proxmox/9.1.sh | bash
 The PVE 9.1 compatibility lane uses the Proxmox no-subscription repository.
 Credential and firewall policy are documented above and in docs/readme.md.
 
-See [the 0.0.6 release notes](RELEASE_NOTES.md) for the complete scope and
-acceptance evidence. ZFS-backed LXC/Samba delivery is planned for `0.0.7`,
-whole-GPU passthrough for `0.0.8`, and Local Model Inventory for `0.0.9`.
+See [the 0.0.8-rc.1 release notes](RELEASE_NOTES.md) for the candidate scope,
+safety boundary, and current acceptance evidence. ZFS-backed LXC/Samba delivery
+remains planned for `0.0.7`. Final `0.0.8` requires the complete PVE 6.4/PVE 9
+passthrough and rollback acceptance matrix; Local Model Inventory remains
+planned after that release.
 
 ## Release Publication
 
