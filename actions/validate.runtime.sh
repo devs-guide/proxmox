@@ -31,13 +31,20 @@ files=(
   "setup/lxc/codex.sh"
   "setup/lxc/users.sh"
   "setup/vm/gpu.sh"
+  "setup/gpu.amd.sh"
+  "setup/temperature.sh"
+  "setup/temperature/gpu.sh"
   "cli/gpu/platform.sh"
   "cli/gpu/inventory.sh"
   "cli/gpu/common.sh"
   "cli/gpu/inspect.sh"
   "cli/gpu/apply.sh"
+  "cli/temperature/gpu.sh"
   "actions/pages.features.txt"
   "actions/validate.vm.gpu.sh"
+  "actions/validate.gpu.amd.sh"
+  "actions/validate.temperature.gpu.sh"
+  "actions/validate.bootstrap.policy.sh"
   "ansible/release/6.4/install.playbooks.txt"
   "ansible/release/9.1/install.playbooks.txt"
   "ansible/debian/ansible.venv.yml"
@@ -1536,6 +1543,9 @@ for feature_entry in \
   'setup/lxc/codex.sh|setup/lxc/codex.sh|feature' \
   'setup/lxc/users.sh|setup/lxc/users.sh|feature' \
   'setup/vm/restore.sh|setup/vm/restore.sh|feature' \
+  'setup/gpu.amd.sh|setup.gpu.amd.sh|plain' \
+  'setup/temperature.sh|setup/temperature.sh|plain' \
+  'setup/temperature/gpu.sh|setup/temperature/gpu.sh|feature' \
   'setup/vm/gpu.sh|setup/vm/gpu.sh|feature'; do
   if ! grep -Fqx "${feature_entry}" "${ROOT}/actions/pages.features.txt"; then
     echo "[validate.runtime][error] missing generic feature publication entry: ${feature_entry}"
@@ -1567,17 +1577,24 @@ bash -n "${ROOT}/setup/lxc/codex.sh"
 bash -n "${ROOT}/setup/lxc/users.sh"
 bash -n "${ROOT}/setup/vm/restore.sh"
 bash -n "${ROOT}/setup/vm/gpu.sh"
+bash -n "${ROOT}/setup/gpu.amd.sh"
+bash -n "${ROOT}/setup/temperature.sh"
+bash -n "${ROOT}/setup/temperature/gpu.sh"
 bash -n "${ROOT}/cli/gpu/platform.sh"
 bash -n "${ROOT}/cli/gpu/inventory.sh"
 bash -n "${ROOT}/cli/gpu/common.sh"
 bash -n "${ROOT}/cli/gpu/inspect.sh"
 bash -n "${ROOT}/cli/gpu/apply.sh"
+bash -n "${ROOT}/cli/temperature/gpu.sh"
 bash -n "${ROOT}/cli/lib/restore.common.sh"
 bash -n "${ROOT}/cli/ssh/sync.sh"
 bash -n "${ROOT}/cli/storage/temp.sh"
 bash -n "${ROOT}/cli/rsync/fetch.sh"
 bash -n "${ROOT}/actions/validate.vm.restore.sh"
 bash -n "${ROOT}/actions/validate.vm.gpu.sh"
+bash -n "${ROOT}/actions/validate.gpu.amd.sh"
+bash -n "${ROOT}/actions/validate.temperature.gpu.sh"
+bash -n "${ROOT}/actions/validate.bootstrap.policy.sh"
 bash -n "${ROOT}/actions/validate.release.sh"
 echo "[validate.runtime][ok] shell syntax checks passed"
 

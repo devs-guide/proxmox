@@ -453,7 +453,10 @@ PY
   fi
 
   python3 - "$BASE_GROUP_VARS_PATH" "$PLATFORM_GROUP_VARS_PATH" "$GROUP_VARS_PATH" "$MERGED_GROUP_VARS_PATH" <<'PY'
-import sys, yaml
+import ipaddress
+import os
+import sys
+import yaml
 
 def merge(a, b):
     if not isinstance(a, dict) or not isinstance(b, dict):
@@ -478,10 +481,99 @@ for path in paths:
         raise SystemExit(f"{path} did not parse to a mapping")
     merged = merge(merged, data)
 
+def env_bool(name):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise SystemExit(f"{name} must be true or false")
+
+network = merged.setdefault("network_defaults", {})
+password_mode = os.environ.get("PROXMOX_BOOTSTRAP_PASSWORD_MODE", "").strip().lower()
+if password_mode:
+    if password_mode not in {"username", "preserve", "locked"}:
+        raise SystemExit(
+            "PROXMOX_BOOTSTRAP_PASSWORD_MODE must be username, preserve, or locked"
+        )
+    merged["bootstrap_default_password_mode"] = password_mode
+    merged["bootstrap_default_user_update_password"] = (
+        "always" if password_mode == "username" else "on_create"
+    )
+subnets_raw = os.environ.get("PROXMOX_MANAGEMENT_SUBNETS", "").strip()
+if subnets_raw:
+    subnets = [value.strip() for value in subnets_raw.split(",") if value.strip()]
+    if not subnets:
+        raise SystemExit("PROXMOX_MANAGEMENT_SUBNETS did not contain a subnet")
+    for subnet in subnets:
+        ipaddress.ip_network(subnet, strict=False)
+    network["allow_subnets"] = subnets
+    network["manage_firewall"] = True
+
+for env_name, key in (
+    ("PROXMOX_MANAGE_HOST_FIREWALL", "manage_firewall"),
+    ("PROXMOX_ALLOW_RDP", "allow_rdp"),
+    ("PROXMOX_UFW_IPV6", "ipv6"),
+):
+    value = env_bool(env_name)
+    if value is not None:
+        network[key] = value
+
+if network.get("manage_firewall") and not network.get("allow_subnets"):
+    raise SystemExit(
+        "host firewall management requires PROXMOX_MANAGEMENT_SUBNETS "
+        "or an explicit network_defaults.allow_subnets overlay"
+    )
+
 with open(dest, "w") as fh:
     yaml.safe_dump(merged, fh, default_flow_style=False)
 PY
   log "Merged group_vars written to ${MERGED_GROUP_VARS_PATH}"
+}
+
+bootstrap.final.summary() {
+  local pve_line="unavailable" reboot_required="no" policy_summary=""
+
+  if command -v pveversion >/dev/null 2>&1; then
+    pve_line="$(pveversion 2>/dev/null | head -n1 || true)"
+  fi
+  [[ -e /run/reboot-required ]] && reboot_required="yes"
+
+  policy_summary="$(python3 - "${MERGED_GROUP_VARS_PATH}" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1]) as handle:
+    values = yaml.safe_load(handle) or {}
+network = values.get("network_defaults") or {}
+password_mode = values.get("bootstrap_default_password_mode", "username")
+users = [
+    item.get("name")
+    for item in values.get("user_defs", [])
+    if isinstance(item, dict) and item.get("name")
+]
+subnets = network.get("allow_subnets") or []
+print(
+    "managed_users={users} password_mode={password_mode} firewall_managed={managed} management_subnets={subnets} "
+    "rdp={rdp} ufw_ipv6={ipv6}".format(
+        users=",".join(users) or "none",
+        password_mode=password_mode,
+        managed=str(bool(network.get("manage_firewall", False))).lower(),
+        subnets=",".join(subnets) or "none",
+        rdp=str(bool(network.get("allow_rdp", False))).lower(),
+        ipv6=str(bool(network.get("ipv6", True))).lower(),
+    )
+)
+PY
+)"
+
+  log "Summary: status=complete lane=${RELEASE_LABEL} platform=${pve_line:-unavailable}"
+  log "Summary: ${policy_summary}"
+  log "Summary: node=disabled reboot_required=${reboot_required}"
+  log "BOOTSTRAP COMPLETE"
 }
 
 fetch.playbook() {

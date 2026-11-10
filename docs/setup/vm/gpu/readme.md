@@ -135,7 +135,7 @@ Create a dated backup directory:
 
 ```bash
 STAMP="$(date +%F-%H%M%S)"
-BACKUP="/root/pve9-passthrough-${VMID}-${STAMP}"
+BACKUP="./pve9-passthrough-${VMID}-${STAMP}"
 
 install -d -m 0700 "$BACKUP"
 

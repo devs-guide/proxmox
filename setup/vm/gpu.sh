@@ -18,6 +18,7 @@ FEATURE_CLI_FILES=(
   "gpu/common.sh"
   "gpu/inspect.sh"
   "gpu/apply.sh"
+  "temperature/gpu.sh"
 )
 
 GPU_COMPONENT="setup.vm.gpu"
@@ -91,7 +92,7 @@ bootstrap.dependencies() {
       bootstrap.fetch "${PAGES_BASE_URL}/cli/${ref}" "${CLI_ROOT}/${ref}"
     done
     chmod 0644 "${CLI_ROOT}/gpu/platform.sh" "${CLI_ROOT}/gpu/inventory.sh" \
-      "${CLI_ROOT}/gpu/common.sh"
+      "${CLI_ROOT}/gpu/common.sh" "${CLI_ROOT}/temperature/gpu.sh"
     chmod 0755 "${CLI_ROOT}/gpu/inspect.sh" "${CLI_ROOT}/gpu/apply.sh"
   else
     for ref in "${FEATURE_CLI_FILES[@]}"; do

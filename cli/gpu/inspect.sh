@@ -212,6 +212,15 @@ gpu.verify_selected() {
     gpu.preflight_selected 0 1 0
   fi
   state_binding="$(gpu.state_value binding_strategy "${host_state}" || true)"
+  if [[ -r "${host_state}" ]] && gpu.state_is_json "${host_state}" \
+    && jq -e '
+      ((.blacklist_vendors // []) | index("amd") != null) or
+      any(.gpu_function_records[]?; .vendor_id == "0x1002")
+    ' "${host_state}" >/dev/null; then
+    jq -e '.temperature_evidence.gate.passed == true' "${host_state}" >/dev/null \
+      || gpu.die "${GPU_EXIT_PREFLIGHT}" \
+        "managed AMD blacklist state has no valid pre-blacklist temperature evidence; unprepare before reuse"
+  fi
   [[ -n "${state_binding}" ]] || state_binding="${BINDING_EFFECTIVE}"
   BINDING_EFFECTIVE="${state_binding}"
   if [[ "${state_binding}" == early ]]; then
@@ -228,11 +237,12 @@ gpu.verify_selected() {
 }
 
 gpu.status() {
-  local host_state="${STATE_ROOT}/host.state" prepared=false configured="" configured_gpus='[]' functions='[]'
+  local host_state="${STATE_ROOT}/host.state" prepared=false configured="" configured_gpus='[]' functions='[]' temperature_evidence='null'
   [[ -r "${host_state}" ]] && prepared=true
   configured="$(gpu.state_value gpu_slot "${host_state}" || true)"
   if [[ -r "${host_state}" ]] && gpu.state_is_json "${host_state}"; then
     configured_gpus="$(jq -c '.gpu_slots // (if .gpu_slot then [.gpu_slot] else [] end)' "${host_state}")"
+    temperature_evidence="$(jq -c '.temperature_evidence // null' "${host_state}")"
   fi
   gpu.capture_inventory
   if [[ -n "${GPU_INPUT}" ]]; then
@@ -250,11 +260,13 @@ gpu.status() {
       --arg requested "${GPU_BDF}" \
       --argjson functions "${functions}" \
       --argjson configured_gpus "${configured_gpus}" \
+      --argjson temperature_evidence "${temperature_evidence}" \
       '{schema_version:4,action:"status",platform:$platform,adapter:$adapter,
         inventory:$inventory,
         facts:{prepared:$prepared,
           configured_gpu:(if $configured=="" then null else $configured end),
           configured_gpus:$configured_gpus,
+          temperature_evidence:$temperature_evidence,
           requested_gpu:(if $requested=="" then null else $requested end),
           functions:$functions},result:{state:"ok"}}'
   else

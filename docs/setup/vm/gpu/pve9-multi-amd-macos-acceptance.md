@@ -112,6 +112,7 @@ published-Pages validation succeed:
 ```bash
 FEATURE_SHA='<published-fix-sha>'
 GPU_URL="https://devs-guide.github.io/proxmox/setup/vm/gpu.sh?v=${FEATURE_SHA}"
+GPU_RUNNER='./proxmox-gpu-review/setup/vm/gpu.sh'
 
 printf '%s\n' "${GPU_URL}"
 wget -qO- "${GPU_URL}" |
@@ -127,10 +128,11 @@ wget -qO- "${GPU_URL}" |
   jq .
 ```
 
-The URL must remain on the same shell command line as `wget -qO-`, and the pipe
-before `bash` is mandatory. Set `FEATURE_SHA` and `GPU_URL` again after every
-reconnect or reboot. Stop if raw inventory is not a JSON object with
-`.inventory.gpus`.
+Before any mutation, download, inspect, checksum, and validate the complete
+dependency closure exactly as documented in [pve-9.1.md](pve-9.1.md), then
+require `test -x "${GPU_RUNNER}"`. Set `FEATURE_SHA`, `GPU_URL`, and `GPU_RUNNER`
+again after every reconnect or reboot. Stop if raw inventory is not a JSON
+object with `.inventory.gpus`.
 
 ## 2. Make the AMD blacklist and VFIO binding live
 
@@ -140,15 +142,21 @@ automatically:
 ```bash
 set -o pipefail
 
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+wget -qO- 'https://devs-guide.github.io/proxmox/setup/temperature.sh' |
+  bash -s -- --component gpu --vendor amd --require-driver amdgpu \
+    --require-readable --reject-boot-vga --samples 3 --output json |
+  tee ./proxmox-gpu-temperature-pre-blacklist.json |
+  jq .
+
+"${GPU_RUNNER}" \
     --action prepare \
     --binding early \
     --blacklist '{"amd":["0000:18:00.0","0000:3b:00.0","0000:5e:00.0","0000:86:00.0","0000:af:00.0"]}' \
     --allow-host-display-loss \
+    --confirm-temperature-reviewed \
     --yes \
     --output json |
-  tee /root/proxmox-gpu-prepare-live.json |
+  tee ./proxmox-gpu-prepare-live.json |
   jq .
 ```
 
@@ -173,7 +181,8 @@ jq '{
   gpu_functions,
   blacklist_vendors,
   exact_bind_only_vendors,
-  binding_strategy
+  binding_strategy,
+  temperature_evidence
 }' /etc/ansible/proxmox/gpu-passthrough/host.state
 
 sed -n '1,120p' \
@@ -192,6 +201,7 @@ Expected:
 - `blacklist_vendors: ["amd"]`
 - `exact_bind_only_vendors: []`
 - `binding_strategy: early`
+- `temperature_evidence.gate.passed: true` with all five reviewed AMD displays
 - The blacklist contains `amdgpu` and `radeon`
 - The exact-BDF script contains all ten AMD functions
 - No managed file selects Matrox `0000:03:00.0`
@@ -211,9 +221,9 @@ provides the complete selection when `--gpu` is omitted:
 ```bash
 FEATURE_SHA='<same-published-fix-sha>'
 GPU_URL="https://devs-guide.github.io/proxmox/setup/vm/gpu.sh?v=${FEATURE_SHA}"
+GPU_RUNNER='./proxmox-gpu-review/setup/vm/gpu.sh'
 
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+"${GPU_RUNNER}" \
     --action verify \
     --output json |
   jq .
@@ -236,8 +246,7 @@ Expected result fragment:
 Inspect live ownership:
 
 ```bash
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+"${GPU_RUNNER}" \
     --action inventory \
     --output json |
   jq '[.inventory.gpus[] | {
@@ -270,8 +279,7 @@ VM 100 must be stopped, with no existing `hostpci0`. Run post-reboot
 preflight:
 
 ```bash
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+"${GPU_RUNNER}" \
     --action preflight \
     --vm 100 \
     --gpu 0000:3b:00.0 \
@@ -288,8 +296,7 @@ wget -qO- "${GPU_URL}" |
 Then preview the attachment:
 
 ```bash
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+"${GPU_RUNNER}" \
     --action attach \
     --vm 100 \
     --gpu 0000:3b:00.0 \
@@ -314,8 +321,7 @@ Run the mutation through the same published candidate without starting the VM:
 ```bash
 set -o pipefail
 
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+"${GPU_RUNNER}" \
     --action attach \
     --vm 100 \
     --gpu 0000:3b:00.0 \
@@ -325,9 +331,10 @@ wget -qO- "${GPU_URL}" |
     --primary-gpu \
     --allow-guest-console-loss \
     --disable-onboot \
+    --confirm-temperature-reviewed \
     --yes \
     --output json |
-  tee /root/proxmox-gpu-attach-vm100.json |
+  tee ./proxmox-gpu-attach-vm100.json |
   jq .
 ```
 
@@ -358,8 +365,7 @@ qm status 100
 Run state-aware verification while the VM is running:
 
 ```bash
-wget -qO- "${GPU_URL}" |
-  bash -s -- \
+"${GPU_RUNNER}" \
     --action verify \
     --vm 100 \
     --gpu 0000:3b:00.0 \

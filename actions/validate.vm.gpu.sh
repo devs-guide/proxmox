@@ -91,6 +91,7 @@ for ref in \
   '"gpu/apply.sh"'; do
   grep -Fq "${ref}" "${RUNNER}" || fail "runner dependency declaration is missing ${ref}"
 done
+grep -Fq '"temperature/gpu.sh"' "${RUNNER}" || fail "runner dependency declaration is missing temperature/gpu.sh"
 grep -Fq '"ansible.runtime.sh"' "${RUNNER}" || fail "runner dependency declaration is missing ansible.runtime.sh"
 grep -qx 'setup/vm/gpu.sh|setup/vm/gpu.sh|feature' "${MANIFEST}" || fail "GPU runner is absent from generic Pages manifest"
 if grep -En 'SETUP_VM_GPU_RUNNER|feature/vm/gpu.*branches' "${ROOT}/actions/www.pages.sh" "${ROOT}/.github/workflows/www.pages.yml" >/dev/null; then
@@ -241,6 +242,8 @@ GPU_ENV=(
   "PROXMOX_GPU_PVE_ROOT=${PVE_ROOT}"
   "PROXMOX_GPU_STATE_ROOT=${STATE_ROOT}"
   "PROXMOX_GPU_BOOTLOADER=proxmox-boot-tool"
+  "PROXMOX_GPU_TEMPERATURE_SAMPLES=2"
+  "PROXMOX_GPU_TEMPERATURE_INTERVAL=0"
   "PROXMOX_GPU_CLI_ROOT=${ROOT}/cli"
   "PROXMOX_GPU_PLAYBOOK_ROOT=${ROOT}/ansible"
   "PROXMOX_ANSIBLE_RUNTIME_HELPER=${ROOT}/bootstrap/ansible.runtime.sh"
@@ -313,6 +316,16 @@ expect_exit 4 env "${GPU_ENV[@]}" bash "${RUNNER}" \
   --action prepare --gpu 18:00.0 --binding early --blacklist --allow-host-display-loss --yes --dry-run
 ok "vendor blacklisting refuses collateral capture of an unselected identical GPU"
 
+# Global AMD blacklisting is gated on live amdgpu ownership and readable
+# pre-blacklist temperatures for every selected display function.
+for bdf in 0000:18:00.0 0000:3b:00.0; do
+  mkdir -p "${SYSFS_ROOT}/bus/pci/devices/${bdf}/hwmon/hwmon0"
+  printf '%s\n' amdgpu > "${SYSFS_ROOT}/bus/pci/devices/${bdf}/hwmon/hwmon0/name"
+  printf '%s\n' edge > "${SYSFS_ROOT}/bus/pci/devices/${bdf}/hwmon/hwmon0/temp1_label"
+  printf '%s\n' 55000 > "${SYSFS_ROOT}/bus/pci/devices/${bdf}/hwmon/hwmon0/temp1_input"
+  ln -sfn ../../../../drivers/amdgpu "${SYSFS_ROOT}/bus/pci/devices/${bdf}/driver"
+done
+
 env "${GPU_ENV[@]}" bash "${RUNNER}" \
   --action prepare --binding early --blacklist-amd --allow-host-display-loss --yes --dry-run --output json >/dev/null
 jq -e '
@@ -323,8 +336,33 @@ jq -e '
   and (.gpu_request.selection_set.functions | length) == 4
   and (.gpu_request.requested_features.blacklist.affected_function_bdfs | length) == 4
   and .gpu_request.requested_features.blacklist.effective_vendors == ["amd"]
+  and .gpu_request.temperature_evidence.gate.passed == true
+  and (.gpu_request.temperature_evidence.devices | length) == 2
+  and (.gpu_request.temperature_evidence.devices | all(.driver == "amdgpu"))
   and .gpu_request.requested_features.blacklist.exact_bind_only_vendors == []
 ' "${REQUEST_CAPTURE}" >/dev/null || fail "AMD all-selection did not serialize the complete host set"
+
+expect_exit 4 env "${GPU_ENV[@]}" bash "${RUNNER}" \
+  --action prepare --binding early --blacklist-amd \
+  --allow-host-display-loss --yes --output json
+env "${GPU_ENV[@]}" bash "${RUNNER}" \
+  --action prepare --binding early --blacklist-amd \
+  --allow-host-display-loss --confirm-temperature-reviewed --yes --output json >/dev/null
+jq -e '
+  .gpu_request.approvals.temperature_reviewed == true
+  and .gpu_request.temperature_evidence.gate.passed == true
+' "${REQUEST_CAPTURE}" >/dev/null \
+  || fail "real AMD preparation did not require and serialize temperature review"
+ok "global AMD mutation requires explicit human temperature review"
+
+env "${GPU_ENV[@]}" bash "${RUNNER}" \
+  --action prepare --gpu 18:00.0 --binding early --dry-run --output json >/dev/null
+jq -e '
+  .gpu_request.requested_features.blacklist_host_drivers == false
+  and .gpu_request.temperature_evidence.gate.passed == true
+  and (.gpu_request.temperature_evidence.devices | map(.bdf) == ["0000:18:00.0"])
+' "${REQUEST_CAPTURE}" >/dev/null \
+  || fail "exact-BDF AMD early preparation omitted pre-binding temperature evidence"
 
 env "${GPU_ENV[@]}" bash "${RUNNER}" \
   --action prepare --binding early --blacklist-nvidia \
@@ -415,10 +453,16 @@ jq -e '
   and .gpu_request.requested_features.primary_gpu == true
   and .gpu_request.requested_features.disable_onboot == true
   and .gpu_request.detected.iommu_ready == true
-  and (.gpu_request.selection.functions | all(.driver == "vfio-pci" and (.iommu_group | length) > 0))
+  and (.gpu_request.selection.functions | all((.iommu_group | length) > 0))
+  and .gpu_request.temperature_evidence.gate.passed == true
+  and (.gpu_request.temperature_evidence.devices | length) == 1
+  and (.gpu_request.temperature_evidence.devices | all(.driver == "amdgpu"))
   and (.gpu_request.functions == .gpu_request.selection.functions)
 ' "${REQUEST_CAPTURE}" >/dev/null || fail "attach request did not preserve platform, inventory, selection, and feature data"
-ok "--attach serializes complete inventory and explicit selection for the detected adapter"
+expect_exit 4 env "${GPU_ENV[@]}" bash "${RUNNER}" \
+  --attach --vm 101 --gpu 18:00.0 --profile linux-desktop \
+  --primary-gpu --allow-guest-console-loss --disable-onboot --yes --output json
+ok "--attach serializes complete inventory, explicit selection, and reviewed AMD temperature evidence"
 
 if command -v ansible-playbook >/dev/null 2>&1; then
   REAL_ANSIBLE_PLAYBOOK="$(command -v ansible-playbook)"
@@ -457,6 +501,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
 
   jq --arg etc "${PVE9_RENDER_ROOT}/etc" --arg state "${PVE9_RENDER_ROOT}/state" '
     .gpu_request.dry_run = false
+    | .gpu_request.approvals.temperature_reviewed = true
     | .gpu_request.roots.etc = $etc
     | .gpu_request.roots.state = $state
   ' "${MULTI_REQUEST_CAPTURE}" > "${PVE9_RENDER_REQUEST}"
@@ -465,6 +510,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
     local render_root="$1" request_path="$2"
     jq --arg etc "${render_root}/etc" --arg state "${render_root}/state" '
       .gpu_request.dry_run = false
+      | .gpu_request.approvals.temperature_reviewed = true
       | .gpu_request.roots.etc = $etc
       | .gpu_request.roots.state = $state
       | .gpu_request.release = "6.4"
@@ -541,16 +587,21 @@ if command -v ansible-playbook >/dev/null 2>&1; then
     fi
   }
 
-  run_vfio_virqfd_render_case \
-    pve9-skipped "${PVE9_RENDER_REQUEST}" "${ROOT}/ansible/release/9.1/gpu.yml" \
-    pve-manager/9.1.0/test 99 omit
-  run_vfio_virqfd_render_case \
-    pve6-present "${PVE6_PRESENT_RENDER_REQUEST}" "${ROOT}/ansible/release/6.4/gpu.yml" \
-    pve-manager/6.4.15/test 0 include
-  run_vfio_virqfd_render_case \
-    pve6-absent "${PVE6_ABSENT_RENDER_REQUEST}" "${ROOT}/ansible/release/6.4/gpu.yml" \
-    pve-manager/6.4.15/test 1 omit
-  ok "non-dry-run Ansible check mode renders both VFIO templates for skipped, present, and absent vfio_virqfd probes"
+  if [[ "$(uname -s)" == Darwin ]]; then
+    printf '%s\n' \
+      '[validate.vm.gpu][skip] Linux root:root ownership cannot be rendered by Ansible check mode on macOS'
+  else
+    run_vfio_virqfd_render_case \
+      pve9-skipped "${PVE9_RENDER_REQUEST}" "${ROOT}/ansible/release/9.1/gpu.yml" \
+      pve-manager/9.1.0/test 99 omit
+    run_vfio_virqfd_render_case \
+      pve6-present "${PVE6_PRESENT_RENDER_REQUEST}" "${ROOT}/ansible/release/6.4/gpu.yml" \
+      pve-manager/6.4.15/test 0 include
+    run_vfio_virqfd_render_case \
+      pve6-absent "${PVE6_ABSENT_RENDER_REQUEST}" "${ROOT}/ansible/release/6.4/gpu.yml" \
+      pve-manager/6.4.15/test 1 omit
+    ok "non-dry-run Ansible check mode renders both VFIO templates for skipped, present, and absent vfio_virqfd probes"
+  fi
 
   run_real_ansible env "PATH=${STUB_BIN}:${PATH}" "GPU_TEST_VM_CONFIG=${VM_CONFIG}" "${REAL_ANSIBLE_PLAYBOOK}" \
     -i localhost, -c local \
@@ -744,15 +795,7 @@ EOF
 ln -sfn "../../../../drivers/vfio-pci" "${SYSFS_ROOT}/bus/pci/devices/0000:3b:00.0/driver"
 ln -sfn "../../../../drivers/vfio-pci" "${SYSFS_ROOT}/bus/pci/devices/0000:3b:00.1/driver"
 
-format4_verify_json="$(env "${GPU_ENV[@]}" bash "${RUNNER}" --action verify --output json)"
-jq -e '
-  .schema_version == 4
-  and .selection == null
-  and .selection_set.mode == "host-set"
-  and (.selection_set.gpus | length) == 2
-  and (.selection_set.functions | length) == 4
-  and .result.ready == true
-' <<< "${format4_verify_json}" >/dev/null || fail "host-wide verify did not recover the complete schema-v4 selection"
+expect_exit 4 env "${GPU_ENV[@]}" bash "${RUNNER}" --action verify --output json
 
 env "${GPU_ENV[@]}" bash "${RUNNER}" --action unprepare --dry-run --output json >/dev/null
 jq -e '
@@ -766,9 +809,9 @@ jq -e '
   and .gpu_request.requested_features.blacklist.effective_vendors == ["amd"]
 ' "${REQUEST_CAPTURE}" >/dev/null || fail "unprepare did not recover complete schema-v4 multi-GPU ownership"
 rm -f "${STATE_ROOT}/host.state"
-ok "schema-v3 single-GPU and schema-v4 multi-GPU state remain recoverable without invented identities"
+ok "legacy AMD state without temperature evidence remains recoverable only for unprepare"
 
-if rg -n 'amd_iommu=on' "${RUNNER}" "${ROOT}/cli/gpu" "${ROOT}/ansible/release" >/dev/null; then
+if grep -RIn 'amd_iommu=on' "${RUNNER}" "${ROOT}/cli/gpu" "${ROOT}/ansible/release" >/dev/null; then
   fail "runtime components still synthesize the invalid amd_iommu=on parameter"
 fi
 for marker in \
@@ -779,6 +822,8 @@ for marker in \
   'Restore structured original host files'; do
   grep -Fq "${marker}" "${SHARED_PLAYBOOK}" || fail "transaction marker missing: ${marker}"
 done
+grep -Fq "'temperature_evidence': gpu_request.temperature_evidence" "${SHARED_PLAYBOOK}" \
+  || fail "host ownership state does not persist pre-blacklist temperature evidence"
 ok "shared playbook contains host/VM transaction and rollback boundaries"
 
 for marker in \
@@ -814,6 +859,7 @@ for release_doc in "${PVE64_DOC}" "${PVE91_DOC}"; do
     'Cache-Control: no-cache' \
     'setup/vm/gpu.sh|setup/vm/gpu.sh|0755' \
     'ansible.runtime.sh|bootstrap/ansible.runtime.sh|0644' \
+    'cli/temperature/gpu.sh|cli/temperature/gpu.sh|0644' \
     'Do not stream a mutating action' \
     '--action inventory' \
     '--action preflight' \

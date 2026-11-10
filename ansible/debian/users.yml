@@ -8,14 +8,21 @@
     ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
     default_password_hash_algo: sha512
     proxmox_users_skip_container_safety_checks_effective: "{{ proxmox_users_skip_container_safety_checks | default(false) | bool }}"
+    bootstrap_password_mode_effective: "{{ bootstrap_default_password_mode | default('username') }}"
 
   tasks:
+    - name: Validate bootstrap password mode
+      ansible.builtin.assert:
+        that:
+          - bootstrap_password_mode_effective in ['username', 'preserve', 'locked']
+        fail_msg: "bootstrap_default_password_mode must be username, preserve, or locked"
+
     - name: Ensure sudo group exists
       ansible.builtin.group:
         name: "{{ bootstrap_default_sudo_group | default('sudo') }}"
         state: present
 
-    - name: Ensure users exist with expected shell, password, and groups
+    - name: Ensure users exist with the configured credential policy
       ansible.builtin.user:
         name: "{{ item.name }}"
         password: >-
@@ -23,11 +30,29 @@
             item.password_hash
             if (item.password_hash | default('') | length > 0)
             else (
-              item.password | default(item.name, true)
+              (item.password | password_hash(default_password_hash_algo))
+              if (item.password | default('') | length > 0)
+              else (
+                (item.name | password_hash(default_password_hash_algo))
+                if bootstrap_password_mode_effective == 'username'
+                else omit
+              )
             )
-            | password_hash(default_password_hash_algo)
           }}
-        password_lock: "{{ item.password_lock | default(false) }}"
+        password_lock: >-
+          {{
+            item.password_lock
+            if item.password_lock is defined
+            else (
+              true
+              if bootstrap_password_mode_effective == 'locked'
+              else (
+                false
+                if bootstrap_password_mode_effective == 'username'
+                else omit
+              )
+            )
+          }}
         groups: >-
           {{
             (
@@ -57,7 +82,14 @@
         shell: "{{ item.shell | default('/bin/bash') }}"
         create_home: true
         state: present
-        update_password: "{{ item.update_password | default(bootstrap_default_user_update_password | default('always')) }}"
+        update_password: >-
+          {{
+            item.update_password
+            | default(
+                bootstrap_default_user_update_password
+                | default('always' if bootstrap_password_mode_effective == 'username' else 'on_create')
+              )
+          }}
       loop: "{{ user_defs }}"
 
     - name: Ensure sudo policy file for managed bootstrap users is valid
@@ -74,11 +106,12 @@
           %{{ bootstrap_default_sudo_group | default('sudo') }} ALL=(ALL) NOPASSWD:ALL
           {% endif %}
 
-    - name: Clear password expiry and inactivity requirements
+    - name: Apply explicitly requested unlimited password lifetime
       ansible.builtin.command: >
-        chage -I -1 -m 0 -M 99999 -E -1 -d {{ ansible_facts["date_time"]["date"] }} {{ item.name }}
+        chage -I -1 -m 0 -M 99999 -E -1 {{ item.name }}
       loop: "{{ user_defs }}"
-      changed_when: true
+      changed_when: false
+      when: item.password_expiry_unlimited | default(false) | bool
 
     - name: Verify managed non-root users have sudo membership
       ansible.builtin.command: "id -nG {{ item.name }}"

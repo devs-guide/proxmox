@@ -148,7 +148,7 @@ gpu.blacklist_spec_json() {
         <<< "${BLACKLIST_JSON_INPUT}" >/dev/null 2>&1 \
         || gpu.die "${GPU_EXIT_USAGE}" "--blacklist JSON contains duplicate vendor keys after case normalization"
       while IFS= read -r vendor; do
-        vendor="${vendor,,}"
+        vendor="$(printf '%s' "${vendor}" | tr '[:upper:]' '[:lower:]')"
         [[ "${vendor}" == amd || "${vendor}" == nvidia ]] \
           || gpu.die "${GPU_EXIT_USAGE}" "--blacklist JSON supports only amd and nvidia keys"
       done < <(jq -r 'keys[]' <<< "${BLACKLIST_JSON_INPUT}")

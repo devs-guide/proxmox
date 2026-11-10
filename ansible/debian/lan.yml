@@ -6,9 +6,10 @@
 
   vars:
     lan_defaults:
-      allow_subnets:
-        - 10.0.0.0/24
-      allow_rdp: true
+      allow_subnets: "{{ network_defaults.allow_subnets | default([]) }}"
+      manage_firewall: "{{ network_defaults.manage_firewall | default(false) | bool }}"
+      ipv6: "{{ network_defaults.ipv6 | default(true) | bool }}"
+      allow_rdp: "{{ network_defaults.allow_rdp | default(false) | bool }}"
       ssh_port: 22
       rdp_port: 3389
 

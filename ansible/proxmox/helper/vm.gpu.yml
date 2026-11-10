@@ -15,6 +15,17 @@
     gpu_blacklist: "{{ gpu_request.requested_features.blacklist }}"
     gpu_action: "{{ gpu_request.action }}"
     gpu_dry_run: "{{ gpu_request.dry_run | bool }}"
+    gpu_temperature_gate_required: >-
+      {{
+        '0x1002' in (gpu_request.selection_set.functions | map(attribute='vendor_id') | list)
+        and (
+          gpu_request.action == 'attach'
+          or (
+            gpu_request.action == 'prepare'
+            and gpu_request.requested_features.binding == 'early'
+          )
+        )
+      }}
     gpu_etc_root: "{{ gpu_request.roots.etc }}"
     gpu_proc_root: "{{ gpu_request.roots.proc }}"
     gpu_sysfs_root: "{{ gpu_request.roots.sysfs }}"
@@ -89,6 +100,12 @@
           - gpu_request.requested_features.binding in gpu_release_contract.supported_bindings
           - gpu_request.detected.bootloader in ['grub', 'proxmox-boot-tool', 'pve-efiboot-tool']
           - not (gpu_request.requested_features.blacklist_host_drivers | bool) or (gpu_request.approvals.allow_host_display_loss | bool)
+          - "not (gpu_temperature_gate_required | bool) or gpu_request.temperature_evidence is mapping"
+          - "not (gpu_temperature_gate_required | bool) or (gpu_request.temperature_evidence.gate.passed | bool)"
+          - "not (gpu_temperature_gate_required | bool) or gpu_request.temperature_evidence.policy.required_driver == 'amdgpu'"
+          - "not (gpu_temperature_gate_required | bool) or (gpu_request.temperature_evidence.policy.require_readable | bool)"
+          - "not (gpu_temperature_gate_required | bool) or (gpu_request.temperature_evidence.policy.reject_boot_vga | bool)"
+          - "not (gpu_temperature_gate_required | bool) or gpu_dry_run or (gpu_request.approvals.temperature_reviewed | bool)"
           - not (gpu_request.requested_features.primary_gpu | bool) or gpu_dry_run or (gpu_request.approvals.allow_guest_console_loss | bool)
           - gpu_action not in ['attach', 'detach'] or gpu_request.vmid is not none
           - gpu_action != 'attach' or gpu_request.hostpci_index is not none
@@ -763,6 +780,7 @@
                         'exact_bind_only_vendors': gpu_blacklist.exact_bind_only_vendors,
                         'iommu_pt': gpu_request.requested_features.iommu_pt | bool,
                         'bootloader': gpu_request.detected.bootloader,
+                        'temperature_evidence': gpu_request.temperature_evidence,
                         'transaction_dir': gpu_transaction_dir,
                         'original_files': gpu_original_files,
                         'applied_files': gpu_applied_files
@@ -1030,6 +1048,7 @@
                     'original_vga': gpu_original_vga,
                     'original_onboot': gpu_original_onboot,
                     'primary_gpu': gpu_request.requested_features.primary_gpu | bool,
+                    'temperature_evidence': gpu_request.temperature_evidence,
                     'onboot_managed': gpu_request.requested_features.disable_onboot | bool
                   } | to_nice_json }}
 

@@ -32,13 +32,13 @@ complete candidate first.
 ```bash
 set -o pipefail
 
-install -d -m 0700 /root/proxmox-gpu-evidence
-pveversion --verbose | tee /root/proxmox-gpu-evidence/pveversion.txt
-cat /etc/os-release | tee /root/proxmox-gpu-evidence/os-release.txt
-uname -a | tee /root/proxmox-gpu-evidence/uname.txt
-cat /proc/cmdline | tee /root/proxmox-gpu-evidence/proc-cmdline.txt
+install -d -m 0700 ./proxmox-gpu-evidence
+pveversion --verbose | tee ./proxmox-gpu-evidence/pveversion.txt
+cat /etc/os-release | tee ./proxmox-gpu-evidence/os-release.txt
+uname -a | tee ./proxmox-gpu-evidence/uname.txt
+cat /proc/cmdline | tee ./proxmox-gpu-evidence/proc-cmdline.txt
 proxmox-boot-tool status 2>&1 \
-  | tee /root/proxmox-gpu-evidence/proxmox-boot-tool.txt || true
+  | tee ./proxmox-gpu-evidence/proxmox-boot-tool.txt || true
 ```
 
 Require Trixie and the managed Ansible runtime pinned by the repository:
@@ -75,7 +75,7 @@ a cache buster; it does not select a Git branch.
 ```bash
 FEATURE_SHA='<full-40-character-published-feature-sha>'
 PAGES_BASE='https://devs-guide.github.io/proxmox'
-REVIEW_ROOT='/root/proxmox-gpu-review'
+REVIEW_ROOT='./proxmox-gpu-review'
 
 [[ "${FEATURE_SHA}" =~ ^[0-9a-f]{40}$ ]]
 umask 077
@@ -117,6 +117,7 @@ cli/gpu/inventory.sh|cli/gpu/inventory.sh|0644
 cli/gpu/common.sh|cli/gpu/common.sh|0644
 cli/gpu/inspect.sh|cli/gpu/inspect.sh|0755
 cli/gpu/apply.sh|cli/gpu/apply.sh|0755
+cli/temperature/gpu.sh|cli/temperature/gpu.sh|0644
 ansible/release/6.4/gpu.yml|ansible/release/6.4/gpu.yml|0644
 ansible/release/9.1/gpu.yml|ansible/release/9.1/gpu.yml|0644
 ansible/proxmox/helper/vm.gpu.yml|ansible/proxmox/helper/vm.gpu.yml|0644
@@ -135,7 +136,8 @@ bash -n \
   "${REVIEW_ROOT}/cli/gpu/inventory.sh" \
   "${REVIEW_ROOT}/cli/gpu/common.sh" \
   "${REVIEW_ROOT}/cli/gpu/inspect.sh" \
-  "${REVIEW_ROOT}/cli/gpu/apply.sh"
+  "${REVIEW_ROOT}/cli/gpu/apply.sh" \
+  "${REVIEW_ROOT}/cli/temperature/gpu.sh"
 
 (cd "${REVIEW_ROOT}" && sha256sum \
   setup/vm/gpu.sh \
@@ -145,12 +147,13 @@ bash -n \
   cli/gpu/common.sh \
   cli/gpu/inspect.sh \
   cli/gpu/apply.sh \
+  cli/temperature/gpu.sh \
   ansible/release/6.4/gpu.yml \
   ansible/release/9.1/gpu.yml \
   ansible/proxmox/helper/vm.gpu.yml) \
-  | tee "/root/proxmox-gpu-evidence/${FEATURE_SHA}.observed.sha256"
+  | tee "./proxmox-gpu-evidence/${FEATURE_SHA}.observed.sha256"
 
-EXPECTED_MANIFEST="/root/proxmox-gpu-evidence/${FEATURE_SHA}.expected.sha256"
+EXPECTED_MANIFEST="./proxmox-gpu-evidence/${FEATURE_SHA}.expected.sha256"
 test -r "${EXPECTED_MANIFEST}"
 (cd "${REVIEW_ROOT}" && sha256sum -c "${EXPECTED_MANIFEST}")
 
@@ -184,14 +187,24 @@ wget --https-only --secure-protocol=TLSv1_2 --timeout=30 --tries=3 \
 
 ## 3. Inventory and human selection
 
+Before inventory, keep amdgpu loaded and run the published read-only gate. Stop
+unless every intended AMD display function has readable Celsius samples, uses
+amdgpu, and reports boot_vga=false:
+
+```bash
+wget --https-only --secure-protocol=TLSv1_2 --timeout=30 --tries=3 --header='Cache-Control: no-cache' -O- "${PAGES_BASE}/setup/temperature.sh?v=${FEATURE_SHA}" | bash -s -- --component gpu --vendor amd --require-driver amdgpu --require-readable --reject-boot-vga --output json | tee ./proxmox-gpu-evidence/temperature.amd.pre-blacklist.json
+```
+
+There is no universal Celsius threshold; the operator reviews the samples.
+
 ```bash
 "${GPU_RUNNER}" --action inventory --release 9.1 --output json \
-  | tee /root/proxmox-gpu-evidence/inventory.json
+  | tee ./proxmox-gpu-evidence/inventory.json
 
 jq -e '.adapter.lane == "9.1" and .adapter.default_binding == "automatic"' \
-  /root/proxmox-gpu-evidence/inventory.json
+  ./proxmox-gpu-evidence/inventory.json
 jq '.platform, .adapter, .inventory.gpus[]' \
-  /root/proxmox-gpu-evidence/inventory.json
+  ./proxmox-gpu-evidence/inventory.json
 ```
 
 A human must select an exact display-function BDF from `display_bdfs`; never
@@ -206,8 +219,8 @@ read -r -p \
 
 lspci -Dnnk -s "${GPU_BDF}"
 qm status "${VM_ID}"
-qm config "${VM_ID}" | tee "/root/proxmox-gpu-evidence/qm-${VM_ID}.before.txt"
-ha-manager config 2>/dev/null | tee /root/proxmox-gpu-evidence/ha-before.txt
+qm config "${VM_ID}" | tee "./proxmox-gpu-evidence/qm-${VM_ID}.before.txt"
+ha-manager config 2>/dev/null | tee ./proxmox-gpu-evidence/ha-before.txt
 ```
 
 Confirm the complete same-slot function set, IOMMU isolation, current drivers,
@@ -224,7 +237,7 @@ Run hardware-only and VM-aware preflight without preparing host files:
   --gpu "${GPU_BDF}" \
   --profile "${GPU_PROFILE}" \
   --output json \
-  | tee /root/proxmox-gpu-evidence/preflight-hardware.json
+  | tee ./proxmox-gpu-evidence/preflight-hardware.json
 
 "${GPU_RUNNER}" \
   --action preflight \
@@ -234,7 +247,7 @@ Run hardware-only and VM-aware preflight without preparing host files:
   --profile "${GPU_PROFILE}" \
   --binding automatic \
   --output json \
-  | tee /root/proxmox-gpu-evidence/preflight-vm.json
+  | tee ./proxmox-gpu-evidence/preflight-vm.json
 ```
 
 Preview and apply the automatic attachment:
@@ -249,7 +262,7 @@ Preview and apply the automatic attachment:
   --binding automatic \
   --dry-run \
   --output json \
-  | tee /root/proxmox-gpu-evidence/attach.dry-run.json
+  | tee ./proxmox-gpu-evidence/attach.dry-run.json
 
 "${GPU_RUNNER}" \
   --attach \
@@ -258,11 +271,12 @@ Preview and apply the automatic attachment:
   --gpu "${GPU_BDF}" \
   --profile "${GPU_PROFILE}" \
   --binding automatic \
+  --confirm-temperature-reviewed \
   --yes \
   --output json \
-  | tee /root/proxmox-gpu-evidence/attach.applied.json
+  | tee ./proxmox-gpu-evidence/attach.applied.json
 
-qm config "${VM_ID}" | tee "/root/proxmox-gpu-evidence/qm-${VM_ID}.attached.txt"
+qm config "${VM_ID}" | tee "./proxmox-gpu-evidence/qm-${VM_ID}.attached.txt"
 ```
 
 For an intentional primary guest display, add all three flags to both attach
@@ -281,7 +295,7 @@ qm start "${VM_ID}"
   --profile "${GPU_PROFILE}" \
   --binding automatic \
   --output json \
-  | tee /root/proxmox-gpu-evidence/verify-running.json
+  | tee ./proxmox-gpu-evidence/verify-running.json
 ```
 
 Confirm all selected functions and the vendor driver inside the guest. Then run
@@ -292,7 +306,7 @@ qm shutdown "${VM_ID}" --timeout 60
 qm status "${VM_ID}"
 qm start "${VM_ID}"
 journalctl -b -k | grep -Ei 'vfio|reset|BAR|IOMMU' \
-  | tee /root/proxmox-gpu-evidence/kernel-gpu.txt
+  | tee ./proxmox-gpu-evidence/kernel-gpu.txt
 ```
 
 ## 5. Detach after automatic testing
@@ -301,14 +315,14 @@ journalctl -b -k | grep -Ei 'vfio|reset|BAR|IOMMU' \
 qm shutdown "${VM_ID}" --timeout 60
 "${GPU_RUNNER}" --remove --release 9.1 --vm "${VM_ID}" \
   --dry-run --output json \
-  | tee /root/proxmox-gpu-evidence/detach.dry-run.json
+  | tee ./proxmox-gpu-evidence/detach.dry-run.json
 "${GPU_RUNNER}" --remove --release 9.1 --vm "${VM_ID}" \
   --yes --output json \
-  | tee /root/proxmox-gpu-evidence/detach.applied.json
+  | tee ./proxmox-gpu-evidence/detach.applied.json
 
-qm config "${VM_ID}" | tee "/root/proxmox-gpu-evidence/qm-${VM_ID}.detached.txt"
+qm config "${VM_ID}" | tee "./proxmox-gpu-evidence/qm-${VM_ID}.detached.txt"
 "${GPU_RUNNER}" --action status --release 9.1 --gpu "${GPU_BDF}" \
-  --output json | tee /root/proxmox-gpu-evidence/status-detached.json
+  --output json | tee ./proxmox-gpu-evidence/status-detached.json
 ```
 
 `--remove` deletes only the feature-owned `hostpciN` entry and restores managed
@@ -329,19 +343,20 @@ exact-BDF early binding and no blacklist:
   --binding early \
   --dry-run \
   --output json \
-  | tee /root/proxmox-gpu-evidence/prepare-early.dry-run.json
+  | tee ./proxmox-gpu-evidence/prepare-early.dry-run.json
 
 "${GPU_RUNNER}" \
   --action prepare \
   --release 9.1 \
   --gpu "${GPU_BDF}" \
   --binding early \
+  --confirm-temperature-reviewed \
   --yes \
   --output json \
-  | tee /root/proxmox-gpu-evidence/prepare-early.applied.json
+  | tee ./proxmox-gpu-evidence/prepare-early.applied.json
 
 jq . /etc/ansible/proxmox/gpu-passthrough/host.state \
-  | tee /root/proxmox-gpu-evidence/host.state.pre-reboot.json
+  | tee ./proxmox-gpu-evidence/host.state.pre-reboot.json
 systemctl reboot
 ```
 
@@ -350,10 +365,10 @@ repeat the attach commands with `--binding early`:
 
 ```bash
 "${GPU_RUNNER}" --action verify --release 9.1 --output json \
-  | tee /root/proxmox-gpu-evidence/verify-host-early.json
+  | tee ./proxmox-gpu-evidence/verify-host-early.json
 "${GPU_RUNNER}" --test --release 9.1 --vm "${VM_ID}" \
   --gpu "${GPU_BDF}" --profile "${GPU_PROFILE}" --binding early \
-  --output json | tee /root/proxmox-gpu-evidence/verify-vm-early.json
+  --output json | tee ./proxmox-gpu-evidence/verify-vm-early.json
 ```
 
 ## 7. Optional blacklist fallback
@@ -379,18 +394,24 @@ and NVIDIA GPU may be removed from host drivers.
   --yes \
   --dry-run \
   --output json \
-  | tee /root/proxmox-gpu-evidence/blacklist.dry-run.json
+  | tee ./proxmox-gpu-evidence/blacklist.dry-run.json
 
 jq '.gpu_request.requested_features.blacklist //
     .effective_features.blacklist // .result' \
-  /root/proxmox-gpu-evidence/blacklist.dry-run.json
+  ./proxmox-gpu-evidence/blacklist.dry-run.json
 ```
 
 Require the intended vendor under `effective_vendors`, an empty unexpected
 vendor set, the complete affected slot/function list, and no required host
-display. Real application uses the same command without `--dry-run`, followed
+display. Real application uses the same command without `--dry-run` and with
+`--confirm-temperature-reviewed`, followed
 by inspection of `host.state` and a deliberate reboot. Do not apply it merely
 to make a refused dry-run pass.
+
+The global AMD path fails closed even when host-display loss was otherwise
+acknowledged if an AMD function is boot_vga, lacks readable hwmon temperatures,
+or is not currently owned by amdgpu. The pre-blacklist evidence is stored in
+host.state; after reboot, vfio-pci ownership replaces live host temperatures.
 
 The observed multi-AMD PVE 9 acceptance and rollback record is in
 [pve9-multi-amd-macos-acceptance.md](pve9-multi-amd-macos-acceptance.md).
@@ -403,14 +424,14 @@ host restoration:
 
 ```bash
 cp -a /etc/ansible/proxmox/gpu-passthrough/host.state \
-  /root/proxmox-gpu-evidence/host.state.before-unprepare.json
+  ./proxmox-gpu-evidence/host.state.before-unprepare.json
 
 "${GPU_RUNNER}" --action unprepare --release 9.1 \
   --dry-run --output json \
-  | tee /root/proxmox-gpu-evidence/unprepare.dry-run.json
+  | tee ./proxmox-gpu-evidence/unprepare.dry-run.json
 "${GPU_RUNNER}" --action unprepare --release 9.1 \
   --yes --output json \
-  | tee /root/proxmox-gpu-evidence/unprepare.applied.json
+  | tee ./proxmox-gpu-evidence/unprepare.applied.json
 
 systemctl reboot
 ```

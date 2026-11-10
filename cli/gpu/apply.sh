@@ -13,6 +13,11 @@ ANSIBLE_RUNTIME_HELPER="${PROXMOX_ANSIBLE_RUNTIME_HELPER:-$(cd "${CLI_ROOT}/.." 
 source "${ANSIBLE_RUNTIME_HELPER}"
 # shellcheck source=cli/gpu/common.sh
 source "${CLI_ROOT}/gpu/common.sh"
+[[ -r "${CLI_ROOT}/temperature/gpu.sh" ]] || gpu.die "${GPU_EXIT_DEPENDENCY}" \
+  "missing GPU temperature helper: ${CLI_ROOT}/temperature/gpu.sh"
+export PROXMOX_TEMPERATURE_GPU_LIBRARY=1
+# shellcheck source=cli/temperature/gpu.sh
+source "${CLI_ROOT}/temperature/gpu.sh"
 export PROXMOX_GPU_INSPECT_LIBRARY=1
 # shellcheck source=cli/gpu/inspect.sh
 source "${CLI_ROOT}/gpu/inspect.sh"
@@ -75,6 +80,8 @@ gpu.request_json() {
     --argjson iommu_ready "$([[ ${IOMMU_READY:-0} -eq 1 ]] && printf true || printf false)" \
     --argjson legacy_host "${legacy_host}" \
     --argjson legacy_vm "${legacy_vm}" \
+    --argjson temperature_evidence "${TEMPERATURE_EVIDENCE_JSON}" \
+    --argjson temperature_reviewed "$([[ ${CONFIRM_TEMPERATURE_REVIEWED} -eq 1 ]] && printf true || printf false)" \
     '{gpu_request:{schema_version:4,action:$action,
       platform:$platform,adapter:$adapter,inventory:$inventory,selection:$selection,selection_set:$selection_set,
       release:$release,pve_version:$pve_version,debian_codename:$codename,
@@ -87,10 +94,88 @@ gpu.request_json() {
       requested_features:{binding:$binding,blacklist_host_drivers:$blacklist,blacklist:$blacklist_policy,
         primary_gpu:$primary,disable_onboot:$disable_onboot,iommu_pt:$iommu_pt,
         start_vm:$start_vm,reboot_host:$reboot_host},
-      approvals:{allow_host_display_loss:$display_loss,allow_guest_console_loss:$console_loss},
+      approvals:{allow_host_display_loss:$display_loss,allow_guest_console_loss:$console_loss,
+        temperature_reviewed:$temperature_reviewed},
+      temperature_evidence:$temperature_evidence,
       dry_run:$dry_run,detected:{bootloader:$bootloader,iommu_ready:$iommu_ready},
       roots:{sysfs:$sysfs_root,proc:$proc_root,etc:$etc_root,pve:$pve_root,state:$state_root},
       legacy:{host:$legacy_host,vm:$legacy_vm}}}'
+}
+
+gpu.amd_temperature_gate_required() {
+  case "${ACTION}" in
+    attach) ;;
+    prepare) [[ "${BINDING_EFFECTIVE}" == early ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  jq -e 'any(.functions[]; .vendor_id == "0x1002")' <<< "${SELECTION_SET_JSON}" >/dev/null
+}
+
+gpu.capture_amd_temperature_gate() {
+  local host_state="${STATE_ROOT}/host.state" amd_bdfs='[]' capture_rc=0
+
+  gpu.amd_temperature_gate_required || return 0
+
+  amd_bdfs="$(jq -c '[.gpus[] |
+    .display_bdfs as $displays |
+    .functions[] |
+    select(.vendor_id == "0x1002" and (.bdf as $bdf | $displays | index($bdf) != null)) |
+    .bdf] | unique | sort' <<< "${SELECTION_SET_JSON}")"
+  [[ "$(jq -r 'length' <<< "${amd_bdfs}")" -gt 0 ]] \
+    || gpu.die "${GPU_EXIT_PREFLIGHT}" "AMD selection resolved no display functions"
+
+  if [[ -r "${host_state}" ]] && gpu.state_is_json "${host_state}" \
+    && jq -e --argjson bdfs "${amd_bdfs}" '
+      . as $state |
+      .temperature_evidence.gate.passed == true and
+      .temperature_evidence.policy.required_driver == "amdgpu" and
+      .temperature_evidence.policy.require_readable == true and
+      .temperature_evidence.policy.reject_boot_vga == true and
+      ($bdfs | all(. as $bdf | any($state.temperature_evidence.devices[]; .bdf == $bdf)))
+    ' "${host_state}" >/dev/null 2>&1; then
+    TEMPERATURE_EVIDENCE_JSON="$(jq -c '.temperature_evidence' "${host_state}")"
+    if ((DRY_RUN == 0 && CONFIRM_TEMPERATURE_REVIEWED == 0)); then
+      gpu.die "${GPU_EXIT_PREFLIGHT}" \
+        "AMD ${ACTION} requires human review of the stored Celsius readings and --confirm-temperature-reviewed"
+    fi
+    return 0
+  fi
+
+  TEMPERATURE_VENDOR=amd
+  TEMPERATURE_REQUIRE_DRIVER=amdgpu
+  TEMPERATURE_REQUIRE_READABLE=1
+  TEMPERATURE_REJECT_BOOT_VGA=1
+  TEMPERATURE_OUTPUT=json
+  TEMPERATURE_BDFS_JSON="${amd_bdfs}"
+  TEMPERATURE_SAMPLES="${PROXMOX_GPU_TEMPERATURE_SAMPLES:-3}"
+  TEMPERATURE_INTERVAL="${PROXMOX_GPU_TEMPERATURE_INTERVAL:-1}"
+  temperature.gpu.capture || capture_rc=$?
+  TEMPERATURE_EVIDENCE_JSON="${TEMPERATURE_GPU_JSON}"
+  if ((capture_rc != 0)); then
+    jq -r '.gate.failures[]? | "[cli.gpu.apply][error] temperature gate: \(.)"' \
+      <<< "${TEMPERATURE_EVIDENCE_JSON}" >&2
+    gpu.die "${GPU_EXIT_PREFLIGHT}" \
+      "AMD temperature gate failed; keep amdgpu loaded and resolve every reported device before ${ACTION}"
+  fi
+
+  if ((DRY_RUN == 0 && CONFIRM_TEMPERATURE_REVIEWED == 0)); then
+    gpu.die "${GPU_EXIT_PREFLIGHT}" \
+      "AMD ${ACTION} requires human review of the captured Celsius readings and --confirm-temperature-reviewed"
+  fi
+}
+
+gpu.require_managed_temperature_evidence() {
+  local host_state="${STATE_ROOT}/host.state"
+  [[ -r "${host_state}" ]] || return 0
+  gpu.state_is_json "${host_state}" || return 0
+  if jq -e '
+    ((.blacklist_vendors // []) | index("amd") != null) or
+    any(.gpu_function_records[]?; .vendor_id == "0x1002")
+  ' "${host_state}" >/dev/null; then
+    jq -e '.temperature_evidence.gate.passed == true' "${host_state}" >/dev/null \
+      || gpu.die "${GPU_EXIT_PREFLIGHT}" \
+        "managed AMD host state predates temperature evidence; unprepare, reboot, and prepare again before attachment"
+  fi
 }
 
 gpu.prepare_state_inputs() {
@@ -127,12 +212,15 @@ gpu.apply_main() {
   case "${ACTION}" in
     prepare)
       gpu.preflight_prepare_selection 1
+      gpu.capture_amd_temperature_gate
       if ((IOMMU_READY == 0)) && [[ "$(awk -F: '/vendor_id/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' "${PROC_ROOT}/cpuinfo" 2>/dev/null)" == AuthenticAMD ]]; then
         gpu.die "${GPU_EXIT_PREFLIGHT}" "AMD host has no IOMMU groups; enable AMD-Vi/IOMMU in firmware before prepare"
       fi
       ;;
     attach)
       gpu.preflight_selected 0
+      gpu.require_managed_temperature_evidence
+      gpu.capture_amd_temperature_gate
       ;;
     detach)
       gpu.discover_or_restore_functions "${STATE_ROOT}/vm-${VM_ID}.state"

@@ -40,6 +40,8 @@ PRIMARY_GPU=0
 DISABLE_ONBOOT=0
 IOMMU_PT=0
 RESET_ALIAS_USED=0
+CONFIRM_TEMPERATURE_REVIEWED=0
+TEMPERATURE_EVIDENCE_JSON='null'
 
 SYSFS_ROOT="${PROXMOX_GPU_SYSFS_ROOT:-/sys}"
 PROC_ROOT="${PROXMOX_GPU_PROC_ROOT:-/proc}"
@@ -139,6 +141,7 @@ Feature options:
   --blacklist-vendor amd|nvidia [--blacklist-gpu PCI_BDF ...]
   --blacklist-host-drivers
   --allow-host-display-loss
+  --confirm-temperature-reviewed
 
 Safe first use:
   setup/vm/gpu.sh --action inventory --output json
@@ -205,7 +208,7 @@ gpu.parse_args() {
         BLACKLIST_HOST_DRIVERS=1
         [[ "${BLACKLIST_INPUT_MODE}" == none ]] || gpu.die "${GPU_EXIT_USAGE}" "conflicting blacklist selectors"
         BLACKLIST_INPUT_MODE="vendor"
-        BLACKLIST_VENDOR_INPUT="${2,,}"
+        BLACKLIST_VENDOR_INPUT="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
         shift 2
         ;;
       --blacklist-gpu)
@@ -214,6 +217,7 @@ gpu.parse_args() {
         shift 2
         ;;
       --allow-host-display-loss) ALLOW_HOST_DISPLAY_LOSS=1; shift ;;
+      --confirm-temperature-reviewed) CONFIRM_TEMPERATURE_REVIEWED=1; shift ;;
       --allow-guest-console-loss) ALLOW_GUEST_CONSOLE_LOSS=1; shift ;;
       --primary-gpu) PRIMARY_GPU=1; shift ;;
       --disable-onboot) DISABLE_ONBOOT=1; shift ;;
@@ -257,6 +261,8 @@ gpu.parse_args() {
   ((PRIMARY_GPU == 0)) || [[ "${ACTION}" == attach || "${ACTION}" == preflight || "${ACTION}" == verify ]] || gpu.die "${GPU_EXIT_USAGE}" "--primary-gpu is valid only for preflight, verify, or attach"
   ((START_VM == 0)) || [[ "${ACTION}" == attach ]] || gpu.die "${GPU_EXIT_USAGE}" "--start is valid only with attach"
   ((REBOOT_HOST == 0)) || [[ "${ACTION}" == prepare || "${ACTION}" == unprepare ]] || gpu.die "${GPU_EXIT_USAGE}" "--reboot is valid only with prepare or unprepare"
+  ((CONFIRM_TEMPERATURE_REVIEWED == 0)) || [[ "${ACTION}" == prepare || "${ACTION}" == attach ]] \
+    || gpu.die "${GPU_EXIT_USAGE}" "--confirm-temperature-reviewed is valid only with prepare or attach"
   if ((PRIMARY_GPU == 1)) && [[ "${PROFILE}" == linux-compute ]]; then
     gpu.die "${GPU_EXIT_USAGE}" "--primary-gpu conflicts with the linux-compute profile"
   fi

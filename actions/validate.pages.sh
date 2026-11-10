@@ -57,13 +57,16 @@ echo "[validate.pages] temp dir: ${TMPDIR}"
 
 # Keep this list synced with runner dependencies and pages publish expectations.
 FILES=(
+  "index.html:www/index.html"
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
   "ansible.runtime.sh:bootstrap/ansible.runtime.sh"
+  "setup.gpu.amd.sh:setup/gpu.amd.sh"
   "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
   "cli/ssh/sync.sh:cli/ssh/sync.sh"
   "cli/storage/temp.sh:cli/storage/temp.sh"
+  "cli/temperature/gpu.sh:cli/temperature/gpu.sh"
   "cli/rsync/fetch.sh:cli/rsync/fetch.sh"
   "ansible/proxmox/common.yml:ansible/proxmox/common.yml"
   "ansible/proxmox/helper/vm.restore.yml:ansible/proxmox/helper/vm.restore.yml"
@@ -80,13 +83,18 @@ FILES=(
   "ansible/debian/node.yml:ansible/debian/node.yml"
   "ansible/debian/cli.codex.yml:ansible/debian/cli.codex.yml"
   "ansible/debian/users.yml:ansible/debian/users.yml"
+  "ansible/debian/lan.yml:ansible/debian/lan.yml"
+  "ansible/debian/network.yml:ansible/debian/network.yml"
   "ansible/debian/netboot.yml:ansible/debian/netboot.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
   "ansible/debian/ssh.yml:ansible/debian/ssh.yml"
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
+  "ansible/group_vars/all.yml:ansible/group_vars/all.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
   "ansible/release/9.1/enterprise.yml:ansible/release/9.1/enterprise.yml"
+  "setup/temperature.sh:setup/temperature.sh"
+  "setup/temperature/gpu.sh:setup/temperature/gpu.sh"
 )
 
 GENERATED_FILES=(
@@ -747,6 +755,43 @@ check_published_users_policy() {
     echo "[validate.pages][error] published users.yml does not guard all nine host safety tasks"
     rc=1
   fi
+  for marker in \
+    "bootstrap_password_mode_effective in ['username', 'preserve', 'locked']" \
+    "bootstrap_password_mode_effective == 'username'" \
+    "item.name | password_hash(default_password_hash_algo)" \
+    "default('always' if bootstrap_password_mode_effective == 'username' else 'on_create')"; do
+    if ! grep -Fq -- "${marker}" "${published_users}"; then
+      echo "[validate.pages][error] published users.yml is missing credential policy marker: ${marker}"
+      rc=1
+    fi
+  done
+}
+
+check_published_host_network_policy() {
+  local published_network="${TMPDIR}/ansible/debian/network.yml"
+  local published_vars="${TMPDIR}/ansible/group_vars/all.yml"
+  local needle
+
+  for needle in \
+    'network_manage_firewall' \
+    'Remove legacy RDP allow rules when RDP is disabled' \
+    "IPV6={{ 'yes'" \
+    'validate: "/usr/sbin/sshd -t -f %s"'; do
+    if ! grep -Fq -- "${needle}" "${published_network}"; then
+      echo "[validate.pages][error] published host network policy is missing: ${needle}"
+      rc=1
+    fi
+  done
+  for needle in \
+    'bootstrap_default_password_mode: "username"' \
+    'bootstrap_default_user_update_password: "always"' \
+    'manage_firewall: false' \
+    'allow_rdp: false'; do
+    if ! grep -Fq -- "${needle}" "${published_vars}"; then
+      echo "[validate.pages][error] published base vars are missing: ${needle}"
+      rc=1
+    fi
+  done
 }
 
 check_published_debian_lxc_policy() {
@@ -971,6 +1016,7 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_release91_bootstrap_policy
   check_published_ansible_runtime_policy
   check_published_users_policy
+  check_published_host_network_policy
   check_published_debian_lxc_policy
   check_published_debian_lxc_playbook_policy
   check_published_debian_base_bootstrap

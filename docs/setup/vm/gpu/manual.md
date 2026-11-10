@@ -123,14 +123,14 @@ playbook remain coherent.
 Download before executing—even for a dry-run mutation:
 
 ```bash
-install -d -m 0700 /root/proxmox-gpu-review
+install -d -m 0700 ./proxmox-gpu-review
 curl -fsSL \
   https://devs-guide.github.io/proxmox/setup/vm/gpu.sh \
-  -o /root/proxmox-gpu-review/gpu.sh
-chmod 0755 /root/proxmox-gpu-review/gpu.sh
-bash -n /root/proxmox-gpu-review/gpu.sh
-sha256sum /root/proxmox-gpu-review/gpu.sh
-sed -n '1,220p' /root/proxmox-gpu-review/gpu.sh
+  -o ./proxmox-gpu-review/gpu.sh
+chmod 0755 ./proxmox-gpu-review/gpu.sh
+bash -n ./proxmox-gpu-review/gpu.sh
+sha256sum ./proxmox-gpu-review/gpu.sh
+sed -n '1,220p' ./proxmox-gpu-review/gpu.sh
 ```
 
 Record the feature SHA, workflow run, Pages deployment commit, runner checksum,
@@ -147,13 +147,13 @@ macOS Metal acceptance record is in
 ## 1. Inventory and inspect
 
 ```bash
-GPU_RUNNER=/root/proxmox-gpu-review/gpu.sh
+GPU_RUNNER=./proxmox-gpu-review/gpu.sh
 
 "${GPU_RUNNER}" --action inventory --output json \
-  | tee /root/proxmox-gpu-review/inventory.json
+  | tee ./proxmox-gpu-review/inventory.json
 
 jq -r '.platform, .adapter, .inventory.gpus[]' \
-  /root/proxmox-gpu-review/inventory.json
+  ./proxmox-gpu-review/inventory.json
 ```
 
 Do not select `.inventory.gpus[0]` or assume a worked-example address. A human
@@ -211,6 +211,7 @@ preparation:
   --vm "${VM_ID}" \
   --gpu "${GPU_BDF}" \
   --profile "${GPU_PROFILE}" \
+  --confirm-temperature-reviewed \
   --yes
 ```
 
@@ -238,6 +239,7 @@ Apply, then reboot explicitly or with `--reboot`:
   --action prepare \
   --gpu "${GPU_BDF}" \
   --binding early \
+  --confirm-temperature-reviewed \
   --yes \
   --reboot
 ```
@@ -323,6 +325,7 @@ For a primary guest display, preview and apply the explicit console change:
   --primary-gpu \
   --allow-guest-console-loss \
   --disable-onboot \
+  --confirm-temperature-reviewed \
   --yes
 ```
 
