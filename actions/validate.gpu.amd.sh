@@ -54,22 +54,26 @@ write_passthrough_state() {
     "$(dirname "${PT_SCRIPT}")"
   printf '%s\n' '# Managed by setup/vm/gpu.sh (schema 2)' 'vfio' 'vfio_pci' > "${PT_MODULES}"
   printf '%s\n' '# Managed by setup/vm/gpu.sh (schema 2)' 'blacklist amdgpu' 'blacklist radeon' > "${PT_BLACKLIST}"
-  printf '%s\n' '# Managed by setup/vm/gpu.sh (schema 2)' 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT amd_iommu=on"' > "${PT_GRUB}"
-  printf '%s\n' 'quiet amd_iommu=on' > "${PT_CMDLINE}"
+  printf '%s\n' 'quiet' > "${PT_CMDLINE}"
   printf '%s\n' '#!/bin/sh' '# Managed by setup/vm/gpu.sh (schema 2)' > "${PT_HOOK}"
   printf '%s\n' '#!/bin/sh' '# Managed by setup/vm/gpu.sh (schema 2)' 'echo vfio-pci > /sys/bus/pci/devices/0000:18:00.0/driver_override' > "${PT_SCRIPT}"
   chmod 0755 "${PT_HOOK}" "${PT_SCRIPT}"
-  printf '%s\n' 'quiet' > "${PASSTHROUGH_TX}/kernel_cmdline"
 
   cat > "${PASSTHROUGH_STATE}" <<EOF
 {
   "format": 4,
   "gpu_bdf": "0000:18:00.0",
   "gpu_slot": "0000:18:00",
-  "gpu_bdfs": ["0000:18:00.0"],
-  "gpu_slots": ["0000:18:00"],
-  "gpu_functions": ["0000:18:00.0"],
-  "gpu_function_records": [{"bdf":"0000:18:00.0","vendor_id":"0x1002"}],
+  "gpu_bdfs": ["0000:18:00.0","0000:3b:00.0","0000:5e:00.0","0000:86:00.0","0000:af:00.0"],
+  "gpu_slots": ["0000:18:00","0000:3b:00","0000:5e:00","0000:86:00","0000:af:00"],
+  "gpu_functions": ["0000:18:00.0","0000:3b:00.0","0000:5e:00.0","0000:86:00.0","0000:af:00.0"],
+  "gpu_function_records": [
+    {"bdf":"0000:18:00.0","vendor_id":"0x1002"},
+    {"bdf":"0000:3b:00.0","vendor_id":"0x1002"},
+    {"bdf":"0000:5e:00.0","vendor_id":"0x1002"},
+    {"bdf":"0000:86:00.0","vendor_id":"0x1002"},
+    {"bdf":"0000:af:00.0","vendor_id":"0x1002"}
+  ],
   "release": "9.1",
   "binding_strategy": "early",
   "blacklist_vendor": "amd",
@@ -79,21 +83,31 @@ write_passthrough_state() {
   "original_files": [
     {"key":"modules","path":"${PT_MODULES}","existed":false,"checksum":"","backup":"${PASSTHROUGH_TX}/modules"},
     {"key":"blacklist","path":"${PT_BLACKLIST}","existed":false,"checksum":"","backup":"${PASSTHROUGH_TX}/blacklist"},
-    {"key":"grub_dropin","path":"${PT_GRUB}","existed":false,"checksum":"","backup":"${PASSTHROUGH_TX}/grub_dropin"},
-    {"key":"kernel_cmdline","path":"${PT_CMDLINE}","existed":true,"checksum":"deadbeef","backup":"${PASSTHROUGH_TX}/kernel_cmdline"},
     {"key":"initramfs_hook","path":"${PT_HOOK}","existed":false,"checksum":"","backup":"${PASSTHROUGH_TX}/initramfs_hook"},
     {"key":"initramfs_script","path":"${PT_SCRIPT}","existed":false,"checksum":"","backup":"${PASSTHROUGH_TX}/initramfs_script"}
   ],
   "applied_files": [
     {"key":"modules","path":"${PT_MODULES}","existed":true,"checksum":"deadbeef"},
     {"key":"blacklist","path":"${PT_BLACKLIST}","existed":true,"checksum":"deadbeef"},
-    {"key":"grub_dropin","path":"${PT_GRUB}","existed":true,"checksum":"deadbeef"},
-    {"key":"kernel_cmdline","path":"${PT_CMDLINE}","existed":true,"checksum":"deadbeef"},
     {"key":"initramfs_hook","path":"${PT_HOOK}","existed":true,"checksum":"deadbeef"},
     {"key":"initramfs_script","path":"${PT_SCRIPT}","existed":true,"checksum":"deadbeef"}
   ]
 }
 EOF
+}
+
+add_kernel_cmdline_transaction() {
+  local updated="${PASSTHROUGH_STATE}.updated"
+  printf '%s\n' 'quiet' > "${PASSTHROUGH_TX}/kernel_cmdline"
+  printf '%s\n' 'quiet iommu=pt' > "${PT_CMDLINE}"
+  jq \
+    --arg path "${PT_CMDLINE}" \
+    --arg backup "${PASSTHROUGH_TX}/kernel_cmdline" \
+    '.original_files += [{key:"kernel_cmdline",path:$path,existed:true,checksum:"deadbeef",backup:$backup}] |
+     .applied_files += [{key:"kernel_cmdline",path:$path,existed:true,checksum:"deadbeef"}] |
+     .bootloader = "proxmox-boot-tool"' \
+    "${PASSTHROUGH_STATE}" > "${updated}"
+  mv "${updated}" "${PASSTHROUGH_STATE}"
 }
 
 [[ -f "${RUNNER}" ]] || fail "missing setup/gpu.amd.sh"
@@ -118,8 +132,10 @@ ok "runner syntax, publication, and endpoint-only documentation contracts are pr
 mkdir -p \
   "${STUB_BIN}" \
   "${GPU_PATH}/hwmon/hwmon0" \
+  "${GPU_PATH}/power" \
   "${FIXTURE}/sys/drivers/amdgpu" \
   "${FIXTURE}/sys/drivers/vfio-pci" \
+  "${FIXTURE}/sys/kernel/iommu_groups/23" \
   "${FIXTURE}/boot" \
   "${FIXTURE}/etc/modprobe.d" \
   "${FIXTURE}/etc/modules-load.d" \
@@ -135,13 +151,19 @@ mkdir -p \
 printf '%s\n' 'VERSION_CODENAME=trixie' > "${FIXTURE}/etc/os-release"
 printf '%s\n' 'quiet' > "${FIXTURE}/proc/cmdline"
 printf '%s\n' '0x1002' > "${GPU_PATH}/vendor"
+printf '%s\n' '0x67e3' > "${GPU_PATH}/device"
+printf '%s\n' '0x1028' > "${GPU_PATH}/subsystem_vendor"
+printf '%s\n' '0x0b0d' > "${GPU_PATH}/subsystem_device"
 printf '%s\n' '0x030000' > "${GPU_PATH}/class"
 printf '%s\n' '1' > "${GPU_PATH}/boot_vga"
+printf '%s\n' 'active' > "${GPU_PATH}/power/runtime_status"
+printf '%s\n' 'on' > "${GPU_PATH}/power/control"
 printf '%s\n' 'amdgpu' > "${GPU_PATH}/hwmon/hwmon0/name"
 printf '%s\n' 'edge' > "${GPU_PATH}/hwmon/hwmon0/temp1_label"
 printf '%s\n' '55000' > "${GPU_PATH}/hwmon/hwmon0/temp1_input"
 touch "${FIXTURE}/boot/vmlinuz-6.14.11-4-pve" "${MODULE_READY}" "${PVE_FIRMWARE_READY}"
 ln -s "${FIXTURE}/sys/drivers/amdgpu" "${GPU_PATH}/driver"
+ln -s "${FIXTURE}/sys/kernel/iommu_groups/23" "${GPU_PATH}/iommu_group"
 : > "${COMMAND_LOG}"
 : > "${JOURNAL_FILE}"
 
@@ -258,7 +280,41 @@ printf 'reboot %s\n' "$*" >> "${AMDGPU_TEST_COMMAND_LOG}"
 exit 99
 EOF
 
+cat > "${STUB_BIN}/sleep" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${AMDGPU_TEST_WAKE_CONTROL:-}" \
+  && "$(tr -d '[:space:]' < "${AMDGPU_TEST_WAKE_CONTROL}")" == on ]]; then
+  printf '%s\n' 63000 > "${AMDGPU_TEST_WAKE_INPUT}"
+  printf '%s\n' active > "${AMDGPU_TEST_WAKE_RUNTIME_STATUS}"
+fi
+EOF
+
 chmod 0755 "${STUB_BIN}"/*
+
+make_extra_gpu() {
+  local bdf="$1" driver="$2" temperature="$3"
+  local path="${FIXTURE}/sys/bus/pci/devices/${bdf}"
+  mkdir -p "${path}/hwmon/hwmon0" "${path}/power"
+  printf '%s\n' 0x030000 > "${path}/class"
+  printf '%s\n' 0x1002 > "${path}/vendor"
+  printf '%s\n' 0x67e3 > "${path}/device"
+  printf '%s\n' 0x1028 > "${path}/subsystem_vendor"
+  printf '%s\n' 0x0b0d > "${path}/subsystem_device"
+  printf '%s\n' 0 > "${path}/boot_vga"
+  printf '%s\n' active > "${path}/power/runtime_status"
+  printf '%s\n' on > "${path}/power/control"
+  printf '%s\n' amdgpu > "${path}/hwmon/hwmon0/name"
+  printf '%s\n' edge > "${path}/hwmon/hwmon0/temp1_label"
+  printf '%s\n' "${temperature}" > "${path}/hwmon/hwmon0/temp1_input"
+  ln -s "${FIXTURE}/sys/drivers/${driver}" "${path}/driver"
+}
+
+remove_extra_gpus() {
+  local bdf=""
+  for bdf in 0000:3b:00.0 0000:5e:00.0 0000:5f:00.0 0000:86:00.0 0000:87:00.0 0000:af:00.0 0000:d8:00.0; do
+    rm -rf "${FIXTURE}/sys/bus/pci/devices/${bdf}"
+  done
+}
 
 AMD_ENV=(
   "PATH=${STUB_BIN}:${PATH}"
@@ -277,8 +333,30 @@ AMD_ENV=(
 check_output="$(env "${AMD_ENV[@]}" bash -s -- --check < "${RUNNER}")"
 grep -Fq 'driver=amdgpu' <<< "${check_output}" || fail "healthy check omitted amdgpu binding"
 grep -Fq 'temperature.edge=55.000C' <<< "${check_output}" || fail "healthy check omitted temperature"
+grep -Fq 'id=0x1002:0x67e3 subsystem=0x1028:0x0b0d' <<< "${check_output}" \
+  || fail "healthy inventory omitted PCI and subsystem identity"
 expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_PVE_VERSION=8.4.0 bash -s -- --check < "${RUNNER}"
 ok "streamed read-only check validates PVE 9, native binding, and temperatures"
+
+printf '%s\n' 'N/A' > "${GPU_PATH}/hwmon/hwmon0/temp1_input"
+printf '%s\n' suspended > "${GPU_PATH}/power/runtime_status"
+printf '%s\n' auto > "${GPU_PATH}/power/control"
+wake_output="$(env "${AMD_ENV[@]}" \
+  PROXMOX_AMDGPU_SETTLE_SECONDS=1 \
+  AMDGPU_TEST_WAKE_CONTROL="${GPU_PATH}/power/control" \
+  AMDGPU_TEST_WAKE_INPUT="${GPU_PATH}/hwmon/hwmon0/temp1_input" \
+  AMDGPU_TEST_WAKE_RUNTIME_STATUS="${GPU_PATH}/power/runtime_status" \
+  bash -s < "${RUNNER}")"
+grep -Fq 'temporarily resumed for temperature sampling' <<< "${wake_output}" \
+  || fail "default setup did not report a bounded runtime wake"
+grep -Fq 'temperature.edge=63.000C' <<< "${wake_output}" \
+  || fail "default setup did not sample after runtime wake"
+grep -qx auto "${GPU_PATH}/power/control" \
+  || fail "default setup did not restore the original runtime power policy"
+printf '%s\n' 55000 > "${GPU_PATH}/hwmon/hwmon0/temp1_input"
+printf '%s\n' active > "${GPU_PATH}/power/runtime_status"
+printf '%s\n' on > "${GPU_PATH}/power/control"
+ok "default setup temporarily wakes and restores runtime-suspended AMDGPU"
 
 : > "${COMMAND_LOG}"
 blacklist_output="$(env "${AMD_ENV[@]}" bash -s -- --blacklist --yes < "${RUNNER}" 2>&1)"
@@ -328,6 +406,13 @@ expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
 ok "protected package removal and unrecorded VFIO ownership fail closed"
 
 printf '%s\n' 'hostpci0: 0000:18:00.0,pcie=1' > "${FIXTURE}/etc/pve/qemu-server/100.conf"
+make_extra_gpu 0000:3b:00.0 vfio-pci 51000
+make_extra_gpu 0000:5e:00.0 vfio-pci 52000
+make_extra_gpu 0000:5f:00.0 amdgpu 53000
+make_extra_gpu 0000:86:00.0 vfio-pci 54000
+make_extra_gpu 0000:87:00.0 amdgpu 55000
+make_extra_gpu 0000:af:00.0 vfio-pci 56000
+make_extra_gpu 0000:d8:00.0 amdgpu 57000
 write_passthrough_state
 : > "${COMMAND_LOG}"
 dry_run_output="$(env "${AMD_ENV[@]}" bash -s -- --dry-run < "${RUNNER}" 2>&1)"
@@ -341,12 +426,16 @@ grep -Fq 'REBOOT REQUIRED' <<< "${takeover_output}" || fail "native takeover omi
 grep -Fq 'VM passthrough configuration is intentionally unchanged' <<< "${takeover_output}" \
   || fail "native takeover omitted the VM-impact warning"
 [[ ! -e "${PASSTHROUGH_STATE}" ]] || fail "completed takeover left active passthrough host state"
-for restored_path in "${PT_MODULES}" "${PT_BLACKLIST}" "${PT_GRUB}" "${PT_HOOK}" "${PT_SCRIPT}"; do
+for restored_path in "${PT_MODULES}" "${PT_BLACKLIST}" "${PT_HOOK}" "${PT_SCRIPT}"; do
   [[ ! -e "${restored_path}" ]] || fail "takeover left repository-managed path active: ${restored_path}"
 done
-grep -qx 'quiet' "${PT_CMDLINE}" || fail "takeover did not restore the original kernel command line"
+grep -qx 'quiet' "${PT_CMDLINE}" || fail "takeover changed an unrecorded kernel command line"
 [[ "$(basename "$(readlink "${GPU_PATH}/driver")")" == vfio-pci ]] \
   || fail "takeover rebound the live VFIO device"
+for bdf in 0000:3b:00.0 0000:5e:00.0 0000:86:00.0 0000:af:00.0; do
+  [[ "$(basename "$(readlink "${FIXTURE}/sys/bus/pci/devices/${bdf}/driver")")" == vfio-pci ]] \
+    || fail "takeover rebound live VFIO device ${bdf}"
+done
 grep -qx 'hostpci0: 0000:18:00.0,pcie=1' "${FIXTURE}/etc/pve/qemu-server/100.conf" \
   || fail "takeover changed VM configuration"
 grep -Fq 'update-grub ' "${COMMAND_LOG}" || fail "takeover did not refresh GRUB"
@@ -356,7 +445,9 @@ find "${FIXTURE}/var/lib/proxmox-amdgpu-runner/native-takeover" -name complete -
 if grep -q '^reboot ' "${COMMAND_LOG}"; then
   fail "takeover attempted to reboot automatically"
 fi
-ok "recorded VFIO state is restored transactionally without touching live ownership or VMs"
+ok "dynamic four-file state restores five VFIO GPUs without touching live ownership or VMs"
+
+remove_extra_gpus
 
 rm -f "${GPU_PATH}/driver"
 ln -s "${FIXTURE}/sys/drivers/amdgpu" "${GPU_PATH}/driver"
@@ -375,6 +466,28 @@ expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_DRIFT_PATH="${PT_BLACKLIST}" bash 
 [[ ! -s "${COMMAND_LOG}" ]] || fail "drift rejection invoked a mutating command"
 
 write_passthrough_state
+jq '.original_files += [.original_files[0]] | .applied_files += [.applied_files[0]]' \
+  "${PASSTHROUGH_STATE}" > "${PASSTHROUGH_STATE}.invalid"
+mv "${PASSTHROUGH_STATE}.invalid" "${PASSTHROUGH_STATE}"
+expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
+
+write_passthrough_state
+jq '.applied_files = .applied_files[0:-1]' \
+  "${PASSTHROUGH_STATE}" > "${PASSTHROUGH_STATE}.invalid"
+mv "${PASSTHROUGH_STATE}.invalid" "${PASSTHROUGH_STATE}"
+expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
+
+write_passthrough_state
+jq --arg path "${FIXTURE}/etc/unknown-amd-state" --arg backup "${PASSTHROUGH_TX}/unknown" '
+  .original_files += [{key:"unknown",path:$path,existed:false,checksum:"",backup:$backup}] |
+  .applied_files += [{key:"unknown",path:$path,existed:false,checksum:""}]' \
+  "${PASSTHROUGH_STATE}" > "${PASSTHROUGH_STATE}.invalid"
+mv "${PASSTHROUGH_STATE}.invalid" "${PASSTHROUGH_STATE}"
+expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
+ok "duplicate, mismatched, and unknown manifest entries fail before mutation"
+
+write_passthrough_state
+add_kernel_cmdline_transaction
 rm -f "${PASSTHROUGH_TX}/kernel_cmdline"
 : > "${COMMAND_LOG}"
 expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
@@ -384,13 +497,14 @@ expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
 ok "checksum drift and missing backups fail before mutation"
 
 write_passthrough_state
+add_kernel_cmdline_transaction
 rm -f "${INITRAMFS_FAILURE_USED}"
 : > "${COMMAND_LOG}"
 expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_FAIL_INITRAMFS_ONCE=1 bash -s < "${RUNNER}"
 [[ -e "${PASSTHROUGH_STATE}" && -e "${PT_MODULES}" && -e "${PT_BLACKLIST}" \
-  && -e "${PT_GRUB}" && -e "${PT_HOOK}" && -e "${PT_SCRIPT}" ]] \
+  && -e "${PT_HOOK}" && -e "${PT_SCRIPT}" ]] \
   || fail "failed boot refresh did not restore prepared passthrough state"
-grep -qx 'quiet amd_iommu=on' "${PT_CMDLINE}" \
+grep -qx 'quiet iommu=pt' "${PT_CMDLINE}" \
   || fail "failed boot refresh did not restore the prepared kernel command line"
 [[ "$(grep -c '^update-initramfs -u -k all$' "${COMMAND_LOG}")" -eq 2 ]] \
   || fail "failed boot refresh did not rebuild initramfs during rollback"
@@ -403,9 +517,18 @@ rm -f "${GPU_PATH}/driver"
 ln -s "${FIXTURE}/sys/drivers/amdgpu" "${GPU_PATH}/driver"
 expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
 rm -f "${FIXTURE}/etc/modprobe.d/foreign-amd.conf" "${GPU_PATH}/driver"
+printf '%s\n' 'options vfio-pci ids=1002:67e3' > "${FIXTURE}/etc/modprobe.d/foreign-vfio.conf"
+ln -s "${FIXTURE}/sys/drivers/amdgpu" "${GPU_PATH}/driver"
+expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
+rm -f "${FIXTURE}/etc/modprobe.d/foreign-vfio.conf" "${GPU_PATH}/driver"
+printf '%s\n' 'quiet vfio-pci.ids=1002:67e3' > "${FIXTURE}/proc/cmdline"
+ln -s "${FIXTURE}/sys/drivers/amdgpu" "${GPU_PATH}/driver"
+expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
+printf '%s\n' 'quiet' > "${FIXTURE}/proc/cmdline"
+rm -f "${GPU_PATH}/driver"
 ln -s "${FIXTURE}/sys/drivers/vfio-pci" "${GPU_PATH}/driver"
 expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
-ok "foreign blacklists and VFIO ownership without valid repository state fail closed"
+ok "foreign blacklists, unrecorded AMD VFIO IDs, and VFIO ownership without state fail closed"
 
 if grep -Eq '^[[:space:]]*(reboot|shutdown)([[:space:]]|$)' "${RUNNER}"; then
   fail "runner source contains an automatic reboot or shutdown command"

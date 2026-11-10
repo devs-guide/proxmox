@@ -49,10 +49,13 @@ wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
 
 If an AMD GPU is currently owned by `vfio-pci`, the default action accepts
 only intact schema-v4 host state created by this repository. It restores the
-complete recorded host transaction, archives that state, and requires an
-operator-controlled reboot before `--check`. It does not rebind the live GPU,
-reboot the host, or change VM configuration; existing VM passthrough may stop
-working. Use `--dry-run` to validate the rollback evidence without changes.
+exact recorded host-file subset, archives that state, and requires an
+operator-controlled reboot before rerunning the default setup action. It does
+not rebind the live GPU, reboot the host, or change VM configuration; existing
+VM passthrough may stop working. Use `--dry-run` to validate the rollback
+evidence without changes.
+`--check` remains strictly read-only; the default action may temporarily wake
+a runtime-suspended AMDGPU solely to sample temperatures, then restores it.
 
 After reviewing temperatures, globally blacklist AMD host drivers when every
 AMD GPU is intended for passthrough and out-of-band access is available:
@@ -76,7 +79,7 @@ confirmed not to be the host boot display:
 ~~~bash
 set -o pipefail
 wget -qO- https://devs-guide.github.io/proxmox/setup/temperature.sh |
-  bash -s -- --component gpu --vendor amd --require-driver amdgpu \
+  sudo bash -s -- --component gpu --vendor amd --require-driver amdgpu \
     --require-readable --reject-boot-vga --output json
 
 set -o pipefail
@@ -84,8 +87,9 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/vm/gpu.sh |
   bash -s -- --action inventory --release 9.1 --output json
 ~~~
 
-For `setup/vm/gpu.sh`, only read-only temperature and inventory actions may
-be streamed. Download and inspect that passthrough runner before prepare,
+Required AMD temperature sampling may temporarily resume a runtime-suspended
+GPU and restore its prior power policy. GPU inventory remains read-only.
+Download and inspect the passthrough runner before prepare,
 attach, detach, or unprepare. AMD early preparation and attachment require
 reviewed temperature evidence and --confirm-temperature-reviewed.
 

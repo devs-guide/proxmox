@@ -25,14 +25,9 @@ TAKEOVER_MUTATED=0
 OWN_BLACKLIST_REMOVE=0
 AMD_DEVICES=()
 MISSING_FIRMWARE=()
-PASSTHROUGH_MANAGED_KEYS=(
-  modules
-  blacklist
-  grub_dropin
-  kernel_cmdline
-  initramfs_hook
-  initramfs_script
-)
+PASSTHROUGH_TRANSACTION_KEYS=()
+POWER_RESTORE_PATHS=()
+POWER_RESTORE_VALUES=()
 
 log() {
   printf '[%s] %s\n' "${COMPONENT}" "$*"
@@ -62,7 +57,25 @@ rebinds a live VFIO device or reboots the host.
 EOF
 }
 
+power.restore_all() {
+  local index=0
+  local restored=1
+  for ((index = ${#POWER_RESTORE_PATHS[@]} - 1; index >= 0; index--)); do
+    [[ -n "${POWER_RESTORE_PATHS[index]}" ]] || continue
+    if ! printf '%s\n' "${POWER_RESTORE_VALUES[index]}" > "${POWER_RESTORE_PATHS[index]}" 2>/dev/null; then
+      warn "failed to restore runtime power policy at ${POWER_RESTORE_PATHS[index]}"
+      restored=0
+    fi
+  done
+  if ((restored == 1)); then
+    POWER_RESTORE_PATHS=()
+    POWER_RESTORE_VALUES=()
+  fi
+  ((restored == 1))
+}
+
 cleanup() {
+  power.restore_all || true
   if [[ -n "${TMP_ROOT}" && -d "${TMP_ROOT}" ]]; then
     rm -rf "${TMP_ROOT}"
   fi
@@ -168,6 +181,38 @@ devices.discover() {
   ((${#AMD_DEVICES[@]} > 0)) || die "no AMD display devices were detected"
 }
 
+device.value() {
+  local path="${SYSFS_ROOT}/bus/pci/devices/$1/$2"
+  if [[ -r "${path}" ]]; then
+    tr -d '[:space:]' < "${path}"
+  else
+    printf 'unknown\n'
+  fi
+}
+
+device.model() {
+  local model=""
+  if command -v lspci >/dev/null 2>&1; then
+    model="$(lspci -Dnnk -s "$1" 2>/dev/null | sed -n '1s/^[^ ]* //p' || true)"
+  fi
+  [[ -n "${model}" ]] || model="unknown"
+  printf '%s\n' "${model}"
+}
+
+devices.report() {
+  local bdf="" device_path="" iommu_group="none" module_status="unavailable"
+
+  module.available && module_status="available"
+  for bdf in "${AMD_DEVICES[@]}"; do
+    device_path="${SYSFS_ROOT}/bus/pci/devices/${bdf}"
+    iommu_group="none"
+    if [[ -L "${device_path}/iommu_group" ]]; then
+      iommu_group="$(basename "$(readlink "${device_path}/iommu_group")")"
+    fi
+    log "gpu=${bdf} class=$(device.value "${bdf}" class) id=$(device.value "${bdf}" vendor):$(device.value "${bdf}" device) subsystem=$(device.value "${bdf}" subsystem_vendor):$(device.value "${bdf}" subsystem_device) driver=$(device.driver "${bdf}") kernel_module=amdgpu module=${module_status} boot_vga=$(device.value "${bdf}" boot_vga) iommu_group=${iommu_group} runtime_status=$(device.value "${bdf}" power/runtime_status) model=$(device.model "${bdf}")"
+  done
+}
+
 device.driver() {
   local bdf="$1"
   local link="${SYSFS_ROOT}/bus/pci/devices/${bdf}/driver"
@@ -183,6 +228,7 @@ module.available() {
 }
 
 native.check() {
+  local allow_wake="${1:-0}"
   local ok=1
   local bdf=""
   local driver=""
@@ -191,6 +237,11 @@ native.check() {
   local raw=""
   local label=""
   local readable=0
+  local runtime_status="unknown"
+  local power_control="unknown"
+  local power_path=""
+  local read_error=""
+  local wake_attempted=0
   local inputs=()
 
   if module.available; then
@@ -205,33 +256,72 @@ native.check() {
     [[ -r "${SYSFS_ROOT}/bus/pci/devices/${bdf}/boot_vga" ]] \
       && boot_vga="$(sed -n '1p' "${SYSFS_ROOT}/bus/pci/devices/${bdf}/boot_vga")" \
       || boot_vga="0"
-    log "gpu=${bdf} driver=${driver} boot_vga=${boot_vga}"
+    runtime_status="$(device.value "${bdf}" power/runtime_status)"
+    power_control="$(device.value "${bdf}" power/control)"
+    log "gpu=${bdf} driver=${driver} boot_vga=${boot_vga} runtime_status=${runtime_status} power_control=${power_control}"
     if [[ "${driver}" != amdgpu ]]; then
       warn "${bdf} is not using amdgpu"
       ok=0
     fi
 
     readable=0
-    inputs=("${SYSFS_ROOT}/bus/pci/devices/${bdf}"/hwmon/hwmon*/temp*_input)
-    for input in "${inputs[@]}"; do
-      [[ -r "${input}" ]] || continue
-      raw="$(sed -n '1p' "${input}")"
-      [[ "${raw}" =~ ^-?[0-9]+$ ]] || continue
-      label="${input%_input}_label"
-      if [[ -r "${label}" ]]; then
-        label="$(sed -n '1p' "${label}")"
+    wake_attempted=0
+    while :; do
+      inputs=("${SYSFS_ROOT}/bus/pci/devices/${bdf}"/hwmon/hwmon*/temp*_input)
+      for input in "${inputs[@]}"; do
+        [[ -e "${input}" || -L "${input}" ]] || continue
+        read_error=""
+        if raw="$(sed -n '1p' "${input}" 2>&1)"; then
+          if [[ "${raw}" =~ ^-?[0-9]+$ ]]; then
+            label="${input%_input}_label"
+            if [[ -r "${label}" ]]; then
+              label="$(sed -n '1p' "${label}")"
+            else
+              label="$(basename "${input}" _input)"
+            fi
+            printf '[%s] gpu=%s temperature.%s=%.3fC\n' \
+              "${COMPONENT}" "${bdf}" "${label}" "$(awk -v value="${raw}" 'BEGIN { print value / 1000 }')"
+            readable=1
+          else
+            read_error="non-numeric value: ${raw:-empty}"
+          fi
+        else
+          read_error="${raw:-read failed}"
+        fi
+        [[ -z "${read_error}" ]] || warn "gpu=${bdf} sensor=${input#${SYSFS_ROOT}} read_error=${read_error}"
+      done
+      ((readable == 0 && wake_attempted == 0 && allow_wake == 1)) || break
+      [[ "${driver}" == amdgpu ]] || break
+      case "${runtime_status}" in
+        suspended|suspending) ;;
+        *) break ;;
+      esac
+      power_path="${SYSFS_ROOT}/bus/pci/devices/${bdf}/power/control"
+      [[ -w "${power_path}" && "${power_control}" != unknown ]] || {
+        warn "gpu=${bdf} runtime wake unavailable: ${power_path} is not writable"
+        break
+      }
+      if printf 'on\n' > "${power_path}"; then
+        POWER_RESTORE_PATHS+=("${power_path}")
+        POWER_RESTORE_VALUES+=("${power_control}")
+        wake_attempted=1
+        log "gpu=${bdf} temporarily resumed for temperature sampling; power_control will be restored to ${power_control}"
+        [[ "${SETTLE_SECONDS}" == 0 ]] || sleep "${SETTLE_SECONDS}"
+        runtime_status="$(device.value "${bdf}" power/runtime_status)"
       else
-        label="$(basename "${input}" _input)"
+        warn "gpu=${bdf} runtime wake failed"
+        break
       fi
-      printf '[%s] gpu=%s temperature.%s=%.3fC\n' \
-        "${COMPONENT}" "${bdf}" "${label}" "$(awk -v value="${raw}" 'BEGIN { print value / 1000 }')"
-      readable=1
     done
     if ((readable == 0)); then
-      warn "${bdf} has no readable hwmon temperature"
+      warn "${bdf} has no readable hwmon temperature (runtime_status=${runtime_status}, power_control=${power_control})"
       ok=0
     fi
   done
+
+  if ! power.restore_all; then
+    ok=0
+  fi
 
   ((ok == 1))
 }
@@ -290,6 +380,7 @@ passthrough.state.validate() {
 
   require.command jq
   require.command sha256sum
+  PASSTHROUGH_TRANSACTION_KEYS=()
   [[ -f "${PASSTHROUGH_HOST_STATE}" && ! -L "${PASSTHROUGH_HOST_STATE}" ]] \
     || die "repository passthrough state is not a regular file: ${PASSTHROUGH_HOST_STATE}"
   jq -e '
@@ -299,6 +390,7 @@ passthrough.state.validate() {
     (.applied_files | type) == "array" and
     (.transaction_dir | type) == "string" and
     (.bootloader | type) == "string" and
+    (.binding_strategy | type) == "string" and
     all(.original_files[]; (.key | type) == "string" and (.path | type) == "string" and
       (.existed | type) == "boolean" and (.checksum | type) == "string" and (.backup | type) == "string") and
     all(.applied_files[]; (.key | type) == "string" and (.path | type) == "string" and
@@ -308,12 +400,33 @@ passthrough.state.validate() {
 
   format="$(jq -r '.format' "${PASSTHROUGH_HOST_STATE}")"
   [[ "${format}" == 4 ]] || die "repository passthrough state schema ${format} is unsupported; expected 4"
-  count="$(jq -r '.original_files | length' "${PASSTHROUGH_HOST_STATE}")"
-  [[ "${count}" == "${#PASSTHROUGH_MANAGED_KEYS[@]}" ]] \
-    || die "repository passthrough state does not cover every managed host path"
-  count="$(jq -r '.applied_files | length' "${PASSTHROUGH_HOST_STATE}")"
-  [[ "${count}" == "${#PASSTHROUGH_MANAGED_KEYS[@]}" ]] \
-    || die "repository passthrough state has an incomplete applied-file manifest"
+  jq -e '
+    ([.original_files[].key] | length) == ([.original_files[].key] | unique | length) and
+    ([.applied_files[].key] | length) == ([.applied_files[].key] | unique | length) and
+    ([.original_files[] | {key,path}] | sort_by(.key)) ==
+      ([.applied_files[] | {key,path}] | sort_by(.key)) and
+    all(.original_files[].key;
+      . == "modules" or . == "blacklist" or . == "grub_dropin" or
+      . == "kernel_cmdline" or . == "initramfs_hook" or . == "initramfs_script") and
+    (if .binding_strategy == "early" then
+      ([.original_files[].key] | index("modules")) != null and
+      ([.original_files[].key] | index("initramfs_hook")) != null and
+      ([.original_files[].key] | index("initramfs_script")) != null
+    else true end) and
+    (if ([.blacklist_vendors[]? | tostring | ascii_downcase] | index("amd")) != null then
+      ([.original_files[].key] | index("blacklist")) != null
+    else true end) and
+    ([.original_files[].key | select(. == "grub_dropin" or . == "kernel_cmdline")] | length) <= 1 and
+    (if ([.original_files[].key] | index("grub_dropin")) != null then .bootloader == "grub" else true end) and
+    (if ([.original_files[].key] | index("kernel_cmdline")) != null then
+      (.bootloader == "proxmox-boot-tool" or .bootloader == "pve-efiboot-tool")
+    else true end)
+  ' "${PASSTHROUGH_HOST_STATE}" >/dev/null \
+    || die "repository passthrough state has an invalid bounded file manifest"
+
+  while IFS= read -r key; do
+    [[ -n "${key}" ]] && PASSTHROUGH_TRANSACTION_KEYS+=("${key}")
+  done < <(jq -r '.original_files[].key' "${PASSTHROUGH_HOST_STATE}")
 
   jq -e '
     ([.blacklist_vendors[]? | tostring | ascii_downcase] | index("amd")) != null or
@@ -335,7 +448,7 @@ passthrough.state.validate() {
     *) die "repository passthrough state has an unsupported bootloader: ${TAKEOVER_BOOTLOADER}" ;;
   esac
 
-  for key in "${PASSTHROUGH_MANAGED_KEYS[@]}"; do
+  for key in "${PASSTHROUGH_TRANSACTION_KEYS[@]}"; do
     expected_path="$(passthrough.path.for_key "${key}")"
     count="$(jq -r --arg key "${key}" --arg path "${expected_path}" \
       '[.original_files[] | select(.key == $key and .path == $path)] | length' \
@@ -419,6 +532,17 @@ blacklist.validate_setup() {
     && grep -Eq '(^|[[:space:]])(module_blacklist|modprobe\.blacklist)=[^[:space:]]*(amdgpu|radeon)' "${ROOT_PREFIX}/proc/cmdline"; then
     die "the running kernel command line contains an unmanaged AMD driver blacklist"
   fi
+  if [[ -r "${ROOT_PREFIX}/proc/cmdline" ]] \
+    && grep -Eq '(^|[[:space:]])vfio-pci\.ids=[^[:space:]]*1002:' "${ROOT_PREFIX}/proc/cmdline"; then
+    die "the running kernel command line contains an unrecorded AMD vfio-pci.ids binding; leaving it untouched"
+  fi
+  for directory in "${directories[@]}"; do
+    [[ -d "${directory}" ]] || continue
+    while IFS= read -r hit; do
+      [[ -n "${hit}" ]] || continue
+      die "unrecorded AMD vfio-pci ID binding must be reviewed manually: ${hit}"
+    done < <(grep -R -n -E '^[[:space:]]*options[[:space:]]+vfio-pci[[:space:]].*ids=[^#]*1002:' "${directory}" 2>/dev/null || true)
+  done
 }
 
 native.takeover.inspect() {
@@ -501,7 +625,7 @@ native.takeover.rollback() {
   local rollback_ok=1
 
   warn "native takeover failed; restoring the repository-managed passthrough host files"
-  for key in "${PASSTHROUGH_MANAGED_KEYS[@]}"; do
+  for key in "${PASSTHROUGH_TRANSACTION_KEYS[@]}"; do
     path="$(passthrough.path.for_key "${key}")"
     applied_existed="$(jq -r --arg key "${key}" '.applied_files[] | select(.key == $key) | .existed' "${TAKEOVER_ARCHIVE}/host.state")"
     if [[ "${applied_existed}" == true ]]; then
@@ -544,7 +668,7 @@ native.takeover.apply_inner() {
   install -d -m 0700 "${TAKEOVER_ARCHIVE}/current" || return 1
   cp -a -- "${PASSTHROUGH_HOST_STATE}" "${TAKEOVER_ARCHIVE}/host.state" || return 1
 
-  for key in "${PASSTHROUGH_MANAGED_KEYS[@]}"; do
+  for key in "${PASSTHROUGH_TRANSACTION_KEYS[@]}"; do
     path="$(passthrough.path.for_key "${key}")"
     if [[ -e "${path}" ]]; then
       cp -a -- "${path}" "${TAKEOVER_ARCHIVE}/current/${key}" || return 1
@@ -563,7 +687,7 @@ native.takeover.apply_inner() {
   chmod 0600 "${TAKEOVER_ARCHIVE}/manifest" || return 1
 
   TAKEOVER_MUTATED=1
-  for key in "${PASSTHROUGH_MANAGED_KEYS[@]}"; do
+  for key in "${PASSTHROUGH_TRANSACTION_KEYS[@]}"; do
     path="$(passthrough.path.for_key "${key}")"
     original_existed="$(jq -r --arg key "${key}" '.original_files[] | select(.key == $key) | .existed' "${PASSTHROUGH_HOST_STATE}")"
     original_backup="$(jq -r --arg key "${key}" '.original_files[] | select(.key == $key) | .backup' "${PASSTHROUGH_HOST_STATE}")"
@@ -598,7 +722,7 @@ native.takeover.apply() {
   fi
   log "repository-managed AMD passthrough host state was archived at ${TAKEOVER_ARCHIVE}"
   log "REBOOT REQUIRED: reboot to activate the restored native AMDGPU boot state"
-  log "After reboot: wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash -s -- --check"
+  log "After reboot: wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash"
 }
 
 kernel.package.resolve() {
@@ -815,7 +939,7 @@ setup.run() {
     initramfs.update
   fi
 
-  if native.check; then
+  if native.check 1; then
     log "AMDGPU is ready"
   elif ((changed == 1)); then
     warn "repair completed, but the native driver is not ready in the current boot"
@@ -841,7 +965,7 @@ blacklist.run() {
     die "refusing to overwrite unmanaged file ${BLACKLIST_PATH}"
   fi
   require.command modinfo
-  native.check || die "all AMD GPUs must use amdgpu and expose temperatures before blacklisting"
+  native.check 1 || die "all AMD GPUs must use amdgpu and expose temperatures before blacklisting"
   for bdf in "${AMD_DEVICES[@]}"; do
     if [[ -r "${SYSFS_ROOT}/bus/pci/devices/${bdf}/boot_vga" ]]; then
       boot_vga="$(sed -n '1p' "${SYSFS_ROOT}/bus/pci/devices/${bdf}/boot_vga")"
@@ -880,12 +1004,13 @@ unblacklist.run() {
 
 platform.validate
 devices.discover
+devices.report
 
 case "${ACTION}" in
   setup) setup.run ;;
   check)
     require.command modinfo
-    native.check || exit 4
+    native.check 0 || exit 4
     ;;
   blacklist) blacklist.run ;;
   unblacklist) unblacklist.run ;;
