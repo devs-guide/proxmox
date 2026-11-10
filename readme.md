@@ -40,8 +40,19 @@ wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash
 
 set -o pipefail
 wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --dry-run
+
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
   sudo bash -s -- --check
 ~~~
+
+If an AMD GPU is currently owned by `vfio-pci`, the default action accepts
+only intact schema-v4 host state created by this repository. It restores the
+complete recorded host transaction, archives that state, and requires an
+operator-controlled reboot before `--check`. It does not rebind the live GPU,
+reboot the host, or change VM configuration; existing VM passthrough may stop
+working. Use `--dry-run` to validate the rollback evidence without changes.
 
 After reviewing temperatures, globally blacklist AMD host drivers when every
 AMD GPU is intended for passthrough and out-of-band access is available:
