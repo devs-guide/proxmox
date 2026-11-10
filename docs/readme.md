@@ -104,6 +104,10 @@ this lane unless explicitly enabled; the runtime probe does not install Node.
 
 ~~~bash
 set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --dry-run
+
+set -o pipefail
 wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash
 
 set -o pipefail
@@ -114,8 +118,17 @@ wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
 The default action repairs the stock PVE kernel module and `pve-firmware`.
 When the kernel names a missing AMD blob, the runner extracts only that file
 from `firmware-amd-graphics`; it does not install the conflicting Debian
-package. The runner never reboots and prints a recommendation when one is
-needed.
+package.
+
+When an AMD display device is already bound to `vfio-pci`, setup validates the
+schema-v4 host transaction written by this repository, including every current
+managed-file and rollback-backup checksum. It then restores and archives that
+complete host transaction. Unknown state, drift, missing backups, and foreign
+blacklists fail before mutation. The GPU remains bound to VFIO until the human
+reboots; setup never performs a live unbind and never reboots automatically.
+It also leaves every VM configuration and attachment record unchanged, so
+existing passthrough may stop working. `--dry-run` performs the same validation
+without changing packages, files, drivers, boot entries, or VMs.
 
 After reviewing native temperatures, an operator with tested out-of-band
 access may disable both AMD host drivers globally:
@@ -197,16 +210,18 @@ Before release promotion, a human tests the exact published feature commit:
 
 1. Run or rerun the bootstrap and confirm BOOTSTRAP COMPLETE.
 2. Reboot if required; validate services, LVM-thin storage, SSH, and firewall.
-3. Stream `setup.gpu.amd.sh` from its Pages endpoint, run its default repair,
-   and reboot only when the runner recommends it.
-4. Stream the endpoint with `--check` and review every AMD temperature.
-5. If all AMD GPUs are VM-only, stream `--blacklist --yes` through iDRAC and
+3. Stream `setup.gpu.amd.sh --dry-run` from its Pages endpoint and review any
+   repository-managed passthrough transaction that will be restored.
+4. Stream the default setup action. If it reports `REBOOT REQUIRED`, confirm
+   that VM configuration was not changed and reboot manually.
+5. Stream the endpoint with `--check` and review every AMD temperature.
+6. If all AMD GPUs are VM-only, stream `--blacklist --yes` through iDRAC and
    reboot when ready.
-6. Run GPU inventory, then download and inspect the passthrough runner.
-7. Run hardware and VM preflight and the preparation dry-run.
-8. Apply preparation and verify vfio-pci after the operator-controlled reboot.
-9. Attach one physical GPU to one stopped Q35 VM and test its guest driver.
-10. Stop and start the guest, detach, unprepare, reboot, and confirm amdgpu and
+7. Run GPU inventory, then download and inspect the passthrough runner.
+8. Run hardware and VM preflight and the preparation dry-run.
+9. Apply preparation and verify vfio-pci after the operator-controlled reboot.
+10. Attach one physical GPU to one stopped Q35 VM and test its guest driver.
+11. Stop and start the guest, detach, unprepare, reboot, and confirm amdgpu and
    temperature readings return.
 
 Do not run host acceptance on a local macOS workstation. Do not create a
