@@ -175,6 +175,7 @@ main() {
   require.pve9_or_trixie
   prepare.trixie.sources
   maybe.run.ansible
+  bootstrap.final.summary
 }
 
 main "$@"

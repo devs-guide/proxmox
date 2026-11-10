@@ -36,10 +36,7 @@
       set_fact:
         network_allowed_users: "{{ (resolved_ssh_allowed_users | default([])) | union(['root']) }}"
         network_allow_subnets: "{{ network_config.allow_subnets | default([]) }}"
-
-    - name: Ensure networking values are usable
-      set_fact:
-        network_allow_subnets: "{{ ['10.0.0.0/24'] if (network_allow_subnets | length == 0) else network_allow_subnets }}"
+        network_manage_firewall: "{{ network_config.manage_firewall | default(false) | bool }}"
 
     - name: Show resolved shared user_defs
       debug:
@@ -61,17 +58,18 @@
           - "'agent' in network_allowed_users"
           - "'proxmox' in network_allowed_users"
           - "'root' in network_allowed_users"
-          - network_allow_subnets | length > 0
+          - (not (network_manage_firewall | bool)) or (network_allow_subnets | length > 0)
           - (not (network_config.allow_rdp | default(false) | bool)) or (network_config.rdp_port is defined)
         fail_msg: "network_config is missing required SSH policy values (ssh_port, allowed_users, allow_subnets)"
 
   tasks:
-    - name: Ensure UFW is installed
+    - name: Ensure UFW package metadata is current
       command:
         argv:
           - apt-get
           - update
       changed_when: false
+      when: network_manage_firewall | bool
 
     - name: Install UFW package
       command:
@@ -80,19 +78,23 @@
           - "-y"
           - install
           - ufw
+      when: network_manage_firewall | bool
 
     - name: Check UFW defaults file
       stat:
         path: /etc/default/ufw
       register: ufw_default
+      when: network_manage_firewall | bool
 
-    - name: Disable IPv6 in UFW
+    - name: Apply the explicit UFW IPv6 policy
       lineinfile:
         path: /etc/default/ufw
         regexp: '^IPV6='
-        line: 'IPV6=no'
+        line: "IPV6={{ 'yes' if (network_config.ipv6 | default(true) | bool) else 'no' }}"
       notify: Reload ufw
-      when: ufw_default.stat.exists
+      when:
+        - network_manage_firewall | bool
+        - ufw_default.stat.exists
 
     - name: Configure SSH port
       lineinfile:
@@ -102,6 +104,8 @@
         state: present
         create: false
         backrefs: false
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Reload SSH
 
     - name: Configure SSH AllowUsers
       lineinfile:
@@ -111,6 +115,8 @@
         state: present
         create: false
         backrefs: false
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Reload SSH
 
     - name: Determine SSH service name (ssh on modern Debian, sshd fallback)
       set_fact:
@@ -119,14 +125,6 @@
              if (ansible_facts.services is defined and 'ssh' in ansible_facts.services)
              else 'sshd' }}
 
-    - name: Reload SSH service if config changed
-      service:
-        name: "{{ ssh_service_name }}"
-        state: reloaded
-      when:
-        - ssh_service_name is defined
-        - not ansible_check_mode
-
     - name: Allow SSH from permitted subnets
       ufw:
         rule: allow
@@ -134,6 +132,7 @@
         proto: tcp
         src: "{{ item }}"
       loop: "{{ network_allow_subnets }}"
+      when: network_manage_firewall | bool
 
     - name: Allow Proxmox web UI from permitted subnets
       ufw:
@@ -142,6 +141,7 @@
         proto: tcp
         src: "{{ item }}"
       loop: "{{ network_allow_subnets }}"
+      when: network_manage_firewall | bool
 
     - name: Allow RDP from permitted subnets (if enabled)
       ufw:
@@ -150,15 +150,51 @@
         proto: tcp
         src: "{{ item }}"
       loop: "{{ network_allow_subnets }}"
-      when: network_config.allow_rdp | bool
+      when:
+        - network_manage_firewall | bool
+        - network_config.allow_rdp | bool
+
+    - name: Remove legacy RDP allow rules when RDP is disabled
+      ufw:
+        rule: allow
+        port: "{{ network_config.rdp_port }}"
+        proto: tcp
+        src: "{{ item }}"
+        delete: true
+      loop: "{{ (network_allow_subnets + ['10.0.0.0/24']) | unique }}"
+      failed_when: false
+      when:
+        - network_manage_firewall | bool
+        - not (network_config.allow_rdp | bool)
+
+    - name: Set UFW default inbound policy
+      ufw:
+        direction: incoming
+        policy: deny
+      when: network_manage_firewall | bool
+
+    - name: Set UFW default outbound policy
+      ufw:
+        direction: outgoing
+        policy: allow
+      when: network_manage_firewall | bool
 
     - name: Ensure UFW is enabled with logging (low)
       ufw:
         state: enabled
         logging: low
       notify: Reload ufw
+      when: network_manage_firewall | bool
 
   handlers:
+    - name: Reload SSH
+      service:
+        name: "{{ ssh_service_name }}"
+        state: reloaded
+      when:
+        - ssh_service_name is defined
+        - not ansible_check_mode
+
     - name: Reload ufw
       ufw:
         state: reloaded

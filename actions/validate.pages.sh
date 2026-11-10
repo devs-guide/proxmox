@@ -57,10 +57,12 @@ echo "[validate.pages] temp dir: ${TMPDIR}"
 
 # Keep this list synced with runner dependencies and pages publish expectations.
 FILES=(
+  "index.html:www/index.html"
   "6.4.sh:bootstrap/release.6.4.sh"
   "9.1.sh:bootstrap/release.9.1.sh"
   "release.common.sh:bootstrap/release.common.sh"
   "ansible.runtime.sh:bootstrap/ansible.runtime.sh"
+  "setup.gpu.amd.sh:setup/gpu.amd.sh"
   "setup.vlan.sh:setup/vlan.sh"
   "setup/network.sh:setup/network.sh"
   "setup.cli.codex.sh:setup/cli.codex.sh"
@@ -77,6 +79,7 @@ FILES=(
   "cli/lib/restore.common.sh:cli/lib/restore.common.sh"
   "cli/ssh/sync.sh:cli/ssh/sync.sh"
   "cli/storage/temp.sh:cli/storage/temp.sh"
+  "cli/temperature/gpu.sh:cli/temperature/gpu.sh"
   "cli/rsync/fetch.sh:cli/rsync/fetch.sh"
   "ansible/proxmox/common.yml:ansible/proxmox/common.yml"
   "ansible/proxmox/helper/vm.restore.yml:ansible/proxmox/helper/vm.restore.yml"
@@ -93,13 +96,18 @@ FILES=(
   "ansible/debian/node.yml:ansible/debian/node.yml"
   "ansible/debian/cli.codex.yml:ansible/debian/cli.codex.yml"
   "ansible/debian/users.yml:ansible/debian/users.yml"
+  "ansible/debian/lan.yml:ansible/debian/lan.yml"
+  "ansible/debian/network.yml:ansible/debian/network.yml"
   "ansible/debian/netboot.yml:ansible/debian/netboot.yml"
   "ansible/debian/packages.yml:ansible/debian/packages.yml"
   "ansible/debian/ssh.yml:ansible/debian/ssh.yml"
   "ansible/debian/sources.trixie.yml:ansible/debian/sources.trixie.yml"
   "ansible/group_vars/proxmox.yml:ansible/group_vars/proxmox.yml"
+  "ansible/group_vars/all.yml:ansible/group_vars/all.yml"
   "ansible/group_vars/trixie.yml:ansible/group_vars/trixie.yml"
   "ansible/release/9.1/enterprise.yml:ansible/release/9.1/enterprise.yml"
+  "setup/temperature.sh:setup/temperature.sh"
+  "setup/temperature/gpu.sh:setup/temperature/gpu.sh"
 )
 
 GENERATED_FILES=(
@@ -137,6 +145,37 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   done
 fi
 
+extract.runner.array.items() {
+  local runner_path="$1"
+  local array_name="$2"
+
+  awk -v array_name="${array_name}" '
+    function emit_quoted(line, value) {
+      while (match(line, /"[^"]+"/)) {
+        value = substr(line, RSTART + 1, RLENGTH - 2)
+        print value
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+
+    $0 ~ "^[[:space:]]*" array_name "[[:space:]]*=[[:space:]]*\\(" {
+      in_array = 1
+      emit_quoted($0)
+      if (index($0, ")") > 0) {
+        in_array = 0
+      }
+      next
+    }
+
+    in_array {
+      emit_quoted($0)
+      if (index($0, ")") > 0) {
+        in_array = 0
+      }
+    }
+  ' "${runner_path}"
+}
+
 read.runner.array() {
   local runner_path="$1"
   local array_name="$2"
@@ -146,12 +185,20 @@ read.runner.array() {
   RUNNER_ARRAY_REFS=()
   while IFS= read -r feature_ref; do
     [[ -n "${feature_ref}" ]] || continue
+    case "/${feature_ref}/" in
+      *'/../'*|*'//'*)
+        echo "[validate.pages][error] unsafe ${array_name} path in ${runner_path#${WORKDIR}/}: ${feature_ref}"
+        rc=1
+        continue
+        ;;
+    esac
+    if [[ "${feature_ref}" == /* ]]; then
+      echo "[validate.pages][error] ${array_name} path must be relative: ${feature_ref}"
+      rc=1
+      continue
+    fi
     RUNNER_ARRAY_REFS+=("${feature_ref}")
-  done < <(
-    sed -n "/^[[:space:]]*${array_name}=(/,/^[[:space:]]*)/p" "${runner_path}" \
-      | grep -Eo '"[^"]+"' \
-      | tr -d '"'
-  )
+  done < <(extract.runner.array.items "${runner_path}" "${array_name}")
 
   if ((${#RUNNER_ARRAY_REFS[@]} == 0)) && [[ "${required}" == "1" ]]; then
     echo "[validate.pages][error] ${runner_path#${WORKDIR}/} has empty or missing ${array_name} array"
@@ -247,7 +294,7 @@ check_setup_feature_refs() {
     return
   fi
 
-  if ! read.runner.array "${runner_path}" "FEATURE_PLAYBOOKS" "1"; then
+  if ! read.runner.array "${runner_path}" "FEATURE_PLAYBOOKS" "0"; then
     return
   fi
   playbook_refs=( "${RUNNER_ARRAY_REFS[@]}" )
@@ -275,7 +322,7 @@ check_setup_cli_refs() {
     rc=1
     return
   fi
-  if ! read.runner.array "${runner_path}" "FEATURE_CLI_FILES" "1"; then
+  if ! read.runner.array "${runner_path}" "FEATURE_CLI_FILES" "0"; then
     return
   fi
 
@@ -315,40 +362,56 @@ check_setup_cli_refs() {
 
 check_feature_manifest() {
   local manifest="${WORKDIR}/actions/pages.features.txt"
-  local source destination policy published
-  [[ -f "${manifest}" ]] || {
-    echo "[validate.pages][error] missing feature publication manifest"
+  local source destination policy tmp_runner compare_hint
+
+  if [[ ! -f "${manifest}" ]]; then
+    echo "[validate.pages][error] missing feature publication manifest: ${manifest}"
     rc=1
     return
-  }
+  fi
+
   while IFS='|' read -r source destination policy; do
     [[ -n "${source}" && "${source}" != \#* ]] || continue
-    case "${policy}" in feature|plain) ;; *)
-      echo "[validate.pages][error] invalid feature policy: ${source}|${destination}|${policy}"
-      rc=1
-      continue
+    case "/${source}/${destination}/" in
+      *'/../'*|*'//'*)
+        echo "[validate.pages][error] unsafe manifest path: ${source}|${destination}"
+        rc=1
+        continue
+        ;;
     esac
-    case "/${source}/${destination}/" in *'/../'*|*'//'*)
-      echo "[validate.pages][error] unsafe feature manifest path: ${source}|${destination}"
-      rc=1
-      continue
-    esac
-    if [[ "${source}" == /* || "${destination}" == /* || ! -f "${WORKDIR}/${source}" ]]; then
-      echo "[validate.pages][error] invalid feature manifest source: ${source}"
+    if [[ "${source}" == /* || "${destination}" == /* ]]; then
+      echo "[validate.pages][error] manifest paths must be repository-relative"
       rc=1
       continue
     fi
-    published="${TMPDIR}/${destination}"
-    if ! fetch_artifact "${destination}" "${published}"; then
+    if [[ ! -f "${WORKDIR}/${source}" ]]; then
+      echo "[validate.pages][error] manifest references missing runner: ${source}"
       rc=1
       continue
     fi
-    if ! diff -u "${WORKDIR}/${source}" "${published}" >/dev/null; then
-      echo "[validate.pages][diff] ${source} differs from published destination ${destination}"
+    tmp_runner="${TMPDIR}/${destination}"
+    if ! fetch_artifact "${destination}" "${tmp_runner}"; then
       rc=1
+      continue
     fi
-    if [[ "${policy}" == feature ]] && grep -q '^[[:space:]]*FEATURE_CLI_FILES=(' "${WORKDIR}/${source}"; then
+    if [[ "${VALIDATE_PAGES_MODE}" == local ]]; then
+      compare_hint="${STATIC_DIR}/${destination}"
+    else
+      compare_hint="${BASE_URL}/${destination}"
+    fi
+    if ! diff -u "${WORKDIR}/${source}" "${tmp_runner}" >/dev/null; then
+      echo "[validate.pages][diff] ${source} differs from ${compare_hint}"
+      diff -u "${WORKDIR}/${source}" "${tmp_runner}" || true
+      rc=1
+    else
+      echo "[validate.pages][ok] ${source} matches ${compare_hint}"
+    fi
+    if [[ "${policy}" == feature ]]; then
+      check_setup_feature_refs "${source}"
       check_setup_cli_refs "${source}"
+    elif [[ "${policy}" != plain ]]; then
+      echo "[validate.pages][error] invalid dependency policy for ${source}: ${policy}"
+      rc=1
     fi
   done < "${manifest}"
 }
@@ -515,16 +578,6 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_playlist_refs "ansible/release/6.4/install.playbooks.txt"
   check_playlist_refs "ansible/release/9.1/install.playbooks.txt"
 fi
-check_setup_feature_refs "setup/vlan.sh"
-check_setup_feature_refs "setup/network.sh"
-check_setup_feature_refs "setup/cli.codex.sh"
-check_setup_feature_refs "setup/lxc/debian.sh"
-check_setup_feature_refs "setup/lxc/samba.sh"
-check_setup_feature_refs "setup/lxc/network.sh"
-check_setup_feature_refs "setup/lxc/codex.sh"
-check_setup_feature_refs "setup/lxc/users.sh"
-check_setup_feature_refs "setup/vm/restore.sh"
-check_setup_cli_refs "setup/vm/restore.sh"
 check_feature_manifest
 check_published_bash_extensions
 check_wrapper_dependency_graph "ansible/proxmox/container/node.yml"
@@ -532,6 +585,8 @@ check_wrapper_dependency_graph "ansible/proxmox/container/codex.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/users.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/debian.yml"
 check_wrapper_dependency_graph "ansible/proxmox/container/debian.base.yml"
+check_wrapper_dependency_graph "ansible/release/6.4/gpu.yml"
+check_wrapper_dependency_graph "ansible/release/9.1/gpu.yml"
 
 check_published_samba_runner_policy() {
   local published_runner="${TMPDIR}/setup/lxc/samba.sh"
@@ -657,6 +712,7 @@ check_published_release91_bootstrap_policy() {
 
 check_published_ansible_runtime_policy() {
   local published_runtime="${TMPDIR}/ansible.runtime.sh"
+  local published_gpu_runner="${TMPDIR}/setup/vm/gpu.sh"
   local needle
 
   if [[ ! -f "${published_runtime}" ]]; then
@@ -678,6 +734,13 @@ check_published_ansible_runtime_policy() {
       rc=1
     fi
   done
+  if [[ ! -f "${published_gpu_runner}" ]] \
+    || ! grep -Fq 'PROXMOX_ANSIBLE_RUNTIME_HELPER' "${published_gpu_runner}" \
+    || ! grep -Fq 'FEATURE_RUNTIME_FILES=(' "${published_gpu_runner}" \
+    || ! grep -Fq 'PAGES_BASE_URL}/${FEATURE_RUNTIME_FILES[0]}' "${published_gpu_runner}"; then
+    echo "[validate.pages][error] published GPU runner does not fetch and export the canonical Ansible runtime helper"
+    rc=1
+  fi
 }
 
 check_published_users_policy() {
@@ -705,6 +768,43 @@ check_published_users_policy() {
     echo "[validate.pages][error] published users.yml does not guard all nine host safety tasks"
     rc=1
   fi
+  for marker in \
+    "bootstrap_password_mode_effective in ['username', 'preserve', 'locked']" \
+    "bootstrap_password_mode_effective == 'username'" \
+    "item.name | password_hash(default_password_hash_algo)" \
+    "default('always' if bootstrap_password_mode_effective == 'username' else 'on_create')"; do
+    if ! grep -Fq -- "${marker}" "${published_users}"; then
+      echo "[validate.pages][error] published users.yml is missing credential policy marker: ${marker}"
+      rc=1
+    fi
+  done
+}
+
+check_published_host_network_policy() {
+  local published_network="${TMPDIR}/ansible/debian/network.yml"
+  local published_vars="${TMPDIR}/ansible/group_vars/all.yml"
+  local needle
+
+  for needle in \
+    'network_manage_firewall' \
+    'Remove legacy RDP allow rules when RDP is disabled' \
+    "IPV6={{ 'yes'" \
+    'validate: "/usr/sbin/sshd -t -f %s"'; do
+    if ! grep -Fq -- "${needle}" "${published_network}"; then
+      echo "[validate.pages][error] published host network policy is missing: ${needle}"
+      rc=1
+    fi
+  done
+  for needle in \
+    'bootstrap_default_password_mode: "username"' \
+    'bootstrap_default_user_update_password: "always"' \
+    'manage_firewall: false' \
+    'allow_rdp: false'; do
+    if ! grep -Fq -- "${needle}" "${published_vars}"; then
+      echo "[validate.pages][error] published base vars are missing: ${needle}"
+      rc=1
+    fi
+  done
 }
 
 check_published_debian_lxc_policy() {
@@ -929,6 +1029,7 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
   check_published_release91_bootstrap_policy
   check_published_ansible_runtime_policy
   check_published_users_policy
+  check_published_host_network_policy
   check_published_debian_lxc_policy
   check_published_debian_lxc_playbook_policy
   check_published_debian_base_bootstrap

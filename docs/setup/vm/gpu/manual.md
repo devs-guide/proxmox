@@ -1,0 +1,419 @@
+# Proxmox whole-GPU passthrough runbook
+
+This runbook covers the repository-supported lanes: Proxmox VE 6.4 on Buster
+and Proxmox VE 9.x on Trixie. The public runner is `setup/vm/gpu.sh`; it
+dispatches read-only work to `cli/gpu/inspect.sh` and mutations to the selected
+release playbook through `cli/gpu/apply.sh`.
+
+Run commands on the Proxmox node as `root`. Keep tested SSH and out-of-band
+console access before changing GPU ownership or boot configuration.
+
+Use the independently executable release runbook for the node under test:
+
+- [PVE 6.4 / Buster GPU passthrough](pve-6.4.md)
+- [PVE 9.1 / Trixie GPU passthrough](pve-9.1.md)
+
+Both release runbooks download and checksum the complete published dependency
+closure before any mutation. This shared manual remains the authoritative
+action, feature-flag, state, and rollback contract.
+
+## Scope and safety
+
+The feature attaches one AMD or NVIDIA GPU slot per VM command. Host preparation
+can select several GPU slots and always includes every same-slot function, such
+as graphics, audio, USB, and UCSI. It supports stopped, non-HA QEMU VMs using
+Q35. Desktop profiles also require OVMF and an EFI disk.
+
+It does not configure ACS override, unsafe interrupts, ROM files, SR-IOV,
+mediated devices, guest drivers, resource mappings, live migration, or GPU reset
+workarounds. It refuses PVE 7 and PVE 8 rather than guessing across an untested
+release lane.
+
+The feature never binds by shared vendor/device ID. Early binding uses exact PCI
+addresses. A vendor blacklist is enabled only when the selected set covers every
+inventoried GPU of that vendor; partial sets use exact-BDF binding without a
+global blacklist.
+
+## Release behavior
+
+| Detected host | Release lane | Default binding | Normal workflow |
+| --- | --- | --- | --- |
+| PVE 6 + Buster | `6.4` | `early` | prepare, reboot, verify, attach |
+| PVE 9 + Trixie | `9.1` | `automatic` | preflight, attach; prepare only when needed |
+
+PVE 6 requires exact-BDF VFIO ownership before attachment. The playbook adds the
+available legacy VFIO module only when `modinfo vfio_virqfd` succeeds and uses
+GRUB, `pve-efiboot-tool`, or `proxmox-boot-tool` according to the live node.
+
+PVE 9 starts with automatic Proxmox device handoff. A native driver while the VM
+is stopped is not itself a failure. Use `--binding early` only after automatic
+handoff has demonstrably failed. Neither lane adds `amd_iommu=on`; on Intel,
+`intel_iommu=on` is added only when live IOMMU groups are absent. `iommu=pt` is
+opt-in through `--iommu-pt`.
+
+Live platform detection is always authoritative. The platform helper records
+the complete `pveversion`, Debian codename, kernel, boot tooling, and adapter
+capabilities before selecting a release wrapper. `--release 6.4` and
+`--release 9.1` are optional assertions: they can reject a mismatch but can
+never select or override tooling. Compatible future PVE 9 minors continue
+through the PVE 9/Trixie capability adapter; unknown or cross-matched platforms
+fail closed.
+
+## Action contract
+
+| Action | Mutates | Required values | Purpose |
+| --- | --- | --- | --- |
+| `inventory` | no | none | list GPU slots, vendor, driver, and boot-VGA state |
+| `preflight` | no | `--gpu`; optional `--vm` | validate identity, full slot, IOMMU isolation, conflicts, and VM eligibility |
+| `prepare` | yes | `--gpu` or a blacklist selector; `--yes` | apply only requested release-specific host preparation |
+| `verify` / `--test` | no | `--gpu`; optional `--vm` | state-aware readiness check after preparation or reboot |
+| `attach` / `--attach` | yes | `--vm`, `--gpu`, `--yes` | add the whole slot to one stopped VM |
+| `detach` / `--remove` | yes | `--vm`, `--yes` | remove only the feature-owned `hostpciN` entry and restore managed VM fields |
+| `status` | no | none | report managed host state and optional live function state |
+| `unprepare` | yes | `--yes` | restore exact host files after all attachments are removed |
+
+Every mutating action accepts `--dry-run` instead of `--yes`. Inputs are
+noninteractive and therefore safe for remote automation. Use `--output json`
+for stable schema-v4 result documents containing `platform`, `adapter`, the
+complete `inventory`, and an explicit `selection_set` for targeted actions.
+
+Mutation dispatch resolves the canonical managed runtime directly at
+`/opt/ansible-venv/bin/ansible-playbook` and requires the repository-pinned
+Ansible Core version. Operators do not need to prepend `/opt/ansible-venv/bin`
+to `PATH`; a missing or stale managed runtime fails with bootstrap-repair
+guidance.
+
+## Feature flags
+
+- `--binding release|automatic|early` uses the detected adapter capability or
+  an explicit supported strategy. PVE 6 refuses `automatic`.
+- `--blacklist-all`, `--blacklist-amd`, and `--blacklist-nvidia` select complete
+  live vendor sets. `--blacklist-vendor` accepts optional repeatable
+  `--blacklist-gpu` selectors. `--blacklist` accepts a JSON object whose AMD or
+  NVIDIA values are `"all"` or display-BDF arrays. These options are valid only
+  for `prepare --binding early` and require `--allow-host-display-loss --yes`.
+  Mixed policy such as `{"amd":["0000:3b:00.0"],"nvidia":"all"}` is supported;
+  keys and `all` are case-insensitive.
+- Bare `--blacklist` and `--blacklist-host-drivers` retain the deprecated
+  single-GPU collateral-refusal behavior.
+- `--primary-gpu` adds `x-vga=1` and changes `vga` to `none`. It requires
+  `--allow-guest-console-loss --yes` for a real attachment.
+- `--disable-onboot` changes `onboot` to `0` during commissioning and records
+  the exact prior value for detach.
+- `--start` starts the VM only after a successful attachment transaction.
+- `--iommu-pt` requests the optional `iommu=pt` kernel token.
+- `--reboot` reboots only after successful `prepare` or `unprepare`.
+- `--hostpci-index auto|0..15` defaults to the first unused entry.
+
+Profiles are `macos-desktop`, `windows-desktop`, `linux-desktop`, and
+`linux-compute`. Compatibility aliases `macos`, `winos`, `linux`, and `compute`
+are accepted. A desktop profile validates OVMF/EFI requirements; it does not
+implicitly remove the virtual console. Use `--primary-gpu` for that explicit
+change. The macOS profile rejects NVIDIA hardware.
+
+## Obtain a coherent review candidate
+
+Do not run the raw feature-branch bootstrap against stale Pages dependencies.
+After human review, commit and push the complete candidate, then publish its
+exact SHA through the trusted workflow described in
+`prompt/core/publish.feature.script.plan`. That workflow replaces the complete
+Pages snapshot so the runner, CLI helpers, release wrappers, and shared
+playbook remain coherent.
+
+Download before executing—even for a dry-run mutation:
+
+```bash
+install -d -m 0700 ./proxmox-gpu-review
+curl -fsSL \
+  https://devs-guide.github.io/proxmox/setup/vm/gpu.sh \
+  -o ./proxmox-gpu-review/gpu.sh
+chmod 0755 ./proxmox-gpu-review/gpu.sh
+bash -n ./proxmox-gpu-review/gpu.sh
+sha256sum ./proxmox-gpu-review/gpu.sh
+sed -n '1,220p' ./proxmox-gpu-review/gpu.sh
+```
+
+Record the feature SHA, workflow run, Pages deployment commit, runner checksum,
+node, PVE version, kernel, GPU slot, VM ID, and rollback result in the review.
+
+For a complete observed acceptance case covering an unmanaged primary-GPU
+replacement, both read-only primary confirmation forms, expected blacklist
+refusal, automatic attach preview, and feature-owned final attachment, see
+[`examples.md`](examples.md#manual-pve-9-primary-gpu-replacement-acceptance-scenario).
+The PVE 9 multi-AMD early-binding, failed-attempt rollback, reboot, VM 100, and
+macOS Metal acceptance record is in
+[`pve9-multi-amd-macos-acceptance.md`](pve9-multi-amd-macos-acceptance.md).
+
+## 1. Inventory and inspect
+
+```bash
+GPU_RUNNER=./proxmox-gpu-review/gpu.sh
+
+"${GPU_RUNNER}" --action inventory --output json \
+  | tee ./proxmox-gpu-review/inventory.json
+
+jq -r '.platform, .adapter, .inventory.gpus[]' \
+  ./proxmox-gpu-review/inventory.json
+```
+
+Do not select `.inventory.gpus[0]` or assume a worked-example address. A human
+must choose an exact display-function BDF from `display_bdfs`, then choose an
+eligible stopped VM and profile:
+
+```bash
+read -r -p 'Exact display-function BDF: ' GPU_BDF
+read -r -p 'Stopped Q35 VMID: ' VM_ID
+read -r -p \
+  'Profile (macos-desktop/windows-desktop/linux-desktop/linux-compute): ' \
+  GPU_PROFILE
+
+lspci -Dnnk -s "${GPU_BDF}"
+qm status "${VM_ID}"
+qm config "${VM_ID}"
+```
+
+Confirm that the selected slot is dedicated, does not contain a management or
+storage device, is not already assigned, and is recoverable through another
+console. A shortened function-qualified address such as `18:00.0` normalizes
+to `0000:18:00.0`; slot-only input such as `18:00` is rejected.
+
+## 2. Run read-only preflight
+
+```bash
+"${GPU_RUNNER}" \
+  --action preflight \
+  --vm "${VM_ID}" \
+  --gpu "${GPU_BDF}" \
+  --profile "${GPU_PROFILE}" \
+  --output json
+```
+
+Preflight refuses a running, locked, template, HA-managed, or non-Q35 VM; an
+unsupported GPU; an unrelated endpoint in an IOMMU group; a boot GPU without
+acknowledgement; an occupied `hostpciN`; and references from other VMs.
+
+## 3A. PVE 9 automatic path
+
+When IOMMU groups exist and preflight passes, preview and attach without host
+preparation:
+
+```bash
+"${GPU_RUNNER}" \
+  --action attach \
+  --vm "${VM_ID}" \
+  --gpu "${GPU_BDF}" \
+  --profile "${GPU_PROFILE}" \
+  --dry-run \
+  --output json
+
+"${GPU_RUNNER}" \
+  --action attach \
+  --vm "${VM_ID}" \
+  --gpu "${GPU_BDF}" \
+  --profile "${GPU_PROFILE}" \
+  --confirm-temperature-reviewed \
+  --yes
+```
+
+If automatic handoff fails, detach any partial manual configuration, collect
+the QEMU and kernel errors, and review the early-binding path. Do not jump
+directly to global blacklisting.
+
+## 3B. PVE 6 or explicit early binding
+
+Preview host preparation:
+
+```bash
+"${GPU_RUNNER}" \
+  --action prepare \
+  --gpu "${GPU_BDF}" \
+  --binding early \
+  --dry-run \
+  --output json
+```
+
+Apply, then reboot explicitly or with `--reboot`:
+
+```bash
+"${GPU_RUNNER}" \
+  --action prepare \
+  --gpu "${GPU_BDF}" \
+  --binding early \
+  --confirm-temperature-reviewed \
+  --yes \
+  --reboot
+```
+
+Preparation backs up every managed path under the root-only state directory,
+installs exact-BDF initramfs binding, refreshes the active boot mechanism, and
+rebuilds initramfs. A failed transaction restores its original files and
+refreshes boot artifacts before reporting whether rollback completed.
+
+Use vendor blacklisting only after a reviewed failure proves it necessary:
+
+```bash
+"${GPU_RUNNER}" \
+  --action prepare \
+  --binding early \
+  --blacklist-amd \
+  --allow-host-display-loss \
+  --yes \
+  --dry-run
+```
+
+`--blacklist-all` selects every inventoried AMD and NVIDIA GPU but excludes
+unsupported vendors such as a Matrox management display. An explicit partial
+set such as `--blacklist '{"amd":["0000:3b:00.0"]}'` is reported as
+`exact-bind-only` because a kernel module blacklist cannot target one PCI BDF.
+
+For an explicit JSON array that covers every inventoried GPU of its vendor,
+require the dry-run result to place that vendor under `effective_vendors` and
+leave `exact_bind_only_vendors` empty. It must include every same-slot function
+and exclude unsupported management displays. Treat a different selection as a
+failed commissioning gate.
+
+For the first live multi-GPU preparation, omit `--reboot`, preserve the JSON
+result, and inspect `/etc/ansible/proxmox/gpu-passthrough/host.state` before
+rebooting. Format-4 state must record every selected slot and function, the
+effective blacklist vendors, the binding strategy, and the transaction
+backups. Also inspect the feature-owned module list, exact-BDF initramfs script,
+initramfs hook, and vendor blacklist. Reboot only after `result.state` is
+`prepared`, rollback is complete, and those files match the reviewed dry run.
+
+## 4. Verify and attach
+
+After an early-binding reboot, a format-4 host preparation can be verified as
+a complete set without supplying one `--gpu`:
+
+```bash
+"${GPU_RUNNER}" \
+  --action verify \
+  --output json
+```
+
+The result must report `ready: true` with binding `early`. Confirm through live
+inventory that every selected function uses `vfio-pci` and that the management
+display retains its original driver. Then verify the reviewed VM/GPU pair:
+
+```bash
+"${GPU_RUNNER}" \
+  --test \
+  --vm "${VM_ID}" \
+  --gpu "${GPU_BDF}" \
+  --profile "${GPU_PROFILE}" \
+  --output json
+```
+
+For a primary guest display, preview and apply the explicit console change:
+
+```bash
+"${GPU_RUNNER}" \
+  --attach \
+  --vm "${VM_ID}" \
+  --gpu "${GPU_BDF}" \
+  --profile "${GPU_PROFILE}" \
+  --primary-gpu \
+  --allow-guest-console-loss \
+  --disable-onboot \
+  --dry-run
+
+"${GPU_RUNNER}" \
+  --attach \
+  --vm "${VM_ID}" \
+  --gpu "${GPU_BDF}" \
+  --profile "${GPU_PROFILE}" \
+  --primary-gpu \
+  --allow-guest-console-loss \
+  --disable-onboot \
+  --confirm-temperature-reviewed \
+  --yes
+```
+
+Add `--binding early` to both attachment invocations when following the
+explicit early-binding path in section 3B; leave the adapter default in place
+for the automatic path in section 3A. Inspect `qm config "${VM_ID}"` before
+starting. Add `--start` only when an immediate start is intentional. A
+successful host verification and attachment proves VFIO ownership, not guest
+acceleration; complete the vendor-driver and workload checks inside the guest.
+
+## 5. Exercise stop/start and collect evidence
+
+Verify the device in the guest, shut the guest down cleanly, and perform one
+controlled second start. A GPU that cannot reset may require a host power cycle.
+Stop and collect logs rather than adding an unreviewed reset workaround.
+
+```bash
+qm shutdown "${VM_ID}" --timeout 60
+qm status "${VM_ID}"
+qm start "${VM_ID}"
+journalctl -b -k | grep -Ei 'vfio|reset|BAR|IOMMU'
+```
+
+## Rollback
+
+Stop the VM. Detach requires feature-owned state and removes only its recorded
+entry; it restores the exact prior `vga` and managed `onboot` values.
+
+```bash
+qm shutdown "${VM_ID}" --timeout 60
+"${GPU_RUNNER}" --remove --vm "${VM_ID}" --dry-run
+"${GPU_RUNNER}" --remove --vm "${VM_ID}" --yes
+```
+
+After all owned attachments are gone, preview and restore host configuration:
+
+```bash
+"${GPU_RUNNER}" --action unprepare --dry-run
+"${GPU_RUNNER}" --action unprepare --yes --reboot
+```
+
+Unprepare refuses raw VM references, bootloader drift, missing backups, and a
+GPU slot that differs from owned state. Detach and unprepare can recover from
+state even when the physical device is temporarily absent.
+
+## State and recovery
+
+State lives under `/etc/ansible/proxmox/gpu-passthrough/` with mode `0700`;
+state documents use mode `0600`. Host state format 4 records every selected GPU
+and function, effective blacklist and exact-bind-only vendors, release adapter,
+bootloader, binding strategy, original file existence, checksums, and backups.
+Single-GPU VM attachment state remains format 3. When hardware is absent,
+detach/unprepare requires those exact identity records.
+Incomplete legacy state is accepted only when live inventory plus an explicit
+function-qualified `--gpu` can prove the selection; the runner never invents a
+`.0` function.
+
+Do not edit or delete state while an attachment exists. On a failed operation,
+retain the result JSON, transaction directory, state files, `qm config`, boot
+files, and logs for review.
+
+## Commissioning and rollback checklist
+
+Use this checklist for the final manual acceptance pass on each supported PVE
+lane. A successful host or VM mutation does not replace the remaining rollback
+and evidence gates.
+
+1. Run `inventory` and have an operator select an exact display-function BDF.
+2. Run both hardware-only and VM-aware `preflight` checks.
+3. Preview every proposed mutation with `--dry-run --output json` and retain the
+   result before applying it.
+4. Apply the matching [PVE 6.4](pve-6.4.md) or [PVE 9.1](pve-9.1.md) flow.
+5. Confirm the complete same-slot function set in the VM configuration and in
+   the guest.
+6. Perform one controlled guest shutdown and a second start, then inspect the
+   kernel and QEMU logs for reset, BAR, VFIO, or IOMMU failures.
+7. Preview and apply `--remove`, then confirm exact restoration of every
+   feature-managed VM field.
+8. Preview any vendor-blacklist selection and verify `effective_vendors`
+   versus `exact_bind_only_vendors`; do not accept collateral host-driver loss.
+9. If host preparation was applied, preview and apply `unprepare`, reboot, and
+   verify the original files and host-driver ownership.
+10. Preserve the result JSON, managed state, `qm config`, kernel and QEMU logs,
+    checksums, exact feature SHA, workflow URLs, and rollback evidence.
+
+## References
+
+- [Current Proxmox PCI(e) passthrough guide](https://pve.proxmox.com/pve-docs/chapter-qm.html#qm_pci_passthrough)
+- [PVE 6 administration guide](https://pve.proxmox.com/pve-docs-6/pve-admin-guide.pdf)
+- [Proxmox bootloader and kernel command line](https://pve.proxmox.com/pve-docs/chapter-sysadmin.html#sysboot_edit_kernel_cmdline)
+- [Linux driver override binding contract](https://www.kernel.org/doc/html/latest/driver-api/driver-model/binding.html)

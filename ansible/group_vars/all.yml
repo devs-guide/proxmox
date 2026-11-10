@@ -44,23 +44,31 @@ bootstrap_needs_target_python_build: false
 ansible_python_interpreter_system: "/usr/bin/python3"
 ansible_python_interpreter_managed: "{{ managed_target_python_path }}"
 
-# Shared default accounts. Passwords default to the username when not overridden.
+# Shared default accounts. The published bootstrap intentionally defaults every
+# account to username:username and reapplies that policy on reruns. Set
+# bootstrap_default_password_mode to preserve or locked in a static overlay when
+# a target must not use the LAN-oriented default.
 user_defs:
   - name: app
   - name: agent
   - name: proxmox
   - name: root
 
+bootstrap_default_password_mode: "username"  # username | preserve | locked
+bootstrap_default_user_update_password: "always"
+
 # Optional explicit SSH policy override. When empty, SSH users are derived from
 # network_defaults.allowed_users or shared user_defs.
 ssh_allowed_users: []
 
-# Networking defaults (can be overridden per host/group). allowed_users is
-# derived from shared user_defs; root is always added at play time to avoid lockouts.
+# Networking defaults (can be overridden per host/group). Host firewall changes
+# require explicitly supplied management subnets. allowed_users is derived from
+# shared user_defs; root is always added at play time to avoid lockouts.
 network_defaults:
   allowed_users: []
-  allow_subnets:
-    - 10.0.0.0/24       # Local LAN default
-  allow_rdp: true
+  allow_subnets: []
+  manage_firewall: false
+  ipv6: true
+  allow_rdp: false
   ssh_port: 22
   rdp_port: 3389

@@ -1,5 +1,77 @@
 # devs-guide/proxmox
 
+## Published PVE 9 Bootstrap
+
+The published 9.1.sh URL is the PVE 9.x / Debian Trixie compatibility lane.
+It has been observed selecting PVE 9.2.10 correctly. Run it from a privileged
+shell on the Proxmox host; no Git checkout or directory under /root is needed.
+
+~~~bash
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/9.1.sh | bash
+~~~
+
+The runner performs repository setup, safe upgrades, managed Python/Ansible
+bootstrap, packages, accounts, SSH, security services, sysctl, power, logging,
+and certificates. metal.sh is not the PVE entrypoint.
+
+The LAN-oriented credential policy intentionally defaults app, agent, proxmox,
+and root to username:username and reapplies it on reruns. Change the static
+bootstrap_default_password_mode setting, or use
+PROXMOX_BOOTSTRAP_PASSWORD_MODE=preserve|locked for a streamed run, to select
+another policy. UFW requires an explicit management subnet; RDP defaults closed.
+
+~~~bash
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/9.1.sh |
+  PROXMOX_MANAGEMENT_SUBNETS=10.0.0.0/24 bash
+~~~
+
+See the [ordered bootstrap and entrypoint guide](docs/readme.md).
+
+## AMDGPU Host Setup
+
+Download the PVE 9 AMD runner into the current writable directory. It repairs
+the stock PVE kernel module and firmware, then reports native temperatures:
+
+~~~bash
+wget -O ./setup.gpu.amd.sh https://devs-guide.github.io/proxmox/setup.gpu.amd.sh
+chmod 0755 ./setup.gpu.amd.sh
+sudo ./setup.gpu.amd.sh
+sudo ./setup.gpu.amd.sh --check
+~~~
+
+After reviewing temperatures, globally blacklist AMD host drivers when every
+AMD GPU is intended for passthrough and out-of-band access is available:
+
+~~~bash
+sudo ./setup.gpu.amd.sh --blacklist --yes
+~~~
+
+The runner never reboots automatically. Use `--unblacklist --yes` to remove
+only its managed blacklist. VFIO configuration remains in `setup/vm/gpu.sh`.
+
+## AMD Temperature Gate and GPU Inventory
+
+Keep amdgpu loaded until every target reports readable temperatures and is
+confirmed not to be the host boot display:
+
+~~~bash
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup/temperature.sh |
+  bash -s -- --component gpu --vendor amd --require-driver amdgpu \
+    --require-readable --reject-boot-vga --output json
+
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup/vm/gpu.sh |
+  bash -s -- --action inventory --release 9.1 --output json
+~~~
+
+Only read-only temperature and inventory actions may be streamed. Download and
+inspect the GPU runner in the current writable directory before prepare, attach,
+detach, or unprepare. AMD early preparation and attachment require reviewed
+temperature evidence and --confirm-temperature-reviewed.
+
 ## Current Release
 
 Release `0.0.6` adds reviewed general local ZFS provisioning to the managed
@@ -15,11 +87,8 @@ wget -qO- https://devs-guide.github.io/proxmox/6.4.sh | bash
 wget -qO- https://devs-guide.github.io/proxmox/9.1.sh | bash
 ```
 
-The shared examples are LAN-oriented and operator-managed. Baseline account
-passwords default to their account names (`app`, `agent`, `proxmox`, and
-`root`), the default allowed subnet is `10.0.0.0/24`, and the PVE 9.1 lane uses
-the Proxmox no-subscription repository. Update these values for the target
-environment before treating the setup as final.
+The PVE 9.1 compatibility lane uses the Proxmox no-subscription repository.
+Credential and firewall policy are documented above and in docs/readme.md.
 
 See [the 0.0.6 release notes](RELEASE_NOTES.md) for the complete scope and
 acceptance evidence. ZFS-backed LXC/Samba delivery is planned for `0.0.7`,
@@ -44,8 +113,8 @@ of that dataset rather than part of its name. Interactive disk review is
 pretty-printed JSON by default.
 
 ```bash
-mkdir -p /root/zfs-setup
-cd /root/zfs-setup
+mkdir -p ./zfs-setup
+cd ./zfs-setup
 wget -qO- https://devs-guide.github.io/proxmox/setup/storage/zfs.sh | \
   bash -s -- --type sas --size 6TB
 ```
@@ -81,9 +150,24 @@ Structured helper output uses `--output json` and requires `jq`.
 Human operator documentation:
 
 - [End-to-end and manual VM restore runbook](docs/setup/vm/restore.md)
+- [Whole-GPU passthrough test runbook](docs/setup/vm/gpu/manual.md)
+- [PVE 6.4 / Buster GPU passthrough runbook](docs/setup/vm/gpu/pve-6.4.md)
+- [PVE 9.1 / Trixie GPU passthrough runbook](docs/setup/vm/gpu/pve-9.1.md)
+- [Manual GPU passthrough acceptance examples](docs/setup/vm/gpu/examples.md)
+- [PVE 9 multi-AMD macOS acceptance runbook and evidence](docs/setup/vm/gpu/pve9-multi-amd-macos-acceptance.md)
+- [Whole-GPU passthrough implementation plan](docs/setup/vm/gpu/master.plan)
 - [SSH setup and key rotation](docs/cli/ssh/sync.md)
 - [Archive inspection and rsync transfer](docs/cli/rsync/fetch.md)
 - [Temporary restore storage](docs/cli/storage/temp.md)
+
+GPU platform and PCI identities are always discovered live. Stream only the
+read-only inventory action; download and inspect the runner before a dry-run or
+mutation:
+
+```bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/vm/gpu.sh | \
+  bash -s -- --action inventory --output json
+```
 
 ```bash
 wget -qO- https://devs-guide.github.io/proxmox/cli/ssh/sync.sh | \

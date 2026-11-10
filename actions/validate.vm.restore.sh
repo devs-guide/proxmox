@@ -1148,8 +1148,12 @@ if grep -R -i -q -- 'tsv' \
   "${ROOT}/docs/cli/ssh/sync.md" "${ROOT}/docs/cli/storage/temp.md" "${ROOT}/readme.md"; then
   fail "restore documentation retains references to the removed machine-output format"
 fi
-grep -q 'SETUP_VM_RESTORE_RUNNER="setup/vm/restore.sh"' "${ROOT}/actions/www.pages.sh" || fail "Pages publisher lacks VM restore runner"
-grep -q 'setup/vm/restore.sh:setup/vm/restore.sh' "${ROOT}/actions/validate.pages.sh" || fail "Pages validator lacks canonical runner"
+grep -qx 'setup/vm/restore.sh|setup/vm/restore.sh|feature' "${ROOT}/actions/pages.features.txt" || fail "Pages manifest lacks canonical VM restore runner"
+grep -q 'FEATURE_MANIFEST="actions/pages.features.txt"' "${ROOT}/actions/www.pages.sh" || fail "Pages publisher does not consume the feature manifest"
+grep -q 'check_feature_manifest' "${ROOT}/actions/validate.pages.sh" || fail "Pages validator does not validate the feature manifest"
+if rg -n 'SETUP_VM_RESTORE_RUNNER' "${ROOT}/actions/www.pages.sh" "${ROOT}/actions/validate.pages.sh" >/dev/null; then
+  fail "VM restore publication still uses feature-specific publisher wiring"
+fi
 grep -q "'cli/\*\*'" "${ROOT}/.github/workflows/www.pages.yml" || fail "Pages workflow does not trigger on cli/**"
 grep -q "'setup/vm/\*\*'" "${ROOT}/.github/workflows/www.pages.yml" || fail "Pages workflow does not explicitly trigger on setup/vm/**"
 ok "runner, helper, playbook, validation, and workflow publishing are wired"
