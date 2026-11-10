@@ -15,6 +15,39 @@ ok() {
 
 cd "${ROOT}"
 
+release_policy="docs/release/publication.md"
+release_template="docs/release/template.md"
+
+for release_document in "${release_policy}" "${release_template}"; do
+  [[ -s "${release_document}" ]] || \
+    fail "release publication contract is missing: ${release_document}"
+done
+
+for policy_marker in \
+  '## Human review gate' \
+  '## Required release structure' \
+  '## Retroactive release reconciliation' \
+  '### Notable commits since <previous-tag>' \
+  'A human approved the exact title and body'; do
+  grep -Fq -- "${policy_marker}" "${release_policy}" || \
+    fail "release publication policy is missing marker: ${policy_marker}"
+done
+
+for template_heading in \
+  '## X.Y.Z' \
+  '### Scope' \
+  '### Highlights' \
+  '### Added' \
+  '### Changed' \
+  '### Fixed' \
+  '### #COMMIT' \
+  '### Notable commits since <previous-tag>' \
+  '### Assets'; do
+  grep -Fq -- "${template_heading}" "${release_template}" || \
+    fail "release body template is missing heading: ${template_heading}"
+done
+ok "release publication policy and human-review template are present"
+
 git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null || \
   fail "release base is unavailable: ${BASE_REF}"
 
