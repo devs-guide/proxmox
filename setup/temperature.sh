@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Read-only hardware temperature dispatcher. GPU is the only v1 component.
+# Hardware temperature dispatcher. GPU is the only v1 component; required AMD
+# sampling may temporarily resume a runtime-suspended device and restores it.
 set -euo pipefail
 
 PAGES_BASE_URL="${PROXMOX_TEMPERATURE_PAGES_BASE_URL:-https://devs-guide.github.io/proxmox}"

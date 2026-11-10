@@ -19,9 +19,9 @@ required on the Proxmox server.
 | --- | --- | --- | --- |
 | 9.1.sh | PVE 9.x/Trixie setup, packages, and baseline hardening | Mutating | Publish from Pages |
 | 6.4.sh | Legacy PVE 6.4/Buster bootstrap | Mutating | Published |
-| setup.gpu.amd.sh | PVE 9 native AMDGPU repair, check, and blacklist | Mutating | Publish with this change |
-| setup/temperature.sh | Temperature dispatcher; v1 supports GPU only | Read-only | Publish with this change |
-| setup/temperature/gpu.sh | Direct GPU driver/hwmon temperature gate | Read-only | Publish with this change |
+| setup.gpu.amd.sh | PVE 9 native AMDGPU repair, check, and blacklist | Mutating | Published |
+| setup/temperature.sh | GPU temperature dispatcher with bounded runtime resume | Transient | Published |
+| setup/temperature/gpu.sh | Direct GPU driver/hwmon temperature gate | Transient | Published |
 | setup/vm/gpu.sh | GPU inventory and reviewed passthrough workflow | Mixed | Publish with complete closure |
 | setup/storage/zfs.sh | Local ZFS discovery/planning/apply workflow | Mixed | Published |
 | setup/vm/restore.sh | VM restore workflow | Mixed | Published |
@@ -122,13 +122,16 @@ package.
 
 When an AMD display device is already bound to `vfio-pci`, setup validates the
 schema-v4 host transaction written by this repository, including every current
-managed-file and rollback-backup checksum. It then restores and archives that
-complete host transaction. Unknown state, drift, missing backups, and foreign
-blacklists fail before mutation. The GPU remains bound to VFIO until the human
+recorded-file and rollback-backup checksum. It accepts the bounded file subset
+actually written by the transaction, then restores and archives only that
+subset. Unknown state, drift, missing backups, duplicate or unknown keys, and
+foreign blacklists fail before mutation. The GPU remains bound to VFIO until the human
 reboots; setup never performs a live unbind and never reboots automatically.
 It also leaves every VM configuration and attachment record unchanged, so
 existing passthrough may stop working. `--dry-run` performs the same validation
 without changing packages, files, drivers, boot entries, or VMs.
+After the required reboot, rerun the default action for bounded runtime wake
+and temperature sampling. `--check` remains strictly read-only.
 
 After reviewing native temperatures, an operator with tested out-of-band
 access may disable both AMD host drivers globally:
@@ -151,18 +154,21 @@ Blacklisting does not configure VFIO or attach a VM.
 
 ## AMD temperature and passthrough
 
-### 1. Read-only temperature gate
+### 1. Temperature gate
 
 ~~~bash
 set -o pipefail
 wget -qO- https://devs-guide.github.io/proxmox/setup/temperature.sh |
-  bash -s -- --component gpu --vendor amd --require-driver amdgpu --require-readable --reject-boot-vga --samples 3 --output json
+  sudo bash -s -- --component gpu --vendor amd --require-driver amdgpu --require-readable --reject-boot-vga --samples 3 --output json
 ~~~
 
 The JSON records PCI identity, current driver, boot_vga, hwmon labels,
-individual Celsius samples, and minimum, maximum, and average. The runner does
-not install packages, load modules, change firmware, or enforce a universal
-temperature threshold. A human decides whether readings are acceptable.
+individual Celsius samples, acquisition errors, and runtime-power evidence.
+When required AMD sampling finds a runtime-suspended GPU with unreadable
+hwmon, it temporarily writes `on` to that device's power control, samples, and
+restores the prior policy. It does not install packages, load modules, change
+firmware, tune clocks or fans, or enforce a universal temperature threshold.
+A human decides whether readings are acceptable.
 
 ### 2. Read-only inventory
 
@@ -214,7 +220,8 @@ Before release promotion, a human tests the exact published feature commit:
    repository-managed passthrough transaction that will be restored.
 4. Stream the default setup action. If it reports `REBOOT REQUIRED`, confirm
    that VM configuration was not changed and reboot manually.
-5. Stream the endpoint with `--check` and review every AMD temperature.
+5. Stream the default setup endpoint again so suspended devices can be sampled,
+   then run the JSON temperature gate and review every AMD temperature.
 6. If all AMD GPUs are VM-only, stream `--blacklist --yes` through iDRAC and
    reboot when ready.
 7. Run GPU inventory, then download and inspect the passthrough runner.

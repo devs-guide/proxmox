@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Published GPU temperature entrypoint.
+# Published GPU temperature entrypoint with bounded AMD runtime resume.
 set -euo pipefail
 
 FEATURE_CLI_FILES=(
