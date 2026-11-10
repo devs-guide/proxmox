@@ -40,7 +40,14 @@ grep -Fq 'setup.gpu.amd.sh' "${ROOT}/readme.md" \
   || fail "root README does not document the runner"
 grep -Fq 'setup.gpu.amd.sh' "${ROOT}/docs/readme.md" \
   || fail "entrypoint guide does not document the runner"
-ok "runner syntax, publication, and documentation contracts are present"
+grep -Fq 'wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash' "${ROOT}/readme.md" \
+  || fail "root README does not document streamed AMDGPU setup"
+grep -Fq 'sudo bash -s -- --blacklist --yes' "${ROOT}/docs/readme.md" \
+  || fail "entrypoint guide does not document streamed AMDGPU blacklist"
+if grep -Fq 'wget -O ./setup.gpu.amd.sh' "${ROOT}/readme.md" "${ROOT}/docs/readme.md"; then
+  fail "AMDGPU documentation must not require a downloaded runner"
+fi
+ok "runner syntax, publication, and endpoint-only documentation contracts are present"
 
 mkdir -p \
   "${STUB_BIN}" \
@@ -180,14 +187,14 @@ AMD_ENV=(
   "AMDGPU_TEST_JOURNAL_FILE=${JOURNAL_FILE}"
 )
 
-check_output="$(env "${AMD_ENV[@]}" bash "${RUNNER}" --check)"
+check_output="$(env "${AMD_ENV[@]}" bash -s -- --check < "${RUNNER}")"
 grep -Fq 'driver=amdgpu' <<< "${check_output}" || fail "healthy check omitted amdgpu binding"
 grep -Fq 'temperature.edge=55.000C' <<< "${check_output}" || fail "healthy check omitted temperature"
-expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_PVE_VERSION=8.4.0 bash "${RUNNER}" --check
-ok "read-only check validates PVE 9, native binding, and temperatures"
+expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_PVE_VERSION=8.4.0 bash -s -- --check < "${RUNNER}"
+ok "streamed read-only check validates PVE 9, native binding, and temperatures"
 
 : > "${COMMAND_LOG}"
-blacklist_output="$(env "${AMD_ENV[@]}" bash "${RUNNER}" --blacklist --yes 2>&1)"
+blacklist_output="$(env "${AMD_ENV[@]}" bash -s -- --blacklist --yes < "${RUNNER}" 2>&1)"
 BLACKLIST="${FIXTURE}/etc/modprobe.d/proxmox-amdgpu-blacklist.conf"
 grep -qx 'blacklist amdgpu' "${BLACKLIST}" || fail "amdgpu blacklist entry is missing"
 grep -qx 'blacklist radeon' "${BLACKLIST}" || fail "radeon blacklist entry is missing"
@@ -198,15 +205,15 @@ if grep -q '^reboot ' "${COMMAND_LOG}"; then
 fi
 rm -f "${GPU_PATH}/driver"
 ln -s "${FIXTURE}/sys/drivers/vfio-pci" "${GPU_PATH}/driver"
-env "${AMD_ENV[@]}" bash "${RUNNER}" --blacklist --yes >/dev/null
-env "${AMD_ENV[@]}" bash "${RUNNER}" --unblacklist --yes >/dev/null
+env "${AMD_ENV[@]}" bash -s -- --blacklist --yes < "${RUNNER}" >/dev/null
+env "${AMD_ENV[@]}" bash -s -- --unblacklist --yes < "${RUNNER}" >/dev/null
 [[ ! -e "${BLACKLIST}" ]] || fail "unblacklist left the managed file behind"
-ok "blacklist is explicit, reversible, idempotent, and never reboots"
+ok "streamed blacklist is explicit, reversible, idempotent, and never reboots"
 
 : > "${COMMAND_LOG}"
 rm -f "${MODULE_READY}" "${GPU_PATH}/driver" "${FIXTURE}/lib/firmware/amdgpu/test.bin"
 printf '%s\n' 'amdgpu 0000:18:00.0: Direct firmware load for amdgpu/test.bin failed with error -2' > "${JOURNAL_FILE}"
-repair_output="$(env "${AMD_ENV[@]}" bash "${RUNNER}" 2>&1)"
+repair_output="$(env "${AMD_ENV[@]}" bash -s < "${RUNNER}" 2>&1)"
 [[ -e "${MODULE_READY}" ]] || fail "kernel package repair did not restore the module fixture"
 [[ -e "${FIXTURE}/lib/firmware/amdgpu/test.bin" ]] || fail "missing firmware was not extracted"
 grep -Fq 'apt-get -s install --reinstall proxmox-kernel-6.14.11-4-pve-signed pve-firmware' "${COMMAND_LOG}" \
@@ -224,13 +231,13 @@ ok "repair restores the exact PVE module and safely extracts a named missing blo
 
 rm -f "${MODULE_READY}" "${GPU_PATH}/driver"
 : > "${COMMAND_LOG}"
-expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_APT_CONFLICT=1 bash "${RUNNER}"
+expect_exit 1 env "${AMD_ENV[@]}" AMDGPU_TEST_APT_CONFLICT=1 bash -s < "${RUNNER}"
 if grep -Fq 'apt-get -y install' "${COMMAND_LOG}"; then
   fail "APT mutation ran after a protected-package simulation conflict"
 fi
 touch "${MODULE_READY}"
 ln -s "${FIXTURE}/sys/drivers/vfio-pci" "${GPU_PATH}/driver"
-expect_exit 1 env "${AMD_ENV[@]}" bash "${RUNNER}"
+expect_exit 1 env "${AMD_ENV[@]}" bash -s < "${RUNNER}"
 ok "protected package removal and existing VFIO ownership fail closed"
 
 if grep -Eq '^[[:space:]]*(reboot|shutdown)([[:space:]]|$)' "${RUNNER}"; then
