@@ -1,0 +1,18 @@
+---
+- name: "[pve-6.4]: apt bootstrap"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ bootstrap_bridge_python_interpreter | default(ansible_python_interpreter_system) }}"
+    apt_cache_valid_time: 0
+
+  tasks:
+    - name: Update apt cache (archive, allow unauth)
+      raw: apt-get update
+      changed_when: false
+
+    - name: Safe upgrade
+      raw: DEBIAN_FRONTEND=noninteractive apt-get -y --allow-unauthenticated upgrade

@@ -1,0 +1,107 @@
+---
+- name: "[proxmox]: export network preflight snapshot into Ansible facts"
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    proxmox_feature_group_vars_path: "{{ playbook_dir }}/../../group_vars/proxmox.yml"
+    proxmox_network_facts_dir: "/etc/ansible/proxmox/facts"
+    proxmox_network_run_dir: "{{ proxmox_network_run_dir | default('') }}"
+    proxmox_network_preflight_facts_path: "{{ proxmox_network_preflight_facts_path | default(proxmox_network_facts_dir + '/network.preflight.latest.yml') }}"
+    proxmox_network_preflight_json_path: "{{ proxmox_network_preflight_json_path | default(proxmox_network_facts_dir + '/network.preflight.latest.json') }}"
+
+  pre_tasks:
+    - name: Load manual Proxmox feature defaults when available
+      include_vars:
+        file: "{{ proxmox_feature_group_vars_path }}"
+      ignore_errors: true
+
+    - name: Assert preflight run directory is provided
+      assert:
+        that:
+          - proxmox_network_run_dir | length > 0
+        fail_msg: >-
+          proxmox_network_run_dir was not provided. Run setup/network.sh preflight
+          first, then rerun setup/network.sh update.
+
+    - name: Stat run directory
+      stat:
+        path: "{{ proxmox_network_run_dir }}"
+      register: proxmox_network_run_dir_stat
+
+    - name: Assert run directory exists
+      assert:
+        that:
+          - proxmox_network_run_dir_stat.stat.exists
+          - proxmox_network_run_dir_stat.stat.isdir
+        fail_msg: "Missing preflight run directory: {{ proxmox_network_run_dir }}"
+
+    - name: Stat required preflight artifact files
+      stat:
+        path: "{{ proxmox_network_run_dir }}/{{ item }}"
+      loop:
+        - network.host.yml
+        - network.summary.txt
+        - network.nics.tsv
+        - network.bridges.tsv
+        - network.lxc.tsv
+        - network.vm.tsv
+        - network.risks.tsv
+      register: proxmox_network_required_artifacts
+
+    - name: Assert required preflight artifact files exist
+      assert:
+        that:
+          - item.stat.exists
+          - not item.stat.isdir
+        fail_msg: "Missing preflight artifact: {{ item.stat.path }}"
+      loop: "{{ proxmox_network_required_artifacts.results }}"
+
+  tasks:
+    - name: Ensure feature facts directory exists
+      file:
+        path: "{{ proxmox_network_facts_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy latest preflight TSV/TXT artifacts into facts directory
+      copy:
+        src: "{{ proxmox_network_run_dir }}/{{ item.src }}"
+        dest: "{{ proxmox_network_facts_dir }}/{{ item.dest }}"
+        mode: "0644"
+        remote_src: true
+      loop:
+        - { src: "network.summary.txt", dest: "network.summary.latest.txt" }
+        - { src: "network.nics.tsv", dest: "network.nics.latest.tsv" }
+        - { src: "network.bridges.tsv", dest: "network.bridges.latest.tsv" }
+        - { src: "network.lxc.tsv", dest: "network.lxc.latest.tsv" }
+        - { src: "network.vm.tsv", dest: "network.vm.latest.tsv" }
+        - { src: "network.risks.tsv", dest: "network.risks.latest.tsv" }
+
+    - name: Load preflight host YAML
+      include_vars:
+        file: "{{ proxmox_network_run_dir }}/network.host.yml"
+        name: proxmox_network_host_payload
+
+    - name: Write normalized preflight facts YAML
+      copy:
+        dest: "{{ proxmox_network_preflight_facts_path }}"
+        mode: "0644"
+        content: |
+          {{ {'proxmox_network_preflight_latest': proxmox_network_host_payload.proxmox_network_preflight | default({})} | to_nice_yaml }}
+
+    - name: Write normalized preflight facts JSON
+      copy:
+        dest: "{{ proxmox_network_preflight_json_path }}"
+        mode: "0644"
+        content: |
+          {{ {'proxmox_network_preflight_latest': proxmox_network_host_payload.proxmox_network_preflight | default({})} | to_nice_json }}
+
+    - name: Persist latest run directory marker
+      copy:
+        dest: "{{ proxmox_network_facts_dir }}/network.preflight.latest.path"
+        mode: "0644"
+        content: "{{ proxmox_network_run_dir }}\n"

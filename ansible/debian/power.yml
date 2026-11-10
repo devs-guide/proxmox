@@ -1,0 +1,75 @@
+---
+- name: "[debian]: power management"
+  hosts: all
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed }}"
+    sleep_conf_path: /etc/systemd/sleep.conf
+    logind_conf_path: /etc/systemd/logind.conf
+    sleep_settings:
+      - { option: AllowSuspend, value: "no" }
+      - { option: AllowHibernation, value: "no" }
+      - { option: AllowHybridSleep, value: "no" }
+      - { option: AllowSuspendThenHibernate, value: "no" }
+    logind_settings:
+      - { option: IdleAction, value: ignore }
+      - { option: HandlePowerKey, value: poweroff }
+      - { option: HandleLidSwitch, value: ignore }
+      - { option: HandleLidSwitchDocked, value: ignore }
+    mask_targets:
+      - sleep.target
+      - suspend.target
+      - hibernate.target
+      - hybrid-sleep.target
+
+  tasks:
+    - name: Configure system sleep policies
+      ansible.builtin.blockinfile:
+        path: "{{ sleep_conf_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        create: true
+        marker: "# {mark} ANSIBLE MANAGED SLEEP"
+        block: |
+          [Sleep]
+          {% for item in sleep_settings -%}
+          {{ item.option }}={{ item.value }}
+          {% endfor %}
+      notify: Reload systemd daemon
+
+    - name: Configure logind idle action
+      ansible.builtin.blockinfile:
+        path: "{{ logind_conf_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        create: true
+        marker: "# {mark} ANSIBLE MANAGED LOGIN"
+        block: |
+          [Login]
+          {% for item in logind_settings -%}
+          {{ item.option }}={{ item.value }}
+          {% endfor %}
+      notify:
+        - Reload systemd daemon
+        - Restart systemd-logind
+
+    - name: Mask sleep and hibernate targets
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        masked: true
+        state: stopped
+        daemon_reload: true
+      loop: "{{ mask_targets }}"
+
+  handlers:
+    - name: Reload systemd daemon
+      ansible.builtin.command: systemctl daemon-reload
+      become: true
+
+    - name: Restart systemd-logind
+      ansible.builtin.service:
+        name: systemd-logind
+        state: restarted

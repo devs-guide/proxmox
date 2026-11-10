@@ -1,0 +1,18 @@
+---
+# Canonical LXC entrypoint for Node inside Proxmox containers.
+# Two-tier intent:
+# - project/proxmox baseline vs LXC-common baseline
+# - debian/proxmox implementation details delegated, not duplicated
+- import_playbook: ../../debian/node.yml
+  vars:
+    proxmox_container_entrypoint: "lxc"
+    ansible_python_interpreter_managed: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    node_mode: "{{ node_mode | default('apply') }}"
+    node_nvm_version: "{{ node_nvm_version | default('v0.40.4') }}"
+    node_install_scope: "{{ node_install_scope | default('shared') }}"
+    node_shared_nvm_dir: "{{ node_shared_nvm_dir | default('/usr/local/lib/nvm') }}"
+    node_nvm_dir: "{{ node_nvm_dir | default('') }}"
+    node_version: "{{ node_version | default('lts/*') }}"
+    node_npm_policy: "{{ node_npm_policy | default('bundled') }}"
+    node_npm_version: "{{ node_npm_version | default('') }}"
+    node_runtime_facts_path: "{{ node_runtime_facts_path | default('/etc/ansible/proxmox/facts/lxc.codex.node.yml') }}"

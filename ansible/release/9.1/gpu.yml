@@ -1,0 +1,14 @@
+---
+- import_playbook: ../../proxmox/helper/vm.gpu.yml
+  vars:
+    gpu_release_contract:
+      adapter_id: "pve9-trixie"
+      lane: "9.1"
+      playbook: "release/9.1/gpu.yml"
+      pve_major: "9"
+      debian_codename: "trixie"
+      default_binding: "automatic"
+      supported_bindings: ["automatic", "early"]
+      automatic_handoff: true
+      probe_vfio_virqfd: false
+      legacy_boot_tool_fallback: false

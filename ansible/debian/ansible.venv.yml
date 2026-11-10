@@ -1,0 +1,116 @@
+---
+- name: "[debian]: ansible venv (python 3.12 / ansible 13)"
+  hosts: all
+  become: true
+  vars:
+    ansible_venv: "{{ controller_ansible_venv | default('/opt/ansible-venv') }}"
+    python_version: "{{ controller_python_version | default('3.12.3') }}"
+    python_major_minor: "{{ controller_python_major_minor | default('3.12') }}"
+    python_prefix: "{{ controller_python_prefix | default('/usr/local') }}"
+    ansible_core_version: "{{ controller_ansible_core_version | default('2.20.5') }}"
+    ansible_core_spec: "{{ controller_ansible_core_spec | default('ansible-core==' ~ ansible_core_version) }}"
+    python_bootstrap_bin_default: "{{ managed_target_python_path | default(python_prefix ~ '/bin/python' ~ python_major_minor) }}"
+  tasks:
+    - name: Check current venv ansible version (if present)
+      command: "{{ ansible_venv }}/bin/ansible-playbook --version"
+      register: ansible_venv_ansible_version
+      failed_when: false
+      changed_when: false
+
+    - name: Extract managed ansible core version safely
+      set_fact:
+        ansible_venv_core_version: >-
+          {{
+            (
+              ansible_venv_ansible_version.stdout
+              | default('')
+              | regex_findall('core ([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)')
+              | first
+              | default('', true)
+            )
+          }}
+
+    - name: Determine if venv repair is required
+      set_fact:
+        ansible_venv_required: >-
+          {{
+            (ansible_venv_ansible_version.rc != 0)
+            or (
+              (ansible_venv_core_version | length) == 0
+            )
+            or (ansible_venv_core_version != ansible_core_version)
+          }}
+
+    - name: Check current venv python version (if present)
+      command: "{{ ansible_venv }}/bin/python -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\")'"
+      register: ansible_venv_python_version
+      failed_when: false
+      changed_when: false
+      when: ansible_venv_required
+
+    - name: Select python for ansible venv
+      set_fact:
+        ansible_venv_python: "{{ python_bootstrap_bin | default(python_bootstrap_bin_default) }}"
+      when: ansible_venv_required
+
+    - name: Remove existing Ansible venv if outdated (python or ansible)
+      file:
+        path: "{{ ansible_venv }}"
+        state: absent
+      when:
+        - ansible_venv_required
+        - ansible_venv_python_version.rc != 0
+          or (ansible_venv_python_version.stdout is defined and not ansible_venv_python_version.stdout.startswith(python_major_minor))
+          or (ansible_venv_core_version | length) == 0
+          or (ansible_venv_core_version != ansible_core_version)
+
+    - name: Create ansible venv directory
+      file:
+        path: "{{ ansible_venv }}"
+        state: directory
+        mode: "0755"
+      when: ansible_venv_required
+
+    - name: Create ansible venv if missing
+      command: "{{ ansible_venv_python }} -m venv \"{{ ansible_venv }}\""
+      args:
+        creates: "{{ ansible_venv }}/bin/activate"
+      when: ansible_venv_required
+
+    - name: Upgrade pip tooling in venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade pip setuptools wheel"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      when: ansible_venv_required
+
+    - name: Install Ansible core into venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade {{ ansible_core_spec }}"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      when: ansible_venv_required
+
+    - name: Install required Ansible collections in venv
+      command: "{{ ansible_venv }}/bin/ansible-galaxy collection install community.general:8.6.0"
+      environment:
+        ANSIBLE_FORCE_COLOR: "false"
+      register: install_collections
+      changed_when: "'Nothing to do' not in install_collections.stdout"
+      when: ansible_venv_required
+
+    - name: Ensure passlib available in venv
+      command: "{{ ansible_venv }}/bin/pip install --upgrade passlib"
+      environment:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      when: ansible_venv_required
+
+    - name: Validate canonical managed ansible-playbook after maintenance
+      command: "{{ ansible_venv }}/bin/ansible-playbook --version"
+      register: ansible_venv_final_version
+      changed_when: false
+
+    - name: Require canonical managed Ansible version policy
+      assert:
+        that:
+          - "ansible_venv_final_version.rc == 0"
+          - "ansible_venv_final_version.stdout_lines[0] == 'ansible-playbook [core ' + ansible_core_version + ']'"
+        fail_msg: "Canonical managed Ansible runtime is missing or outside policy."

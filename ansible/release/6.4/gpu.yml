@@ -1,0 +1,14 @@
+---
+- import_playbook: ../../proxmox/helper/vm.gpu.yml
+  vars:
+    gpu_release_contract:
+      adapter_id: "pve6-buster"
+      lane: "6.4"
+      playbook: "release/6.4/gpu.yml"
+      pve_major: "6"
+      debian_codename: "buster"
+      default_binding: "early"
+      supported_bindings: ["early"]
+      automatic_handoff: false
+      probe_vfio_virqfd: true
+      legacy_boot_tool_fallback: true
