@@ -33,10 +33,10 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  setup.gpu.amd.sh                    Install or repair native AMDGPU support
-  setup.gpu.amd.sh --check            Check AMDGPU binding and temperatures
-  setup.gpu.amd.sh --blacklist --yes  Blacklist AMD host drivers
-  setup.gpu.amd.sh --unblacklist --yes
+  wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash
+  wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash -s -- --check
+  wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash -s -- --blacklist --yes
+  wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash -s -- --unblacklist --yes
 
 The runner supports Proxmox VE 9 on Debian Trixie. It never reboots the host.
 EOF
@@ -449,7 +449,7 @@ setup.run() {
     die "AMDGPU did not pass the native driver and temperature check"
   fi
   if ((changed == 1)); then
-    log "Reboot when convenient, then rerun: sudo ./setup.gpu.amd.sh --check"
+    log "Reboot when convenient, then stream the published endpoint again with --check"
   fi
 }
 

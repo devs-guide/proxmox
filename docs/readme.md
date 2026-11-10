@@ -103,10 +103,12 @@ this lane unless explicitly enabled; the runtime probe does not install Node.
 ## AMDGPU host setup
 
 ~~~bash
-wget -O ./setup.gpu.amd.sh https://devs-guide.github.io/proxmox/setup.gpu.amd.sh
-chmod 0755 ./setup.gpu.amd.sh
-sudo ./setup.gpu.amd.sh
-sudo ./setup.gpu.amd.sh --check
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash
+
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --check
 ~~~
 
 The default action repairs the stock PVE kernel module and `pve-firmware`.
@@ -119,11 +121,20 @@ After reviewing native temperatures, an operator with tested out-of-band
 access may disable both AMD host drivers globally:
 
 ~~~bash
-sudo ./setup.gpu.amd.sh --blacklist --yes
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --blacklist --yes
 ~~~
 
-Use `sudo ./setup.gpu.amd.sh --unblacklist --yes` to remove the managed
-blacklist. Blacklisting does not configure VFIO or attach a VM.
+Remove the managed blacklist from the same endpoint:
+
+~~~bash
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --unblacklist --yes
+~~~
+
+Blacklisting does not configure VFIO or attach a VM.
 
 ## AMD temperature and passthrough
 
@@ -186,10 +197,10 @@ Before release promotion, a human tests the exact published feature commit:
 
 1. Run or rerun the bootstrap and confirm BOOTSTRAP COMPLETE.
 2. Reboot if required; validate services, LVM-thin storage, SSH, and firewall.
-3. Download `setup.gpu.amd.sh`, run its default repair, and reboot only when
-   the runner recommends it.
-4. Run `setup.gpu.amd.sh --check` and review every AMD temperature.
-5. If all AMD GPUs are VM-only, apply `--blacklist --yes` through iDRAC and
+3. Stream `setup.gpu.amd.sh` from its Pages endpoint, run its default repair,
+   and reboot only when the runner recommends it.
+4. Stream the endpoint with `--check` and review every AMD temperature.
+5. If all AMD GPUs are VM-only, stream `--blacklist --yes` through iDRAC and
    reboot when ready.
 6. Run GPU inventory, then download and inspect the passthrough runner.
 7. Run hardware and VM preflight and the preparation dry-run.

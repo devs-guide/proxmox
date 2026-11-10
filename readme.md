@@ -31,25 +31,31 @@ See the [ordered bootstrap and entrypoint guide](docs/readme.md).
 
 ## AMDGPU Host Setup
 
-Download the PVE 9 AMD runner into the current writable directory. It repairs
-the stock PVE kernel module and firmware, then reports native temperatures:
+Stream the PVE 9 AMD runner directly from GitHub Pages. It repairs the stock
+PVE kernel module and firmware, then reports native temperatures:
 
 ~~~bash
-wget -O ./setup.gpu.amd.sh https://devs-guide.github.io/proxmox/setup.gpu.amd.sh
-chmod 0755 ./setup.gpu.amd.sh
-sudo ./setup.gpu.amd.sh
-sudo ./setup.gpu.amd.sh --check
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash
+
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --check
 ~~~
 
 After reviewing temperatures, globally blacklist AMD host drivers when every
 AMD GPU is intended for passthrough and out-of-band access is available:
 
 ~~~bash
-sudo ./setup.gpu.amd.sh --blacklist --yes
+set -o pipefail
+wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh |
+  sudo bash -s -- --blacklist --yes
 ~~~
 
-The runner never reboots automatically. Use `--unblacklist --yes` to remove
-only its managed blacklist. VFIO configuration remains in `setup/vm/gpu.sh`.
+The runner never reboots automatically. Remove only its managed blacklist with
+`wget -qO- https://devs-guide.github.io/proxmox/setup.gpu.amd.sh | sudo bash -s -- --unblacklist --yes`.
+The AMDGPU runner supports streamed mutations; VFIO configuration remains in
+`setup/vm/gpu.sh`.
 
 ## AMD Temperature Gate and GPU Inventory
 
@@ -67,10 +73,10 @@ wget -qO- https://devs-guide.github.io/proxmox/setup/vm/gpu.sh |
   bash -s -- --action inventory --release 9.1 --output json
 ~~~
 
-Only read-only temperature and inventory actions may be streamed. Download and
-inspect the GPU runner in the current writable directory before prepare, attach,
-detach, or unprepare. AMD early preparation and attachment require reviewed
-temperature evidence and --confirm-temperature-reviewed.
+For `setup/vm/gpu.sh`, only read-only temperature and inventory actions may
+be streamed. Download and inspect that passthrough runner before prepare,
+attach, detach, or unprepare. AMD early preparation and attachment require
+reviewed temperature evidence and --confirm-temperature-reviewed.
 
 ## Current Release
 
