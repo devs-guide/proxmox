@@ -6,7 +6,10 @@
 # feature runners such as setup/lxc/debian.sh and setup/lxc/samba.sh also source
 # this file directly from GitHub Pages. Keep this helper safe under
 # `set -u` by assigning conservative defaults when the caller did not provide
-# them. Caller-provided values remain authoritative.
+# them. Caller-provided values remain authoritative. The Python and managed
+# target values below are provisional fallback values only; production runners
+# must call ansible.runtime.prepare through ensure.ansible.for.context before
+# treating any resolved Python path as a runtime requirement.
 : "${PYTHON_VERSION:=${PROXMOX_BOOTSTRAP_PYTHON_VERSION:-3.12.3}}"
 : "${PYTHON_MAJOR_MINOR:=${PYTHON_VERSION%.*}}"
 : "${PYTHON_SOURCE_PREFIX:=${PROXMOX_BOOTSTRAP_PYTHON_SOURCE_PREFIX:-/usr/local}}"

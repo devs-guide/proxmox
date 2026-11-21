@@ -23,7 +23,7 @@
         cores: 1
         memory_mb: 512
         swap_mb: 256
-        bridge: "vmbr1"
+        bridge: null
         ipv4_mode: "dhcp"
         ipv4_cidr: null
         gateway: null
@@ -521,28 +521,49 @@
       changed_when: false
       when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
 
+    - name: Verify selected mountpoints in container config by field tokens
+      command:
+        argv:
+          - awk
+          - -v
+          - "slot=mp{{ mount_index }}:"
+          - -v
+          - "host_path={{ item.host_path }}"
+          - -v
+          - "container_path={{ item.container_path }}"
+          - |-
+            $1 == slot {
+              separator = index($0, ":")
+              payload = substr($0, separator + 1)
+              sub(/^[[:space:]]+/, "", payload)
+              field_count = split(payload, fields, ",")
+              source_matches = fields[1] == host_path
+              mount_matches = 0
+              for (field = 2; field <= field_count; field += 1) {
+                if (fields[field] == "mp=" container_path) mount_matches = 1
+              }
+              if (source_matches && mount_matches) found = 1
+            }
+            END { exit(found ? 0 : 1) }
+      args:
+        stdin: "{{ proxmox_lxc_debian_config_after_mounts.stdout | default('') }}"
+        stdin_add_newline: true
+      register: proxmox_lxc_debian_mountpoint_checks
+      changed_when: false
+      failed_when: false
+      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
+      loop_control:
+        index_var: mount_index
+      when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
+
     - name: Assert selected mountpoints were attached to container config
       assert:
         that:
-          - >-
-            (
-              proxmox_lxc_debian_config_after_mounts.stdout
-              | default('')
-              | regex_search(
-                  '(^|\\n)mp'
-                  ~ ansible_loop.index0
-                  ~ ':\\s*'
-                  ~ (item.host_path | regex_escape)
-                  ~ ',mp='
-                  ~ (item.container_path | regex_escape)
-                  ~ '([,\\n]|$)',
-                  multiline=True
-                )
-            ) is not none
-        fail_msg: "Container config is missing expected mp{{ ansible_loop.index0 }} attachment for {{ item.host_path }} -> {{ item.container_path }}."
-      loop: "{{ proxmox_lxc_debian_effective.mountpoints | default([], true) }}"
-      loop_control:
-        extended: true
+          - item.rc == 0
+        fail_msg: >-
+          Container config is missing expected mp{{ item.mount_index }} attachment for
+          {{ item.item.host_path }} -> {{ item.item.container_path }}.
+      loop: "{{ proxmox_lxc_debian_mountpoint_checks.results | default([]) }}"
       when: (proxmox_lxc_debian_effective.mountpoints | default([], true) | length) > 0
 
     - name: Ensure selected container console settings support interactive login
