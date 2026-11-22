@@ -44,9 +44,10 @@ proxmox_vlan_ui:
   facts_dir: "/etc/ansible/proxmox/facts"
   hardware_facts_path: "/etc/ansible/proxmox/facts/hardware.yml"
   hardware_nics_tsv_path: "/etc/ansible/proxmox/facts/hardware.nics.tsv"
-  selection_path: "/etc/ansible/proxmox/facts/vlan.selection.yml"
-  default_data_bridge: "vmbr1"
-  default_bridge_vids: "10 20 30 40"
+  selection_path: "/etc/ansible/proxmox/facts/vlan.pending.yml"
+  default_data_bridge: null
+  default_link_mode: "untagged"
+  default_bridge_vids: ""
   allow_vlan_1: false
   allow_all_vlan_range: false
   allow_same_management_and_data_nic: false
@@ -62,16 +63,19 @@ proxmox_vlan:
     gui_port: 8006
 
   data:
-    bridge: "vmbr1"
+    bridge: null
     nic: null
     expected_driver: null
     expected_pci: null
-    bridge_vlan_aware: true
+    expected_mac: null
+    link_mode: null
+    bridge_vlan_aware: null
     bridge_fd: 2
-    bridge_vids: "10 20 30 40"
+    bridge_vids: null
     host_ip: null
 
   safety:
+    minimum_data_speed_mbps: 1000
     require_oob_console: true
     require_management_unchanged: true
     require_data_nic_unused: true
@@ -93,13 +97,13 @@ proxmox_network:
   verify_path: "/etc/ansible/proxmox/facts/network.verify.tsv"
   update_runtime_facts_path: "/etc/ansible/proxmox/facts/network.update.runtime.yml"
   defaults:
-    admin_bridge: "vmbr0"
-    data_bridge: "vmbr1"
-    lan_cidr: "10.0.0.0/24"
-    guest_admin_if: "eth0"
-    guest_data_if: "eth1"
-    lxc_strategy: "highspeed_only"
-    vlan_tag: 1
+    admin_bridge: null
+    data_bridge: null
+    lan_cidr: null
+    guest_admin_if: null
+    guest_data_if: null
+    lxc_strategy: "add_data_nic"
+    vlan_tag: null
     vm_model: "virtio"
     mode: "check"
 
@@ -118,11 +122,12 @@ proxmox_samba:
     - iproute2
     - util-linux
     - ca-certificates
+    - curl
   preflight_packages:
     - smbclient
   optional_packages:
     avahi:
-      enabled: true
+      enabled: false
       packages:
         - avahi-daemon
     ssh:
@@ -130,7 +135,7 @@ proxmox_samba:
       packages:
         - openssh-server
     ufw:
-      enabled: false
+      enabled: true
       packages:
         - ufw
     wsdd:
@@ -145,17 +150,17 @@ proxmox_samba:
     fruit_model: "Xserve"
 
   network:
-    allow_subnets:
-      - "10.0.0.0/24"
-      - "192.168.0.0/16"
+    allow_subnets: []
     smb_ports:
       - 445
     ssh_port: 22
     bind_interfaces_only: true
     interfaces:
       - "lo"
-      - "eth0"
-    include_discovered_ipv4_networks: true
+    data_interface: null
+    egress_interface: null
+    dns_servers: []
+    include_discovered_ipv4_networks: false
 
   ssh:
     enabled: false
@@ -168,18 +173,25 @@ proxmox_samba:
       - agent
 
   firewall:
-    enabled: false
+    enabled: true
+
+  hardening:
+    lock_users:
+      - app
+      - agent
 
   samba:
     guest_mode: true
     map_to_guest: "Bad User"
     guest_account: "nobody"
-    force_user: "root"
-    force_group: "root"
-    create_mask: "0666"
-    directory_mask: "0777"
-    force_create_mode: "0666"
-    force_directory_mode: "0777"
+    force_user: "smb-ingest"
+    force_group: "smb-ingest"
+    service_uid: 2000
+    service_gid: 2000
+    create_mask: "0660"
+    directory_mask: "0770"
+    force_create_mode: "0660"
+    force_directory_mode: "0770"
     allocation_roundup_size: 4096
     min_protocol: "SMB3_02"
     max_protocol: "SMB3_11"
@@ -193,6 +205,9 @@ proxmox_samba:
     fruit_time_machine: false
     fruit_resource: "xattr"
     fruit_nfs_aces: false
+    data_ready_timeout_seconds: 60
+    data_ready_script_path: "/usr/local/sbin/proxmox-samba-wait-data-link"
+    systemd_override_path: "/etc/systemd/system/smbd.service.d/90-proxmox-data-link.conf"
 
   shares:
     auto_discover: true
@@ -212,6 +227,11 @@ proxmox_samba:
       - "/tmp"
       - "/var"
     explicit: []
+
+  auth:
+    credential_mode: "hostname"
+    username: null
+    password: null
 
 proxmox_lxc_network:
   facts_dir: "/etc/ansible/proxmox/facts"
@@ -314,7 +334,7 @@ proxmox_lxc_debian:
     cores: 1
     memory_mb: 512
     swap_mb: 256
-    bridge: "vmbr1"
+    bridge: null
     ipv4_mode: "dhcp"
     ipv4_cidr: null
     gateway: null
@@ -395,10 +415,8 @@ proxmox_lxc_debian:
       use_pam: "yes"
       x11_forwarding: "no"
       pubkey_authentication: null
-    allow_subnets:
-      - "10.0.0.0/24"
-      - "192.168.0.0/16"
-    expected_dns: "10.0.0.1"
+    allow_subnets: []
+    expected_dns: null
     internet_probe_ipv4: "1.1.1.1"
     enable_ufw: false
     enable_ssh: false

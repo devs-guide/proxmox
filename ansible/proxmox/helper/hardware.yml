@@ -48,6 +48,29 @@
       changed_when: false
       failed_when: false
 
+    - name: Resolve the default-route interface and its bridge master
+      shell: |
+        set -eu
+        route_device="{{ proxmox_default_route_device.stdout | default('') }}"
+        [ -n "${route_device}" ] || exit 0
+
+        if [ -d "/sys/class/net/${route_device}/bridge" ]; then
+          printf '%s\n' "${route_device}"
+          exit 0
+        fi
+
+        if [ -L "/sys/class/net/${route_device}/master" ]; then
+          basename "$(readlink -f "/sys/class/net/${route_device}/master")"
+          exit 0
+        fi
+
+        printf '%s\n' "${route_device}"
+      args:
+        executable: /bin/bash
+      register: proxmox_default_route_bridge
+      changed_when: false
+      failed_when: false
+
     - name: Capture bridge membership view
       command:
         argv:
@@ -84,12 +107,7 @@
 
     - name: Derive management bridge
       set_fact:
-        proxmox_management_bridge: >-
-          {{
-            proxmox_default_route_device.stdout
-            if (proxmox_default_route_device.stdout | default('')) is match('^vmbr[0-9]+$')
-            else 'vmbr0'
-          }}
+        proxmox_management_bridge: "{{ proxmox_default_route_bridge.stdout | default('') }}"
 
     - name: Derive physical interfaces that belong to the management bridge
       shell: |
@@ -205,7 +223,9 @@
         pci="-"
         pci_label="-"
         speed="-"
+        supported_speed="-"
         mac="-"
+        permanent_mac="-"
         operstate="-"
         carrier="-"
         bridge_member="-"
@@ -227,6 +247,31 @@
           speed="$(cat "/sys/class/net/${nic}/speed" 2>/dev/null || true)"
           case "${speed}" in
             ''|*[!0-9]*) speed="-" ;;
+          esac
+        fi
+
+        if command -v ethtool >/dev/null 2>&1; then
+          supported_speed="$(
+            ethtool "${nic}" 2>/dev/null \
+              | awk '
+                  /Supported link modes:/ { supported=1 }
+                  /Advertised link modes:/ { supported=0 }
+                  supported {
+                    for (i = 1; i <= NF; i++) {
+                      if ($i ~ /^[0-9]+base/) {
+                        split($i, value, "base")
+                        if ((value[1] + 0) > max) max = value[1] + 0
+                      }
+                    }
+                  }
+                  END { if (max > 0) print max }
+                '
+          )"
+          [ -n "${supported_speed}" ] || supported_speed="-"
+
+          permanent_mac="$(ethtool -P "${nic}" 2>/dev/null | awk '{print $3}' || true)"
+          case "${permanent_mac}" in
+            ''|00:00:00:00:00:00|not|set) permanent_mac="-" ;;
           esac
         fi
 
@@ -263,13 +308,15 @@
         ip_cidr="$(ip -o -4 addr show dev "${nic}" 2>/dev/null | awk 'NR==1 {print $4}')"
         [ -n "${ip_cidr}" ] || ip_cidr="-"
 
-        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
           "${nic}" \
           "${driver}" \
           "${pci}" \
           "${pci_label}" \
           "${speed}" \
+          "${supported_speed}" \
           "${mac}" \
+          "${permanent_mac}" \
           "${operstate}" \
           "${carrier}" \
           "${bridge_member}" \
@@ -285,22 +332,26 @@
         proxmox_nic_hardware_map: "{{ proxmox_nic_hardware_map | default({}) | combine({nic_name: nic_data}) }}"
       vars:
         nic_fields_raw: "{{ item.stdout.split('|') }}"
-        nic_fields: "{{ nic_fields_raw + ['-', '-', '-', '-', '-', '-', '-', '-', '-', '-'] }}"
+        nic_fields: "{{ nic_fields_raw + ['-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-'] }}"
         nic_name: "{{ nic_fields[0] }}"
         nic_driver_raw: "{{ nic_fields[1] }}"
         nic_pci_raw: "{{ nic_fields[2] }}"
         nic_pci_label_raw: "{{ nic_fields[3] }}"
         nic_speed_raw: "{{ nic_fields[4] }}"
-        nic_mac_raw: "{{ nic_fields[5] }}"
-        nic_operstate_raw: "{{ nic_fields[6] }}"
-        nic_carrier_raw: "{{ nic_fields[7] }}"
-        nic_bridge_member_raw: "{{ nic_fields[8] }}"
-        nic_ip_cidr_raw: "{{ nic_fields[9] }}"
+        nic_supported_speed_raw: "{{ nic_fields[5] }}"
+        nic_mac_raw: "{{ nic_fields[6] }}"
+        nic_permanent_mac_raw: "{{ nic_fields[7] }}"
+        nic_operstate_raw: "{{ nic_fields[8] }}"
+        nic_carrier_raw: "{{ nic_fields[9] }}"
+        nic_bridge_member_raw: "{{ nic_fields[10] }}"
+        nic_ip_cidr_raw: "{{ nic_fields[11] }}"
         nic_driver: "{{ none if nic_driver_raw in ['', '-', 'none'] else nic_driver_raw }}"
         nic_pci: "{{ none if nic_pci_raw in ['', '-'] else nic_pci_raw }}"
         nic_pci_label: "{{ none if nic_pci_label_raw in ['', '-'] else nic_pci_label_raw }}"
         nic_speed_mbps: "{{ (nic_speed_raw | int) if nic_speed_raw is match('^[0-9]+$') else none }}"
+        nic_supported_speed_mbps: "{{ (nic_supported_speed_raw | int) if nic_supported_speed_raw is match('^[0-9]+$') else none }}"
         nic_mac: "{{ none if nic_mac_raw in ['', '-'] else nic_mac_raw }}"
+        nic_permanent_mac: "{{ none if nic_permanent_mac_raw in ['', '-'] else nic_permanent_mac_raw }}"
         nic_operstate: "{{ none if nic_operstate_raw in ['', '-'] else nic_operstate_raw }}"
         nic_carrier: "{{ none if nic_carrier_raw in ['', '-'] else nic_carrier_raw }}"
         nic_bridge_member: "{{ none if nic_bridge_member_raw in ['', '-'] else nic_bridge_member_raw }}"
@@ -309,6 +360,7 @@
         nic_is_management: "{{ nic_fields[0] == proxmox_management_nic }}"
         nic_driver_highspeed: "{{ nic_driver in proxmox_high_speed_drivers }}"
         nic_speed_is_10g: "{{ (nic_speed_mbps is not none) and ((nic_speed_mbps | int) >= 10000) }}"
+        nic_supports_10g: "{{ (nic_supported_speed_mbps is not none) and ((nic_supported_speed_mbps | int) >= 10000) }}"
         nic_is_data_candidate: >-
           {{
             (not (nic_is_management | bool))
@@ -323,6 +375,7 @@
               + (20 if (nic_bridge_member is none) else 0)
               + (20 if (nic_driver_highspeed | bool) else 0)
               + (20 if (nic_speed_is_10g | bool) else 0)
+              + (15 if (nic_supports_10g | bool) else 0)
             ) | int
           }}
         nic_data:
@@ -330,16 +383,19 @@
           pci: "{{ nic_pci }}"
           pci_label: "{{ nic_pci_label }}"
           speed_mbps: "{{ nic_speed_mbps }}"
+          supported_speed_mbps: "{{ nic_supported_speed_mbps }}"
           has_ip: "{{ nic_has_ip }}"
           ip_cidr: "{{ nic_ip_cidr }}"
           bridge_member: "{{ nic_bridge_member }}"
           mac: "{{ nic_mac }}"
+          permanent_mac: "{{ nic_permanent_mac }}"
           operstate: "{{ nic_operstate }}"
           carrier: "{{ nic_carrier }}"
           management_candidate: "{{ nic_is_management }}"
           role_guess: "{{ 'management' if (nic_is_management | bool) else ('data_candidate' if (nic_is_data_candidate | bool) else 'other') }}"
           driver_highspeed: "{{ nic_driver_highspeed }}"
           speed_10g_or_higher: "{{ nic_speed_is_10g }}"
+          supports_10g_or_higher: "{{ nic_supports_10g }}"
           recommendation_score: "{{ nic_recommendation_score }}"
           recommendation_reasons: >-
             {{
@@ -348,7 +404,8 @@
                 ('no-host-ip' if not (nic_has_ip | bool) else none),
                 ('not-bridge-member' if nic_bridge_member is none else none),
                 ('highspeed-driver' if (nic_driver_highspeed | bool) else none),
-                ('speed-10g-or-higher' if (nic_speed_is_10g | bool) else none)
+                ('speed-10g-or-higher' if (nic_speed_is_10g | bool) else none),
+                ('supports-10g-or-higher' if (nic_supports_10g | bool) else none)
               ] | reject('equalto', none) | list
             }}
           data_candidate: "{{ nic_is_data_candidate }}"
@@ -413,9 +470,6 @@
                   proxmox_management_bridge: {
                     'ports': proxmox_management_bridge_ports,
                     'has_host_ip': proxmox_default_route_device.stdout | default('') == proxmox_management_bridge
-                  },
-                  'vmbr1': {
-                    'exists': 'vmbr1' in (ansible_facts.interfaces | default([]))
                   }
                 }
               }}
@@ -447,17 +501,19 @@
         dest: "{{ proxmox_hardware_nics_tsv_path }}"
         mode: "0644"
         content: |
-          iface	role_guess	score	speed_mbps	driver	pci	pci_label	mac	ip_cidr	bridge_member	operstate	carrier	reason
+          iface	role_guess	score	speed_mbps	supported_speed_mbps	driver	pci	pci_label	mac	permanent_mac	ip_cidr	bridge_member	operstate	carrier	reason
           {% for nic_item in proxmox_nic_hardware_map | dict2items | sort(attribute='value.recommendation_score', reverse=true) %}
           {{ [
             nic_item.key,
             nic_item.value.role_guess | default('-'),
             (nic_item.value.recommendation_score | default(0) | string),
             (nic_item.value.speed_mbps if nic_item.value.speed_mbps is not none else '-') | string,
+            (nic_item.value.supported_speed_mbps if nic_item.value.supported_speed_mbps is not none else '-') | string,
             (nic_item.value.driver if nic_item.value.driver is not none else '-'),
             (nic_item.value.pci if nic_item.value.pci is not none else '-'),
             (nic_item.value.pci_label if nic_item.value.pci_label is not none else '-'),
             (nic_item.value.mac if nic_item.value.mac is not none else '-'),
+            (nic_item.value.permanent_mac if nic_item.value.permanent_mac is not none else '-'),
             (nic_item.value.ip_cidr if nic_item.value.ip_cidr is not none else '-'),
             (nic_item.value.bridge_member if nic_item.value.bridge_member is not none else '-'),
             (nic_item.value.operstate if nic_item.value.operstate is not none else '-'),
