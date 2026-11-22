@@ -575,7 +575,7 @@ PY
 
   log "Summary: status=complete lane=${RELEASE_LABEL} platform=${pve_line:-unavailable}"
   log "Summary: ${policy_summary}"
-  log "Summary: node=disabled reboot_required=${reboot_required}"
+  log "Summary: optional_node=https://devs-guide.github.io/proxmox/setup/cli/node.sh reboot_required=${reboot_required}"
   log "BOOTSTRAP COMPLETE"
 }
 
@@ -612,7 +612,12 @@ run.playlist() {
   while IFS= read -r line; do
     line="${line%%$'\r'}"
     line="$(printf '%s' "${line}" | sed 's/[[:space:]]*$//')"
-    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line}" ]] && continue
+    if [[ "${line}" =~ ^[[:space:]]*#[[:space:]]*dependency:[[:space:]]*(.+[.]yml)$ ]]; then
+      fetch.playbook "${BASH_REMATCH[1]}"
+      continue
+    fi
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ "${line}" != *.yml ]] && continue
     fetch.playbook "${line}"
 

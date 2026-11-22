@@ -22,6 +22,12 @@ proxmox_feature_defaults:
   cli_codex:
     enabled: false
     mode: "apply"  # preflight | apply
+  cli_node:
+    enabled: false
+    mode: "apply"  # preflight | apply | upgrade
+  pve_users:
+    enabled: false
+    mode: "apply"  # preflight | apply
   network:
     enabled: false
     mode: "check"  # check | apply
@@ -312,13 +318,30 @@ proxmox_lxc_network:
 proxmox_cli_codex:
   facts_dir: "/etc/ansible/proxmox/facts"
   runtime_facts_path: "/etc/ansible/proxmox/facts/cli.codex.yml"
-  nvm_version: "v0.39.7"
+  nvm_version: "v0.40.4"
   node_version: "lts/*"
   codex_package: "@openai/codex"
   codex_version: "latest"
   install_docs_mcp: true
   docs_mcp_name: "openaiDeveloperDocs"
   docs_mcp_url: "https://developers.openai.com/mcp"
+
+proxmox_cli_node:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/cli.node.yml"
+  install_scope: "shared"
+  shared_nvm_dir: "/usr/local/lib/nvm"
+  nvm_version: "v0.40.4"
+  node_version: "lts/*"
+  npm_policy: "bundled"
+  npm_version: ""
+  global_packages: []
+  create_system_symlinks: true
+  enable_corepack: false
+
+proxmox_pve_users:
+  facts_dir: "/etc/ansible/proxmox/facts"
+  runtime_facts_path: "/etc/ansible/proxmox/facts/pve.users.yml"
 
 proxmox_lxc_debian:
   facts_dir: "/etc/ansible/proxmox/facts"

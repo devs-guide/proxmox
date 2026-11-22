@@ -5,7 +5,9 @@ enterprise.yml
 bootstrap.yml
 packages.yml
 debian/install.packages.yml
-debian/users.yml
+# dependency: proxmox/pve/guard.yml
+# dependency: debian/users.yml
+proxmox/pve/users.yml
 debian/lan.yml
 debian/network.yml
 debian/security.yml
@@ -14,4 +16,3 @@ debian/power.yml
 debian/logging.yml
 debian/performance.yml
 certs.yml
-debian/node.yml

@@ -17,6 +17,10 @@
 - Every runner dependency belongs in its `FEATURE_PLAYBOOKS` or
   `FEATURE_SUPPORT_FILES` array so local execution, Pages publication, and
   remote execution consume the same graph.
+- Use `setup/pve/` for PVE node administration, `setup/cli/` for optional CLI
+  tooling on that node, `setup/lxc/` for LXC operations, and `setup/vm/` for
+  VM operations. Publish new structured paths unchanged; do not add flat
+  aliases or ambiguous host naming.
 - Validate feature branches with GitHub Actions. Do not substitute an
   unpinned local environment for the repository's pinned CI environment.
 - Feature commits may be published to the guarded Pages test channel after CI
