@@ -1,0 +1,39 @@
+---
+- name: "[proxmox]: require a native PVE 9 Trixie host"
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+
+  tasks:
+    - name: Read PVE version
+      ansible.builtin.command: pveversion
+      register: pve_guard_version
+      changed_when: false
+
+    - name: Read operating system release
+      ansible.builtin.slurp:
+        path: /etc/os-release
+      register: pve_guard_os_release
+
+    - name: Detect container virtualization
+      ansible.builtin.command:
+        argv:
+          - systemd-detect-virt
+          - --container
+      register: pve_guard_container
+      changed_when: false
+      failed_when: false
+
+    - name: Assert native PVE 9 Trixie runtime
+      ansible.builtin.assert:
+        that:
+          - pve_guard_version.stdout | default('') is search('pve-manager/9[.]')
+          - (pve_guard_os_release.content | b64decode) is search('(?m)^VERSION_CODENAME=trixie$')
+          - pve_guard_container.rc != 0
+        fail_msg: >-
+          This runner requires a native Proxmox VE 9 host on Debian Trixie.
+          Containers, generic Debian hosts, and other PVE majors are unsupported.
