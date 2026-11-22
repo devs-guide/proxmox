@@ -1,0 +1,36 @@
+---
+- import_playbook: ../pve/guard.yml
+
+- name: "[proxmox]: require managed accounts before Node setup"
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Resolve managed accounts
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - "{{ item }}"
+      register: pve_node_managed_accounts
+      changed_when: false
+      failed_when: false
+      loop:
+        - root
+        - app
+        - agent
+        - proxmox
+
+    - name: Require managed accounts
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+        fail_msg: >-
+          Required account {{ item.item }} is missing. Run setup/pve/users.sh first.
+      loop: "{{ pve_node_managed_accounts.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+- import_playbook: ../../debian/node.yml

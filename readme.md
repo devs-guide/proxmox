@@ -150,19 +150,24 @@ for review, planning, explicitly authorized creation, and verification.
 
 ## Feature Runner Naming
 
-- Proxmox-native feature runners keep their existing `setup/...` layout such as `setup/vlan.sh` and publish aliases such as `setup.vlan.sh`.
-- Non-Proxmox CLI application installers for Proxmox hosts should use the `cli.{app_name}` naming family.
+Operator paths identify their execution boundary and publish without a flat
+alias:
 
-Current convention:
+- `setup/pve/`: native PVE node administration.
+- `setup/cli/`: optional CLI tooling installed on the PVE node.
+- `setup/lxc/`: LXC operations.
+- `setup/vm/`: VM operations.
 
-- source runner: `setup/cli.{app_name}.sh`
-- published runner: `setup.cli.{app_name}.sh`
-- Debian-side playbook when needed: `ansible/debian/cli.{app_name}.yml`
+The source and published paths are identical. Shared Debian mechanics may stay
+under `ansible/debian/`, but PVE-facing runners use wrappers under
+`ansible/proxmox/`.
 
 Current example:
 
 ```bash
-wget -qO- https://devs-guide.github.io/proxmox/setup.cli.codex.sh | bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/pve/users.sh | bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/cli/node.sh | bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/cli/codex.sh | bash
 ```
 
 ## VM Restore Helpers

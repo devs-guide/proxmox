@@ -332,7 +332,7 @@
       when:
         - node_enable | bool
         - node_install_needed | bool
-        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists))
+        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists | default(false)))
         - node_mode_effective in ['apply', 'upgrade']
 
     - name: Apply npm policy
@@ -427,8 +427,7 @@
           [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
       when:
         - node_enable | bool
-        - node_install_needed | bool
-        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists))
+        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists | default(false)))
         - node_mode_effective in ['apply', 'upgrade']
 
     - name: Configure system symlinks for node/npm/npx
@@ -471,9 +470,8 @@
       changed_when: "'changed=1' in (node_symlink_result.stdout | default(''))"
       when:
         - node_enable | bool
-        - node_install_needed | bool
         - node_create_system_symlinks | bool
-        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists))
+        - (nvm_sh_after.stat.exists | default(nvm_sh.stat.exists | default(false)))
         - node_mode_effective in ['apply', 'upgrade']
 
     - name: Capture final Node runtime details

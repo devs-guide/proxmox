@@ -62,6 +62,11 @@ was appended under the wrong parent key.
 
 ## Runner and publication checklist
 
+Use self-explanatory runner namespaces: `setup/pve/` for PVE node-local
+administration, `setup/cli/` for optional node CLI tooling, `setup/lxc/` for
+LXC operations, and `setup/vm/` for VM operations. Publish new structured
+paths unchanged and avoid ambiguous host naming or new flat aliases.
+
 For each new or changed support artifact:
 
 1. Add it to the owning runner's dependency array.

@@ -66,7 +66,9 @@ FILES=(
   "setup.vlan.sh:setup/vlan.sh"
   "setup/network-link.sh:setup/network-link.sh"
   "setup/network.sh:setup/network.sh"
-  "setup.cli.codex.sh:setup/cli.codex.sh"
+  "setup/pve/users.sh:setup/pve/users.sh"
+  "setup/cli/node.sh:setup/cli/node.sh"
+  "setup/cli/codex.sh:setup/cli/codex.sh"
   "setup/lxc/debian.sh:setup/lxc/debian.sh"
   "setup/lxc/common.sh:setup/lxc/common.sh"
   "setup/lxc/samba.sh:setup/lxc/samba.sh"
@@ -83,6 +85,10 @@ FILES=(
   "cli/temperature/gpu.sh:cli/temperature/gpu.sh"
   "cli/rsync/fetch.sh:cli/rsync/fetch.sh"
   "ansible/proxmox/common.yml:ansible/proxmox/common.yml"
+  "ansible/proxmox/pve/guard.yml:ansible/proxmox/pve/guard.yml"
+  "ansible/proxmox/pve/users.yml:ansible/proxmox/pve/users.yml"
+  "ansible/proxmox/cli/node.yml:ansible/proxmox/cli/node.yml"
+  "ansible/proxmox/cli/codex.yml:ansible/proxmox/cli/codex.yml"
   "ansible/proxmox/helper/vm.restore.yml:ansible/proxmox/helper/vm.restore.yml"
   "ansible/proxmox/container/common.yml:ansible/proxmox/container/common.yml"
   "ansible/proxmox/container/debian.lxc.yml:ansible/proxmox/container/debian.lxc.yml"
@@ -144,6 +150,16 @@ if ! is.true "${VALIDATE_PAGES_GRAPH_ONLY}"; then
       fi
     fi
   done
+
+  if [[ "${VALIDATE_PAGES_MODE}" == "local" ]]; then
+    if [[ -e "${STATIC_DIR}/setup.cli.codex.sh" ]]; then
+      echo "[validate.pages][error] legacy flat Codex artifact remains in ${STATIC_DIR}"
+      rc=1
+    fi
+  elif curl -fsSL "${BASE_URL}/setup.cli.codex.sh" -o "${TMPDIR}/legacy-setup.cli.codex.sh" 2>/dev/null; then
+    echo "[validate.pages][error] legacy flat Codex artifact is still published"
+    rc=1
+  fi
 fi
 
 extract.runner.array.items() {

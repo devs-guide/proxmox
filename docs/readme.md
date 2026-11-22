@@ -29,7 +29,9 @@ required on the Proxmox server.
 | setup/network.sh | Proxmox network setup | Mutating | Published |
 | setup/lxc/debian.sh | Debian LXC setup | Mutating | Published |
 | setup/lxc/samba.sh | Samba LXC setup | Mutating | Published |
-| setup.cli.codex.sh | Optional Codex CLI setup | Mutating | Published |
+| setup/pve/users.sh | PVE 9 managed accounts only | Mutating | Next live feature |
+| setup/cli/node.sh | Shared Node.js on an existing PVE 9 host | Mutating | Next live feature |
+| setup/cli/codex.sh | Shared Codex CLI on an existing PVE 9 host | Mutating | Next live feature |
 
 Mixed runners may expose read-only actions, but mutating actions must be
 downloaded and inspected before execution.
@@ -97,8 +99,24 @@ shown for that mapping by lsblk is not by itself evidence of a broken pool.
 Do not run the ZFS workflow against the operating-system disk.
 
 If the safe upgrade installed a kernel or /run/reboot-required exists, reboot
-and repeat service and storage checks before GPU work. Node.js is disabled in
-this lane unless explicitly enabled; the runtime probe does not install Node.
+and repeat service and storage checks before GPU work. Node.js and Codex are
+optional post-install features and are not installed by the bootstrap playlist.
+
+## Existing-host users, Node, and Codex
+
+On an existing native PVE 9/Trixie host, converge only the managed accounts,
+then install shared Node.js and Codex without changing network, SSH, firewall,
+bridge, VLAN, or routing configuration:
+
+~~~bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/pve/users.sh | bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/cli/node.sh | bash
+wget -qO- https://devs-guide.github.io/proxmox/setup/cli/codex.sh | bash
+~~~
+
+Node and Codex are installed under `/usr/local/lib/nvm` with system command
+symlinks. The runners verify `root`, `app`, `agent`, and `proxmox` login
+shells. Authenticate and configure Codex separately from each account.
 
 ## AMDGPU host setup
 

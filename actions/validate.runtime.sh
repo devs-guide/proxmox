@@ -29,11 +29,15 @@ files=(
   "tests/unit/data_link_policy_test.sh"
   "tests/unit/data_link_ifreload_policy_test.sh"
   "tests/unit/ansible_regex_presence_policy_test.sh"
+  "tests/unit/pve_tooling_policy_test.sh"
   "actions/validate.release.sh"
+  "actions/validate.pve.tooling.sh"
   "setup/vlan.sh"
   "setup/network-link.sh"
   "setup/network.sh"
-  "setup/cli.codex.sh"
+  "setup/pve/users.sh"
+  "setup/cli/node.sh"
+  "setup/cli/codex.sh"
   "setup/lxc/debian.sh"
 "setup/lxc/samba.sh"
 "setup/lxc/common.sh"
@@ -76,6 +80,10 @@ files=(
   "ansible/proxmox/templates/data-link.interfaces.j2"
   "ansible/proxmox/container/bootstrap/debian.create.yml"
   "ansible/proxmox/common.yml"
+  "ansible/proxmox/pve/guard.yml"
+  "ansible/proxmox/pve/users.yml"
+  "ansible/proxmox/cli/node.yml"
+  "ansible/proxmox/cli/codex.yml"
   "ansible/proxmox/container/debian.lxc.yml"
   "ansible/proxmox/container/debian.yml"
   "ansible/proxmox/container/debian.base.yml"
@@ -308,44 +316,8 @@ echo "[validate.runtime][ok] network runners fail closed on incomplete or sub-gi
 "${ROOT}/tests/unit/ansible_regex_presence_policy_test.sh"
 "${ROOT}/tests/unit/network_update_playbook_policy_test.sh"
 
-echo "[validate.runtime] checking Proxmox Node/Codex runner contract..."
-if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh does not define FEATURE_PLAYBOOKS array"
-  exit 1
-fi
-if ! grep -q '"debian/node.yml"' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/node.yml"
-  exit 1
-fi
-if ! grep -q '"debian/cli.codex.yml"' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh FEATURE_PLAYBOOKS is missing debian/cli.codex.yml"
-  exit 1
-fi
-if ! grep -q 'CLI_CODEX_EXTRA_VARS_PATH=' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh is missing CLI_CODEX_EXTRA_VARS_PATH"
-  exit 1
-fi
-if ! grep -q 'write.cli.codex.extra.vars.file()' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh is missing write.cli.codex.extra.vars.file()"
-  exit 1
-fi
-if ! grep -q -- '-e "@${CLI_CODEX_EXTRA_VARS_PATH}"' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh must pass generated YAML extra-vars with -e @file"
-  exit 1
-fi
-if ! grep -q 'ensure.container.ansible' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh must use the lightweight container-style Ansible bootstrap helper"
-  exit 1
-fi
-if grep -q 'ensure.managed.ansible' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh must not require the full managed-target bootstrap path"
-  exit 1
-fi
-if ! grep -q 'setup.cli.codex.sh' "${ROOT}/setup/cli.codex.sh"; then
-  echo "[validate.runtime][error] setup/cli.codex.sh must advertise its published setup.cli.codex.sh URL"
-  exit 1
-fi
-echo "[validate.runtime][ok] setup/cli.codex.sh exposes the minimal CLI/Codex runner contract"
+echo "[validate.runtime] checking structured PVE users/Node/Codex contracts..."
+"${ROOT}/actions/validate.pve.tooling.sh"
 
 echo "[validate.runtime] checking Proxmox LXC Codex runner contract..."
 if ! grep -q 'FEATURE_PLAYBOOKS=(' "${ROOT}/setup/lxc/codex.sh"; then
@@ -1453,7 +1425,9 @@ done
 for runner in \
   setup/vlan.sh \
   setup/network.sh \
-  setup/cli.codex.sh \
+  setup/pve/users.sh \
+  setup/cli/node.sh \
+  setup/cli/codex.sh \
   setup/lxc/debian.sh \
   setup/lxc/samba.sh \
   setup/lxc/network.sh \
@@ -1469,7 +1443,9 @@ done
 for runner in \
   setup/vlan.sh \
   setup/network.sh \
-  setup/cli.codex.sh \
+  setup/pve/users.sh \
+  setup/cli/node.sh \
+  setup/cli/codex.sh \
   setup/lxc/debian.sh \
   setup/lxc/samba.sh \
   setup/lxc/network.sh \
@@ -1483,7 +1459,9 @@ done
 for runner in \
   setup/vlan.sh \
   setup/network.sh \
-  setup/cli.codex.sh \
+  setup/pve/users.sh \
+  setup/cli/node.sh \
+  setup/cli/codex.sh \
   setup/lxc/debian.sh \
   setup/lxc/samba.sh \
   setup/lxc/network.sh \
@@ -1712,7 +1690,9 @@ fi
 for feature_entry in \
   'setup/vlan.sh|setup.vlan.sh|feature' \
   'setup/network.sh|setup/network.sh|feature' \
-  'setup/cli.codex.sh|setup.cli.codex.sh|feature' \
+  'setup/pve/users.sh|setup/pve/users.sh|feature' \
+  'setup/cli/node.sh|setup/cli/node.sh|feature' \
+  'setup/cli/codex.sh|setup/cli/codex.sh|feature' \
   'setup/lxc/debian.sh|setup/lxc/debian.sh|feature' \
   'setup/lxc/samba.sh|setup/lxc/samba.sh|feature' \
   'setup/lxc/network.sh|setup/lxc/network.sh|feature' \
@@ -1756,7 +1736,9 @@ bash -u -c 'log(){ :; }; log.error(){ :; }; source "${1}"; : "${ANSIBLE_CORE_VER
 bash -n "${ROOT}/setup/vlan.sh"
 bash -n "${ROOT}/setup/network-link.sh"
 bash -n "${ROOT}/setup/network.sh"
-bash -n "${ROOT}/setup/cli.codex.sh"
+bash -n "${ROOT}/setup/pve/users.sh"
+bash -n "${ROOT}/setup/cli/node.sh"
+bash -n "${ROOT}/setup/cli/codex.sh"
 bash -n "${ROOT}/setup/lxc/debian.sh"
 bash -n "${ROOT}/setup/lxc/samba.sh"
 bash -n "${ROOT}/setup/lxc/network.sh"
@@ -1897,6 +1879,18 @@ ANSIBLE_FORCE_COLOR=0 \
 ANSIBLE_NOCOLOR=1 \
 ANSIBLE_FORCE_COLOR=0 \
   ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/container/codex.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/pve/guard.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/pve/users.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/cli/node.yml"
+ANSIBLE_NOCOLOR=1 \
+ANSIBLE_FORCE_COLOR=0 \
+  ansible-playbook -i localhost, -c local -e ansible_python_interpreter_managed=/usr/bin/python3 --syntax-check "${ROOT}/ansible/proxmox/cli/codex.yml"
 
 echo "[validate.runtime] done (check-mode only; no packages changed)."
 

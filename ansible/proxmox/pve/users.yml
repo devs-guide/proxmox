@@ -1,0 +1,65 @@
+---
+- import_playbook: guard.yml
+
+- import_playbook: ../../debian/users.yml
+
+- name: "[proxmox]: record PVE users runtime facts"
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_python_interpreter_managed | default('/usr/bin/python3') }}"
+    pve_users_runtime_facts_path: "/etc/ansible/proxmox/facts/pve.users.yml"
+
+  tasks:
+    - name: Read managed account records
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - "{{ item.name }}"
+      register: pve_users_account_records
+      changed_when: false
+      loop: "{{ user_defs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Read managed account groups
+      ansible.builtin.command:
+        argv:
+          - id
+          - -nG
+          - "{{ item.name }}"
+      register: pve_users_group_records
+      changed_when: false
+      loop: "{{ user_defs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Ensure PVE facts directory exists
+      ansible.builtin.file:
+        path: "{{ pve_users_runtime_facts_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write PVE users runtime facts
+      ansible.builtin.copy:
+        dest: "{{ pve_users_runtime_facts_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          ---
+          pve_users:
+            password_mode: "{{ bootstrap_default_password_mode | default('username') }}"
+            sudo_group: "{{ bootstrap_default_sudo_group | default('sudo') }}"
+            accounts:
+          {% for result in pve_users_account_records.results %}
+              - name: "{{ result.item.name }}"
+                passwd: "{{ result.stdout }}"
+                groups: "{{ pve_users_group_records.results[loop.index0].stdout }}"
+          {% endfor %}

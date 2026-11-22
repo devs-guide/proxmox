@@ -18,7 +18,7 @@
     codex_install_docs_mcp: true
     codex_docs_mcp_name: "openaiDeveloperDocs"
     codex_docs_mcp_url: "https://developers.openai.com/mcp"
-    codex_runtime_facts_path: "{{ codex_runtime_facts_path | default('/etc/ansible/debian/facts/cli.codex.yml') }}"
+    codex_runtime_facts_default_path: "/etc/ansible/debian/facts/cli.codex.yml"
 
   tasks:
     - name: Normalize Codex mode and Node scope inputs
@@ -37,6 +37,8 @@
               )
             )
           }}
+        codex_runtime_facts_path_effective: >-
+          {{ codex_runtime_facts_path | default(codex_runtime_facts_default_path) }}
 
     - name: Assert Codex mode is valid
       ansible.builtin.assert:
@@ -194,7 +196,7 @@
 
     - name: Ensure Debian facts directory exists for Node/Codex runtime facts
       ansible.builtin.file:
-        path: "{{ codex_runtime_facts_path | dirname }}"
+        path: "{{ codex_runtime_facts_path_effective | dirname }}"
         state: directory
         mode: "0755"
       when:
@@ -225,7 +227,7 @@
           printf '%s\n' "  codex_version: \"${codex_version_current}\""
           printf '%s\n' "  codex_path: \"${codex_path}\""
           printf '%s\n' "  docs_mcp_installed: ${docs_mcp_installed}"
-        } > "{{ codex_runtime_facts_path }}"
+        } > "{{ codex_runtime_facts_path_effective }}"
       args:
         executable: /bin/bash
       changed_when: false
